@@ -1,0 +1,5 @@
+build/
+*.ppm
+*.png
+*.raw
+config/wpa_supplicant.conf

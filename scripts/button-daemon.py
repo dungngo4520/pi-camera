@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-Pi Camera GPIO button daemon.
-
-Watches GPIO17 for a button press (short to GND), captures a photo
-via the capture script, and provides feedback via the ACT LED.
-
-Wiring:
-  Button between GPIO17 (pin 11) and GND (pin 14)
-  Internal pull-up enabled — no external resistor needed.
-
-Runs as a systemd service (picamera-capture).
-"""
 
 import datetime
 import gpiod
@@ -23,17 +11,13 @@ import sys
 import time
 from pathlib import Path
 
-# ── Configuration ──────────────────────────────────────────────────────────
-
 GPIO_CHIP = "/dev/gpiochip0"
 BUTTON_LINE = 17
 DEBOUNCE_S = 0.3
-CAPTURE_SCRIPT = "/home/pi/camera/bin/capture"
+CAPTURE_SCRIPT = "/home/pi/camera/bin/capture.sh"
 PHOTO_DIR = "/home/pi/photos"
 ACT_LED_BRIGHTNESS = "/sys/class/leds/ACT/brightness"
 ACT_LED_TRIGGER = "/sys/class/leds/ACT/trigger"
-
-# ── Logger ─────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,8 +25,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("picamera-btn")
-
-# ── ACT LED ────────────────────────────────────────────────────────────────
 
 _led_ok = False
 
@@ -92,8 +74,6 @@ def led_error():
     led_off()
 
 
-# ── Capture ────────────────────────────────────────────────────────────────
-
 def capture_photo():
     Path(PHOTO_DIR).mkdir(parents=True, exist_ok=True)
     try:
@@ -115,13 +95,10 @@ def capture_photo():
         return False, ""
 
 
-# ── Main ───────────────────────────────────────────────────────────────────
-
 def main():
     running = True
 
     def handle_signal(signum, frame):
-        log.info("Signal %d -- shutting down", signum)
         nonlocal running
         running = False
 
@@ -132,7 +109,6 @@ def main():
     led_init()
     led_blink(1, 0.05)
 
-    # Request GPIO line
     try:
         request = gpiod.request_lines(
             GPIO_CHIP,

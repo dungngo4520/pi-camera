@@ -11,6 +11,9 @@ pkg_check_modules(PNG REQUIRED libpng)
 add_executable(picamera
     src/main.cpp
     src/camera.cpp
+    src/cli.cpp
+    src/image.cpp
+    src/output.cpp
 )
 
 target_include_directories(picamera PRIVATE
@@ -22,8 +25,11 @@ target_include_directories(picamera PRIVATE
 target_link_libraries(picamera
     ${LIBCAMERA_LIBRARIES}
     ${PNG_LIBRARIES}
-    dl      # libdl for dynamic loading (used by libcamera internals)
-    pthread # POSIX threads (used by libcamera event handling)
+    dl
+    pthread
 )
 
-target_compile_options(picamera PRIVATE ${LIBCAMERA_CFLAGS_OTHER} ${PNG_CFLAGS_OTHER})
+target_compile_options(picamera PRIVATE
+    ${LIBCAMERA_CFLAGS_OTHER}
+    ${PNG_CFLAGS_OTHER}
+)
