@@ -79,13 +79,17 @@ def capture_photo():
     try:
         result = subprocess.run(
             [CAPTURE_SCRIPT, "--dir", PHOTO_DIR],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             lines = [l for l in result.stdout.strip().split("\n") if l]
             filename = lines[-1] if lines else "unknown"
             return True, filename
-        log.error("Capture failed (exit %d): %s", result.returncode, result.stderr.strip())
+        log.error(
+            "Capture failed (exit %d): %s", result.returncode, result.stderr.strip()
+        )
         return False, ""
     except subprocess.TimeoutExpired:
         log.error("Capture timed out")

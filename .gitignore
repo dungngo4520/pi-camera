@@ -3,3 +3,4 @@ build/
 *.png
 *.raw
 config/wpa_supplicant.conf
+config/ssh

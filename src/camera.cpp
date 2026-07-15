@@ -57,31 +57,31 @@ bool CameraApp::init() {
     return true;
 }
 
-void CameraApp::configure(const CameraConfig &cfg) {
+bool CameraApp::configure(const CameraConfig &cfg) {
     config_ = cfg;
 
     auto roles = {StreamRole::StillCapture};
     auto camCfg = cam_->generateConfiguration(roles);
     if (!camCfg) {
         std::cerr << "generateConfiguration failed\n";
-        return;
+        return false;
     }
 
     auto &sc = camCfg->at(0);
     sc.size.width = cfg.width;
     sc.size.height = cfg.height;
     sc.pixelFormat = formats::NV12;
-    sc.bufferCount = 2;
+    sc.bufferCount = 4;
 
     auto status = camCfg->validate();
     if (status == CameraConfiguration::Invalid) {
         std::cerr << "Camera configuration invalid\n";
-        return;
+        return false;
     }
 
     if (cam_->configure(camCfg.get())) {
         std::cerr << "cam->configure() failed\n";
-        return;
+        return false;
     }
 
     stream_ = sc.stream();
@@ -89,11 +89,14 @@ void CameraApp::configure(const CameraConfig &cfg) {
     allocator_ = std::make_unique<FrameBufferAllocator>(cam_);
     if (allocator_->allocate(stream_) < 0) {
         std::cerr << "Buffer allocation failed\n";
-        return;
+        allocator_.reset();
+        stream_ = nullptr;
+        return false;
     }
 
     std::cout << "Configured: " << sc.size.width << "x" << sc.size.height
               << " stride:" << sc.stride << "\n";
+    return true;
 }
 
 bool CameraApp::capture(const std::string &filename) {
@@ -105,41 +108,65 @@ bool CameraApp::capture(const std::string &filename) {
     auto &buffers = allocator_->buffers(stream_);
     if (buffers.empty()) return false;
 
-    auto req = cam_->createRequest();
-    if (!req) {
-        std::cerr << "Failed to create Request\n";
-        return false;
-    }
-
-    req->addBuffer(stream_, buffers[0].get());
-    applyControls(req.get(), config_);
-
     if (cam_->start()) {
         std::cerr << "Failed to start camera\n";
         return false;
     }
 
+    // Queue all available buffers so AE/AWB can run continuously and converge.
+    // We discard the first `warmupFrames` completions, re-queuing their buffers,
+    // then save the next completed frame.
+    const uint32_t warmup = config_.warmupFrames;
+    uint32_t completed = 0;
     bool done = false;
     bool saved = false;
+
     cam_->requestCompleted.connect(this, [&](Request *r) {
-        if (r->status() == Request::RequestComplete) {
-            saved = saveFrame(r, filename);
-        } else {
+        if (r->status() != Request::RequestComplete) {
             std::cerr << "Request status: " << r->status() << "\n";
+            r->reuse(Request::ReuseBuffers);
+            cam_->queueRequest(r);
+            return;
         }
+        ++completed;
+        if (completed <= warmup) {
+            // Warmup frame — discard and re-queue so AE/AWB keeps converging.
+            r->reuse(Request::ReuseBuffers);
+            cam_->queueRequest(r);
+            return;
+        }
+        // Converged frame — save it.
+        saved = saveFrame(r, filename);
         done = true;
     });
 
-    if (cam_->queueRequest(req.get())) {
-        std::cerr << "Failed to queue Request\n";
-        cam_->stop();
-        return false;
+    // Initial queue: one request per buffer, with controls applied to the first.
+    std::vector<std::unique_ptr<Request>> reqs;
+    reqs.reserve(buffers.size());
+    for (size_t i = 0; i < buffers.size(); ++i) {
+        auto req = cam_->createRequest();
+        if (!req) {
+            std::cerr << "Failed to create Request\n";
+            cam_->requestCompleted.disconnect();
+            cam_->stop();
+            return false;
+        }
+        req->addBuffer(stream_, buffers[i].get());
+        if (i == 0) applyControls(req.get(), config_);
+        if (cam_->queueRequest(req.get())) {
+            std::cerr << "Failed to queue Request\n";
+            cam_->requestCompleted.disconnect();
+            cam_->stop();
+            return false;
+        }
+        reqs.push_back(std::move(req));
     }
 
-    auto deadline = std::chrono::steady_clock::now() + 15s;
+    auto deadline = std::chrono::steady_clock::now() + 60s;
     while (!done) {
         if (std::chrono::steady_clock::now() > deadline) {
-            std::cerr << "Capture timed out\n";
+            std::cerr << "Capture timed out (completed " << completed
+                      << "/" << (warmup + 1) << " frames)\n";
             cam_->requestCompleted.disconnect();
             cam_->stop();
             return false;
@@ -150,9 +177,7 @@ bool CameraApp::capture(const std::string &filename) {
     cam_->requestCompleted.disconnect();
     cam_->stop();
 
-    if (!saved) {
-        std::cerr << "Failed to save frame\n";
-    }
+    if (!saved) std::cerr << "Failed to save frame\n";
     return saved;
 }
 

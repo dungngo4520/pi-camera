@@ -23,7 +23,10 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    app.configure(cfg);
+    if (!app.configure(cfg)) {
+        app.shutdown();
+        return 1;
+    }
 
     bool ok = false;
     if (opts.mode == "capture") {

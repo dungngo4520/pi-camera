@@ -1,7 +1,27 @@
 #include "cli.h"
 #include <iostream>
+#include <stdexcept>
 
 namespace picamera {
+
+namespace {
+// Parse argv[i+1] into T; on error prints and returns false, advancing i.
+template <typename T, typename Conv>
+bool parseIntArg(const char *prog, int argc, char **argv, int &i,
+                 const char *flag, Conv conv, T &out) {
+    if (i + 1 >= argc) {
+        std::cerr << flag << " requires a value\n";
+        return false;
+    }
+    try {
+        out = conv(argv[++i]);
+    } catch (const std::exception &e) {
+        std::cerr << flag << " invalid value '" << argv[i] << "': " << e.what() << "\n";
+        return false;
+    }
+    return true;
+}
+} // namespace
 
 void printUsage(const char *prog) {
     std::cout << "Pi Zero 2 WH + HQ Camera — libcamera C++ capture\n\n"
@@ -20,7 +40,8 @@ void printUsage(const char *prog) {
               << "  --awb <mode>            White balance: auto, daylight, cloudy,\n"
               << "                          incandescent, tungsten, fluorescent, indoor\n"
               << "  --ae-disable            Disable auto exposure\n"
-              << "  --awb-disable           Disable auto white balance\n\n"
+              << "  --awb-disable           Disable auto white balance\n"
+              << "  --warmup <n>            Frames to let AE/AWB converge (default: 8)\n\n"
               << "Examples:\n"
               << "  " << prog << " --capture photo.png --format png\n"
               << "  " << prog << " --capture photo.raw --format raw\n"
@@ -39,19 +60,31 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             opts.mode = "list-controls";
         } else if (arg == "--timelapse") {
             opts.mode = "timelapse";
-            if (i + 1 < argc) opts.timelapseInterval = std::stoi(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--timelapse",
+                             [](const char *s) { return std::stoi(s); },
+                             opts.timelapseInterval)) return false;
         } else if (arg == "--output") {
             if (i + 1 < argc) opts.outputPattern = argv[++i];
         } else if (arg == "--count") {
-            if (i + 1 < argc) opts.timelapseCount = std::stoi(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--count",
+                             [](const char *s) { return std::stoi(s); },
+                             opts.timelapseCount)) return false;
         } else if (arg == "--width") {
-            if (i + 1 < argc) cfg.width = std::stoul(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--width",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             cfg.width)) return false;
         } else if (arg == "--height") {
-            if (i + 1 < argc) cfg.height = std::stoul(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--height",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             cfg.height)) return false;
         } else if (arg == "--iso") {
-            if (i + 1 < argc) cfg.analogueGain = std::stof(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--iso",
+                             [](const char *s) { return std::stof(s); },
+                             cfg.analogueGain)) return false;
         } else if (arg == "--shutter") {
-            if (i + 1 < argc) cfg.exposureTime = std::stoul(argv[++i]);
+            if (!parseIntArg(argv[0], argc, argv, i, "--shutter",
+                             [](const char *s) { return static_cast<uint64_t>(std::stoull(s)); },
+                             cfg.exposureTime)) return false;
         } else if (arg == "--awb") {
             if (i + 1 < argc) cfg.awbMode = argv[++i];
         } else if (arg == "--ae-disable") {
@@ -69,6 +102,10 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             }
         } else if (arg == "--awb-disable") {
             cfg.awbEnable = false;
+        } else if (arg == "--warmup") {
+            if (!parseIntArg(argv[0], argc, argv, i, "--warmup",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             cfg.warmupFrames)) return false;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             return false;

@@ -22,6 +22,7 @@ struct CameraConfig {
     bool aeEnable = true;
     bool awbEnable = true;
     OutputFormat format = OutputFormat::PPM;
+    uint32_t warmupFrames = 8;  // frames to let AE/AWB converge before saving
 };
 
 class CameraApp {
@@ -30,7 +31,7 @@ public:
     ~CameraApp();
 
     bool init();
-    void configure(const CameraConfig &cfg);
+    bool configure(const CameraConfig &cfg);
     bool capture(const std::string &filename);
     bool timelapse(int intervalSec, int count, const std::string &pattern);
     void listControls();

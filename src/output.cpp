@@ -46,7 +46,8 @@ bool writePpm(const uint8_t *rgb, size_t size, uint32_t w, uint32_t h, const std
     if (!out) return false;
     out << "P6\n" << w << " " << h << "\n255\n";
     out.write(reinterpret_cast<const char *>(rgb), static_cast<std::streamsize>(size));
-    return true;
+    out.flush();
+    return out.good();
 }
 
 bool writeRaw(const uint8_t *y, size_t ySize, const uint8_t *uv, size_t uvSize, const std::string &path) {
@@ -54,7 +55,8 @@ bool writeRaw(const uint8_t *y, size_t ySize, const uint8_t *uv, size_t uvSize, 
     if (!out) return false;
     out.write(reinterpret_cast<const char *>(y), static_cast<std::streamsize>(ySize));
     out.write(reinterpret_cast<const char *>(uv), static_cast<std::streamsize>(uvSize));
-    return true;
+    out.flush();
+    return out.good();
 }
 
 }
