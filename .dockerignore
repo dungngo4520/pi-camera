@@ -1,0 +1,7 @@
+build/
+*.ppm
+*.png
+*.raw
+picamera-arm64
+.git/
+sample_capture.png

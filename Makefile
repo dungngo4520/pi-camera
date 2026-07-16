@@ -3,7 +3,7 @@ PI_USER ? pi
 PI_REMOTE := $(PI_USER)@$(PI_HOST)
 PI_DIR    := ~/camera
 
-.PHONY: all build clean flash ssh deploy remote-build remote-run remote-clean
+.PHONY: all build clean flash ssh deploy remote-build remote-run remote-clean cross-build cross-deploy
 
 all: build
 
@@ -51,3 +51,13 @@ remote-deploy: deploy remote-build
 #   make remote-run ARGS="--list-controls"
 remote-run:
 	ssh $(PI_REMOTE) "$(PI_DIR)/build/picamera $(ARGS)"
+
+# Cross-build picamera for aarch64 in Docker on this x86 host (no Pi needed).
+# Output: ./picamera-arm64
+cross-build:
+	./scripts/cross-build.sh
+
+# Cross-build locally, then scp the binary to the Pi.
+cross-deploy: cross-build
+	scp picamera-arm64 $(PI_REMOTE):$(PI_DIR)/build/picamera
+	@echo "Deployed to $(PI_REMOTE):$(PI_DIR)/build/picamera"

@@ -38,9 +38,9 @@ Verified versions on the target board:
 
 ## Building
 
-### On the Pi (recommended)
+Three options, in order of simplicity:
 
-Cross-compiling from x86 is possible but requires an aarch64 glibc sysroot with libcamera and libpng built for aarch64 — not worth the setup for a project this size. **Build on the Pi.**
+### 1. On the Pi (simplest)
 
 ```bash
 make build          # mkdir -p build && cd build && cmake .. && make -j$(nproc)
@@ -54,7 +54,41 @@ mkdir -p build && cd build && cmake .. && make -j$(nproc)
 
 The binary lands at `build/picamera`.
 
-### From a remote machine
+### 2. Cross-build in Docker on your x86 host (no Pi needed for builds)
+
+Uses Docker + qemu-user-static binfmt emulation to build an aarch64 binary inside a Debian trixie container with the Raspberry Pi apt archive (so libcamera matches the Pi's 0.7.x). One command:
+
+```bash
+make cross-build    # runs scripts/cross-build.sh, outputs ./picamera-arm64
+```
+
+Or directly:
+
+```bash
+./scripts/cross-build.sh
+```
+
+Requirements on the host:
+- `docker` (or `podman`)
+- `qemu-user-static` + binfmt_misc registered for aarch64
+  - Arch: `pacman -S qemu-user-static && sudo systemctl restart systemd-binfmt`
+  - Verify: `cat /proc/sys/fs/binfmt_misc/qemu-aarch64` should say `enabled`
+
+The script builds the Docker image, extracts the binary, and verifies it with `file`. Output: `./picamera-arm64` (~90 KB, dynamically linked aarch64 ELF).
+
+Transfer to the Pi:
+
+```bash
+make cross-deploy   # cross-build + scp to Pi in one step
+# or manually:
+scp picamera-arm64 pi@raspberrypi.local:~/camera/build/picamera
+```
+
+The binary is dynamically linked against `libcamera.so.0.7`, `libpng16.so.16`, etc. — all present on the Pi from `apt install libcamera-dev libpng-dev`. No extra runtime deps need to be copied.
+
+First build takes ~3 min (downloads Debian base + apt packages). Subsequent builds are cached and take ~20 s (just the `cmake && make` step).
+
+### 3. Remote build via SSH (deploy source, build on Pi)
 
 The Makefile automates deploy + remote build over SSH. Override the host/user with `PI_HOST=` / `PI_USER=` if needed (defaults: `raspberrypi.local` / `pi`).
 
