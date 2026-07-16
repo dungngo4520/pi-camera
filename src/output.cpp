@@ -18,6 +18,10 @@ bool writePng(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h) {
     png_infop info = png_create_info_struct(png);
     if (!info) { png_destroy_write_struct(&png, nullptr); fclose(fp); return false; }
 
+    // setjmp point: on libpng error we longjmp here. Any C++ object with a
+    // non-trivial destructor declared *before* this line would leak on the
+    // error path (longjmp does not unwind). So `rows` is declared after the
+    // setjmp and built only once png_write_info has succeeded.
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_write_struct(&png, &info);
         fclose(fp);

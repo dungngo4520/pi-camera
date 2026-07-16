@@ -7,7 +7,13 @@
 #include <chrono>
 #include <thread>
 #include <cstring>
+#include <csignal>
+#include <stdexcept>
+#include <algorithm>
 #include <map>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 #include <unistd.h>
 #include <sys/mman.h>
 
@@ -19,6 +25,21 @@ using namespace libcamera;
 using namespace std::chrono_literals;
 
 namespace picamera {
+
+// SIGINT/SIGTERM flag for graceful timelapse interruption.
+namespace {
+std::atomic<bool> g_stopRequested{false};
+void stopSignalHandler(int) { g_stopRequested.store(true); }
+void installStopHandler() {
+    g_stopRequested.store(false);
+    std::signal(SIGINT, stopSignalHandler);
+    std::signal(SIGTERM, stopSignalHandler);
+}
+void restoreStopHandler() {
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
+}
+} // namespace
 
 static const std::map<std::string, controls::AwbModeEnum> awbMap = {
     {"auto",         controls::AwbAuto},
@@ -112,19 +133,25 @@ bool CameraApp::capture(const std::string &filename) {
         std::cerr << "Failed to start camera\n";
         return false;
     }
+    started_ = true;
 
     // Queue all available buffers so AE/AWB can run continuously and converge.
-    // We discard the first `warmupFrames` completions, re-queuing their buffers,
-    // then save the next completed frame.
+    // We discard the first `warmupFrames` completions, re-queuing their buffers
+    // (re-applying controls, since reuse(ReuseBuffers) clears per-request
+    // controls), then save the next completed frame.
     const uint32_t warmup = config_.warmupFrames;
     uint32_t completed = 0;
     bool done = false;
     bool saved = false;
 
+    std::mutex mtx;
+    std::condition_variable cv;
+
     cam_->requestCompleted.connect(this, [&](Request *r) {
         if (r->status() != Request::RequestComplete) {
             std::cerr << "Request status: " << r->status() << "\n";
             r->reuse(Request::ReuseBuffers);
+            applyControls(r, config_);
             cam_->queueRequest(r);
             return;
         }
@@ -132,15 +159,20 @@ bool CameraApp::capture(const std::string &filename) {
         if (completed <= warmup) {
             // Warmup frame — discard and re-queue so AE/AWB keeps converging.
             r->reuse(Request::ReuseBuffers);
+            applyControls(r, config_);
             cam_->queueRequest(r);
             return;
         }
         // Converged frame — save it.
-        saved = saveFrame(r, filename);
-        done = true;
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            saved = saveFrame(r, filename);
+            done = true;
+        }
+        cv.notify_one();
     });
 
-    // Initial queue: one request per buffer, with controls applied to the first.
+    // Initial queue: one request per buffer, with controls applied to each.
     std::vector<std::unique_ptr<Request>> reqs;
     reqs.reserve(buffers.size());
     for (size_t i = 0; i < buffers.size(); ++i) {
@@ -148,66 +180,148 @@ bool CameraApp::capture(const std::string &filename) {
         if (!req) {
             std::cerr << "Failed to create Request\n";
             cam_->requestCompleted.disconnect();
-            cam_->stop();
+            stopCamera();
             return false;
         }
         req->addBuffer(stream_, buffers[i].get());
-        if (i == 0) applyControls(req.get(), config_);
+        applyControls(req.get(), config_);
         if (cam_->queueRequest(req.get())) {
             std::cerr << "Failed to queue Request\n";
             cam_->requestCompleted.disconnect();
-            cam_->stop();
+            stopCamera();
             return false;
         }
         reqs.push_back(std::move(req));
     }
 
     auto deadline = std::chrono::steady_clock::now() + 60s;
-    while (!done) {
-        if (std::chrono::steady_clock::now() > deadline) {
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        if (!cv.wait_until(lk, deadline, [&] { return done; })) {
             std::cerr << "Capture timed out (completed " << completed
                       << "/" << (warmup + 1) << " frames)\n";
             cam_->requestCompleted.disconnect();
-            cam_->stop();
+            stopCamera();
             return false;
         }
-        std::this_thread::sleep_for(5ms);
     }
 
     cam_->requestCompleted.disconnect();
-    cam_->stop();
+    stopCamera();
 
     if (!saved) std::cerr << "Failed to save frame\n";
     return saved;
 }
 
+// Build a timelapse filename from a user-supplied pattern.
+//
+// If the pattern contains a printf-style integer conversion (e.g. "%04d"),
+// the sequence index `i` is substituted. Otherwise the pattern is treated as
+// a strftime template and expanded with the current local time.
+//
+// Security: the printf path passes the user pattern to snprintf, so it must
+// contain ONLY integer conversions (`%d`/`%i`/`%u`/`%x`/`%X`/`%o`) and `%%`.
+// Any other `%` specifier (e.g. `%s`, `%n`, `%p`, or a strftime-style `%Y`)
+// mixed with an integer conversion is rejected — otherwise `%s`/`%n` would
+// read garbage off the stack. A pure strftime pattern (no integer conversion)
+// is safe because strftime only reads the struct tm we pass it.
+std::string formatTimelapseName(const std::string &pattern, int i) {
+    auto isPrintfInt = [](char conv) {
+        return conv == 'd' || conv == 'i' || conv == 'u' ||
+               conv == 'x' || conv == 'X' || conv == 'o';
+    };
+
+    bool hasIntConv = false;
+    bool hasOtherConv = false;  // any %-specifier that isn't an int conv or %%
+
+    for (size_t p = 0; p < pattern.size(); ++p) {
+        if (pattern[p] != '%') continue;
+        if (p + 1 >= pattern.size()) {
+            throw std::invalid_argument("output pattern ends with stray '%'");
+        }
+        char next = pattern[p + 1];
+        if (next == '%') { ++p; continue; }            // literal %
+        // Skip printf flags/width/precision: [-+ 0#]*[0-9]*.?[0-9]*
+        size_t q = p + 1;
+        while (q < pattern.size() &&
+               (pattern[q] == '-' || pattern[q] == '+' || pattern[q] == ' ' ||
+                pattern[q] == '0' || pattern[q] == '#' || pattern[q] == '.' ||
+                (pattern[q] >= '0' && pattern[q] <= '9'))) {
+            ++q;
+        }
+        if (q >= pattern.size()) {
+            throw std::invalid_argument("output pattern has incomplete '%...' specifier");
+        }
+        char conv = pattern[q];
+        if (isPrintfInt(conv)) {
+            hasIntConv = true;
+        } else {
+            hasOtherConv = true;
+        }
+        p = q;
+    }
+
+    if (hasIntConv && hasOtherConv) {
+        throw std::invalid_argument(
+            "output pattern mixes integer conversions with other '%...' specifiers; "
+            "use either a printf %%d-style pattern or a strftime pattern, not both");
+    }
+
+    if (hasIntConv) {
+        char buf[512];
+        int n = snprintf(buf, sizeof(buf), pattern.c_str(), i);
+        if (n < 0) throw std::runtime_error("snprintf failed on output pattern");
+        return std::string(buf, std::min<int>(n, static_cast<int>(sizeof(buf) - 1)));
+    }
+
+    char buf[512];
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm = *std::localtime(&t);
+    strftime(buf, sizeof(buf), pattern.c_str(), &tm);
+    return std::string(buf);
+}
+
 bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern) {
     bool infinite = (count == 0);
 
+    installStopHandler();
+
     for (int i = 0; infinite || i < count; ++i) {
-        char buf[512];
-        auto seqPos = pattern.find("%04d");
-        if (seqPos != std::string::npos) {
-            snprintf(buf, sizeof(buf), pattern.c_str(), i);
-        } else {
-            auto now = std::chrono::system_clock::now();
-            auto t = std::chrono::system_clock::to_time_t(now);
-            std::tm tm = *std::localtime(&t);
-            strftime(buf, sizeof(buf), pattern.c_str(), &tm);
+        if (g_stopRequested.load()) {
+            std::cerr << "\nTimelapse interrupted by signal after " << i
+                      << " shots\n";
+            break;
         }
 
+        std::string filename;
+        try {
+            filename = formatTimelapseName(pattern, i);
+        } catch (const std::exception &e) {
+            std::cerr << "Bad --output pattern: " << e.what() << "\n";
+            restoreStopHandler();
+            return false;
+        }
         std::cout << "[" << (i + 1) << (infinite ? "/inf" : "/" + std::to_string(count))
-                  << "] " << buf << "\n";
+                  << "] " << filename << "\n";
 
-        if (!capture(buf)) {
+        if (!capture(filename)) {
             std::cerr << "Capture failed at shot " << i << "\n";
+            restoreStopHandler();
             return false;
         }
 
-        if (infinite || i < count - 1) {
-            std::this_thread::sleep_for(std::chrono::seconds(intervalSec));
+        if ((infinite || i < count - 1) && !g_stopRequested.load()) {
+            // Sleep in small increments so a signal is noticed promptly.
+            auto end = std::chrono::steady_clock::now() + std::chrono::seconds(intervalSec);
+            while (std::chrono::steady_clock::now() < end) {
+                if (g_stopRequested.load()) break;
+                std::this_thread::sleep_for(200ms);
+            }
         }
     }
+
+    restoreStopHandler();
     return true;
 }
 
@@ -222,14 +336,28 @@ void CameraApp::listControls() {
 
     auto &props = cam_->properties();
     std::cout << "\n=== Properties ===\n";
+    const auto *propIdMap = props.idMap();
     for (auto &[id, val] : props) {
-        std::cout << "  prop:" << id << ": " << val.toString() << "\n";
+        std::string name = std::to_string(id);
+        if (propIdMap) {
+            auto it = propIdMap->find(id);
+            if (it != propIdMap->end() && it->second)
+                name = it->second->name();
+        }
+        std::cout << "  prop:" << name << ": " << val.toString() << "\n";
+    }
+}
+
+void CameraApp::stopCamera() {
+    if (started_ && cam_) {
+        cam_->stop();
+        started_ = false;
     }
 }
 
 void CameraApp::shutdown() {
+    stopCamera();
     if (cam_) {
-        cam_->stop();
         allocator_.reset();
         cam_->release();
         cam_.reset();
@@ -240,12 +368,20 @@ void CameraApp::shutdown() {
 void CameraApp::applyControls(Request *req, const CameraConfig &cfg) {
     auto &ctrls = req->controls();
 
-    if (!cfg.aeEnable) {
+    // If the user asked for a manual shutter or gain, AE must be off or
+    // libcamera will ignore ExposureTime/AnalogueGain. Auto-disable AE in
+    // that case so --shutter / --iso do what the user expects without
+    // requiring an explicit --ae-disable.
+    const bool manualExposure = !cfg.aeEnable || cfg.exposureTime > 0 ||
+                                cfg.analogueGain > 0.0f;
+    if (manualExposure) {
         ctrls.set(controls::AeEnable, false);
-        ctrls.set(controls::ExposureTime, cfg.exposureTime);
-    }
-    if (cfg.analogueGain > 0.0f) {
-        ctrls.set(controls::AnalogueGain, cfg.analogueGain);
+        if (cfg.exposureTime > 0) {
+            ctrls.set(controls::ExposureTime, cfg.exposureTime);
+        }
+        if (cfg.analogueGain > 0.0f) {
+            ctrls.set(controls::AnalogueGain, cfg.analogueGain);
+        }
     }
     if (cfg.digitalGain > 0.0f) {
         ctrls.set(controls::DigitalGain, cfg.digitalGain);
@@ -274,22 +410,33 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
     auto &sc = stream_->configuration();
     auto &yPlane = planes[0];
     auto &uvPlane = planes[1];
-    size_t bufLen = uvPlane.offset + uvPlane.length;
     uint32_t w = sc.size.width;
     uint32_t h = sc.size.height;
     uint32_t stride = sc.stride;
 
-    auto *map = static_cast<uint8_t *>(
-        mmap(nullptr, bufLen, PROT_READ, MAP_SHARED, yPlane.fd.get(), 0));
-    if (map == MAP_FAILED) {
-        std::cerr << "mmap failed: " << strerror(errno) << "\n";
+    // Map each plane through its own dmabuf fd. libcamera backends may put
+    // the two NV12 planes in the same dmabuf (Pi VC4) or in separate ones;
+    // mapping per-fd is correct in both cases.
+    auto mapPlane = [](const libcamera::FrameBuffer::Plane &pl, const char *what)
+        -> std::pair<uint8_t *, void *> {
+        void *base = mmap(nullptr, pl.offset + pl.length, PROT_READ,
+                          MAP_SHARED, pl.fd.get(), 0);
+        if (base == MAP_FAILED) {
+            std::cerr << "mmap " << what << " failed: " << strerror(errno) << "\n";
+            return {nullptr, nullptr};
+        }
+        return {static_cast<uint8_t *>(base) + pl.offset, base};
+    };
+
+    auto [yMap, yBase] = mapPlane(yPlane, "Y");
+    if (!yMap) return false;
+    auto [uvMap, uvBase] = mapPlane(uvPlane, "UV");
+    if (!uvMap) {
+        munmap(yBase, yPlane.offset + yPlane.length);
         return false;
     }
 
-    auto *yMap = map + yPlane.offset;
-    auto *uvMap = map + uvPlane.offset;
     bool ok = true;
-
     if (config_.format == OutputFormat::RAW_NV12) {
         size_t ySize = static_cast<size_t>(stride) * h;
         size_t uvSize = static_cast<size_t>(stride) * (h / 2);
@@ -320,7 +467,8 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
         }
     }
 
-    munmap(map, bufLen);
+    munmap(uvBase, uvPlane.offset + uvPlane.length);
+    munmap(yBase, yPlane.offset + yPlane.length);
     return ok;
 }
 

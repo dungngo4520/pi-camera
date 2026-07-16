@@ -7,7 +7,7 @@ namespace picamera {
 namespace {
 // Parse argv[i+1] into T; on error prints and returns false, advancing i.
 template <typename T, typename Conv>
-bool parseIntArg(const char *prog, int argc, char **argv, int &i,
+bool parseIntArg(int argc, char **argv, int &i,
                  const char *flag, Conv conv, T &out) {
     if (i + 1 >= argc) {
         std::cerr << flag << " requires a value\n";
@@ -36,6 +36,7 @@ void printUsage(const char *prog) {
               << "  --width <px>            Image width (default: 4056)\n"
               << "  --height <px>           Image height (default: 3040)\n"
               << "  --iso <gain>            Analogue gain (e.g. 1.0, 2.0, 4.0)\n"
+              << "  --digital-gain <gain>   Digital gain (e.g. 1.0, 2.0)\n"
               << "  --shutter <us>          Exposure time in microseconds\n"
               << "  --awb <mode>            White balance: auto, daylight, cloudy,\n"
               << "                          incandescent, tungsten, fluorescent, indoor\n"
@@ -60,29 +61,33 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             opts.mode = "list-controls";
         } else if (arg == "--timelapse") {
             opts.mode = "timelapse";
-            if (!parseIntArg(argv[0], argc, argv, i, "--timelapse",
+            if (!parseIntArg(argc, argv, i, "--timelapse",
                              [](const char *s) { return std::stoi(s); },
                              opts.timelapseInterval)) return false;
         } else if (arg == "--output") {
             if (i + 1 < argc) opts.outputPattern = argv[++i];
         } else if (arg == "--count") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--count",
+            if (!parseIntArg(argc, argv, i, "--count",
                              [](const char *s) { return std::stoi(s); },
                              opts.timelapseCount)) return false;
         } else if (arg == "--width") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--width",
+            if (!parseIntArg(argc, argv, i, "--width",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
                              cfg.width)) return false;
         } else if (arg == "--height") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--height",
+            if (!parseIntArg(argc, argv, i, "--height",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
                              cfg.height)) return false;
         } else if (arg == "--iso") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--iso",
+            if (!parseIntArg(argc, argv, i, "--iso",
                              [](const char *s) { return std::stof(s); },
                              cfg.analogueGain)) return false;
+        } else if (arg == "--digital-gain") {
+            if (!parseIntArg(argc, argv, i, "--digital-gain",
+                             [](const char *s) { return std::stof(s); },
+                             cfg.digitalGain)) return false;
         } else if (arg == "--shutter") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--shutter",
+            if (!parseIntArg(argc, argv, i, "--shutter",
                              [](const char *s) { return static_cast<uint64_t>(std::stoull(s)); },
                              cfg.exposureTime)) return false;
         } else if (arg == "--awb") {
@@ -103,7 +108,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         } else if (arg == "--awb-disable") {
             cfg.awbEnable = false;
         } else if (arg == "--warmup") {
-            if (!parseIntArg(argv[0], argc, argv, i, "--warmup",
+            if (!parseIntArg(argc, argv, i, "--warmup",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
                              cfg.warmupFrames)) return false;
         } else {

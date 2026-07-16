@@ -81,7 +81,7 @@ def capture_photo():
             [CAPTURE_SCRIPT, "--dir", PHOTO_DIR],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=90,
         )
         if result.returncode == 0:
             lines = [l for l in result.stdout.strip().split("\n") if l]

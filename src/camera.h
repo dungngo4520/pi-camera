@@ -40,12 +40,14 @@ public:
 private:
     void applyControls(libcamera::Request *req, const CameraConfig &cfg);
     bool saveFrame(const libcamera::Request *req, const std::string &filename);
+    void stopCamera();  // idempotent: stop + clear started_ flag
 
     std::shared_ptr<libcamera::CameraManager> cm_;
     std::shared_ptr<libcamera::Camera> cam_;
     std::unique_ptr<libcamera::FrameBufferAllocator> allocator_;
     libcamera::Stream *stream_ = nullptr;
     CameraConfig config_;
+    bool started_ = false;
 };
 
 }

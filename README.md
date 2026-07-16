@@ -115,8 +115,9 @@ Options:
 | `--count <n>` | `1` | Number of timelapse shots (`0` = infinite) |
 | `--width <px>` | `4056` | Image width |
 | `--height <px>` | `3040` | Image height |
-| `--iso <gain>` | auto | Analogue gain (e.g. `1.0`, `2.0`, `4.0`) |
-| `--shutter <us>` | auto | Exposure time in microseconds |
+| `--iso <gain>` | auto | Analogue gain (e.g. `1.0`, `2.0`, `4.0`). Setting this or `--shutter` auto-disables AE. |
+| `--digital-gain <gain>` | auto | Digital gain (e.g. `1.0`, `2.0`) |
+| `--shutter <us>` | auto | Exposure time in microseconds. Setting this or `--iso` auto-disables AE. |
 | `--awb <mode>` | `auto` | White balance: `auto`, `daylight`, `cloudy`, `incandescent`, `tungsten`, `fluorescent`, `indoor` |
 | `--ae-disable` | off | Disable auto exposure (use with `--shutter` / `--iso`) |
 | `--awb-disable` | off | Disable auto white balance |
@@ -131,8 +132,9 @@ Options:
 # Raw NV12 dump (Y + UV planes, no conversion)
 ./build/picamera --capture frame.raw --format raw
 
-# Manual exposure: ISO 2.0, 30 ms shutter
-./build/picamera --capture photo.ppm --iso 2.0 --shutter 30000 --ae-disable
+# Manual exposure: ISO 2.0, 30 ms shutter (--ae-disable is implicit when
+# --shutter or --iso is given)
+./build/picamera --capture photo.ppm --iso 2.0 --shutter 30000
 
 # 10-frame timelapse, one shot per minute, PNG
 ./build/picamera --timelapse 60 --count 10 \
@@ -141,6 +143,12 @@ Options:
 # Quick 1080p capture
 ./build/picamera --capture quick.ppm --width 1920 --height 1080
 ```
+
+### Timelapse `--output` patterns
+
+The `--output` pattern is either a printf-style integer template (containing a `%d`/`%04d`-style conversion, substituted with the shot index) or a `strftime` template (expanded with the current local time). The two styles cannot be mixed in one pattern — a pattern with both `%04d` and `%Y` is rejected. Only integer printf conversions are allowed in the printf path (`%s`, `%n`, `%p`, etc. are rejected) so a user-supplied pattern can't read garbage off the stack.
+
+Press `Ctrl-C` (SIGINT/SIGTERM) during a timelapse to stop gracefully after the current shot completes; the camera is released cleanly and no half-written frame is left behind.
 
 ### Output formats
 
@@ -209,7 +217,7 @@ sudo systemctl enable --now picamera-button
     ├── main.cpp           Entry point: parse args, init camera, dispatch mode
     ├── camera.{h,cpp}     CameraApp: init/configure/capture/timelapse/listControls
     ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
-    ├── image.{h,cpp}      NV12 -> RGB24 conversion (scalar, BT.601 full-range)
+    ├── image.{h,cpp}      NV12 -> RGB24 conversion (scalar, BT.601 limited-range)
     └── output.{h,cpp}     PPM / PNG / raw NV12 writers (stream-state verified)
 ```
 
