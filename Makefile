@@ -1,17 +1,33 @@
-PI_HOST ? raspberrypi.local
-PI_USER ? pi
+PI_HOST ?= raspberrypi.local
+PI_USER ?= pi
 PI_REMOTE := $(PI_USER)@$(PI_HOST)
 PI_DIR    := ~/camera
 
-.PHONY: all build clean flash ssh deploy remote-build remote-run remote-clean cross-build cross-deploy
+.PHONY: all build clean flash ssh deploy remote-build remote-run remote-clean cross-build cross-deploy test test-sanitize tidy asan
 
 all: build
 
 build:
-	mkdir -p build && cd build && cmake .. && make -j$$(nproc)
+	mkdir -p build && cd build && cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON .. && make -j$$(nproc)
 
 clean:
-	rm -rf build
+	rm -rf build build-san
+
+# Build + run unit tests (no sanitizers).
+test: build
+	cd build && ctest --output-on-failure
+
+# Build + run unit tests under ASan + UBSan with leak detection.
+test-sanitize: asan
+	cd build-san && ASAN_OPTIONS=detect_leaks=1 ./picamera_tests
+
+# Debug build with sanitizers enabled (PICAMERA_ENABLE_SANITIZERS=ON).
+asan:
+	mkdir -p build-san && cd build-san && cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICAMERA_ENABLE_SANITIZERS=ON .. && make -j$$(nproc) picamera_tests
+
+# Run clang-tidy on all src/ files, ignoring system-header warnings.
+tidy: build
+	@clang-tidy -p build src/*.cpp 2>&1 | grep -v "libcamera\|png.h\|cstddef\|generated" || true
 
 flash:
 	@echo "=== Flash Pi OS via USB (rpiboot) ==="

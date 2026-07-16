@@ -1,0 +1,78 @@
+#include "test_runner.h"
+#include "image.h"
+
+#include <cstring>
+#include <vector>
+
+using namespace picamera;
+
+namespace {
+
+// Build a tiny NV12 frame and check nv12ToRgb against a hand-computed result.
+// 4x2 image, stride 4. Grey (Y=128, U=V=128) should map to RGB(128,128,128)
+// under BT.601 limited-range: C = 128-16 = 112; R = (298*112 + 0 + 128)>>8 = 33464>>8 = 130.
+// Wait — let's compute precisely and assert against the function rather than
+// hand-rolling the math, to verify the *relationship* (chroma neutrality, Y
+// monotonicity, range clamping) rather than magic constants.
+TEST(nv12_grey_is_neutral) {
+    const uint32_t w = 4, h = 2, stride = 4;
+    // Y plane: all 128 (mid-grey limited-range). UV: 128,128 (neutral chroma).
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+    // With neutral chroma, R == G == B for every pixel.
+    for (uint32_t p = 0; p < w * h; ++p) {
+        CHECK_EQ(rgb[p * 3 + 0], rgb[p * 3 + 1]);
+        CHECK_EQ(rgb[p * 3 + 1], rgb[p * 3 + 2]);
+    }
+}
+
+TEST(nv12_y_monotonic) {
+    // Increasing Y must not decrease any RGB channel (with neutral chroma).
+    const uint32_t w = 2, h = 2, stride = 2;
+    std::vector<uint8_t> y = {16, 235,  16, 235};   // left col dark, right col bright
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    // pixel (0,0) dark, pixel (1,0) bright — R must increase.
+    CHECK(rgb[3] > rgb[0]);   // R of pixel 1 > R of pixel 0
+    CHECK(rgb[4] > rgb[1]);   // G
+    CHECK(rgb[5] > rgb[2]);   // B
+}
+
+TEST(nv12_extreme_values_no_garbage) {
+    // Y = 255, U = 255, V = 255 — extreme inputs. With Y at max the luma
+    // term dominates R (clamps to 255); G and B get large negative chroma
+    // offsets so they land lower. Just verify R is saturated and nothing
+    // is garbage (all-zero would indicate an underflow bug).
+    const uint32_t w = 2, h = 2, stride = 2;
+    std::vector<uint8_t> y(stride * h, 255);
+    std::vector<uint8_t> uv = {255, 255, 255, 255};
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    CHECK(rgb[0] == 255);   // R saturated
+    CHECK(rgb[1] < rgb[0]); // G < R (negative chroma offset)
+}
+
+TEST(nv12_odd_dimensions_handled) {
+    // 3x3 (odd width and height) — the inner loops guard yRow+dy<h and x+dx<w.
+    // NV12 UV plane has ceil(h/2) rows, so for h=3 that's 2 UV rows.
+    const uint32_t w = 3, h = 3, stride = 4;  // stride > w is realistic
+    std::vector<uint8_t> y(stride * h, 64);
+    std::vector<uint8_t> uv(stride * ((h + 1) / 2), 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+    // No out-of-bounds read happened (would crash under ASan). Uniform input
+    // -> uniform output: last pixel equals first.
+    CHECK(rgb[rgb.size() - 1] == rgb[0]);
+}
+
+TEST(nv12_red_bias_with_positive_v) {
+    // V > 128 biases toward red; U = 128 neutral. So R > B for a mid-grey Y.
+    const uint32_t w = 2, h = 2, stride = 2;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv = {128, 200, 128, 200};  // U=128, V=200
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    CHECK(rgb[0] > rgb[2]);   // R > B at pixel (0,0)
+}
+
+} // namespace

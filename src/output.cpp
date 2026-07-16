@@ -36,7 +36,7 @@ bool writePng(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h) {
 
     std::vector<png_bytep> rows(h);
     for (uint32_t y = 0; y < h; ++y)
-        rows[y] = const_cast<png_bytep>(rgb + y * w * 3);
+        rows[y] = const_cast<png_bytep>(rgb + static_cast<size_t>(y) * w * 3);
 
     png_write_image(png, rows.data());
     png_write_end(png, nullptr);

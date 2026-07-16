@@ -202,22 +202,46 @@ sudo systemctl enable --now picamera-button
 
 `make flash` prints step-by-step instructions for flashing Raspberry Pi OS via `rpiboot` (USB mass-storage mode) and configuring SSH + WiFi + the IMX477 overlay on the boot partition. You'll need to copy `config/wpa_supplicant.conf.example` to `config/wpa_supplicant.conf` and edit it with your WiFi credentials first — the real file is gitignored.
 
+## Testing
+
+Unit tests cover the pure-logic parts of the codebase (no camera hardware needed): NV12→RGB conversion, CLI argument parsing, the output writers (PPM/PNG/raw round-trip), and the timelapse filename-pattern validator (including the format-string-vulnerability rejections).
+
+```bash
+make test             # build + run unit tests (ctest)
+make test-sanitize    # build + run under ASan + UBSan with leak detection
+make tidy             # run clang-tidy on src/ (ignores system-header warnings)
+```
+
+The test binary (`build/picamera_tests`) uses a tiny hand-rolled runner in `tests/test_runner.h` — no external test framework dependency. Sanitizers are opt-in via the CMake option `-DPICAMERA_ENABLE_SANITIZERS=ON`.
+
+CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + clang-tidy on x86-64, and a Docker cross-build for aarch64 (uploading `picamera-arm64` as an artifact).
+
 ## Project layout
 
 ```
 .
 ├── CMakeLists.txt         CMake build (C++20, libcamera + libpng via pkg-config)
-├── Makefile               build / clean / deploy / remote-build / remote-run / flash
+├── Makefile               build / clean / test / test-sanitize / tidy / deploy / cross-build / flash
+├── .clang-tidy            clang-tidy checks (correctness-focused, style noise disabled)
+├── .github/workflows/ci.yml  CI: build+test+sanitize+tidy (x86-64) + cross-build (aarch64)
 ├── config/
 │   └── wpa_supplicant.conf.example   WiFi config template (copy + edit before flashing)
 ├── scripts/
 │   ├── button-daemon.py   GPIO17 button watcher -> capture.sh, with ACT LED feedback
 │   └── capture.sh         Wrapper: picks resolution, timestamps filename, reports size
+├── tests/
+│   ├── test_runner.h      Minimal test framework (TEST/CHECK/REQUIRE, no deps)
+│   ├── test_main.cpp      Runner: executes all registered tests
+│   ├── test_image.cpp     NV12->RGB conversion tests
+│   ├── test_output.cpp    PPM / PNG / raw writer round-trip tests
+│   ├── test_cli.cpp       Argument parsing tests
+│   └── test_timelapse.cpp Filename pattern validation tests
 └── src/
     ├── main.cpp           Entry point: parse args, init camera, dispatch mode
     ├── camera.{h,cpp}     CameraApp: init/configure/capture/timelapse/listControls
     ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
     ├── image.{h,cpp}      NV12 -> RGB24 conversion (scalar, BT.601 limited-range)
+    ├── timelapse.{h,cpp}  Filename pattern formatting + validation
     └── output.{h,cpp}     PPM / PNG / raw NV12 writers (stream-state verified)
 ```
 

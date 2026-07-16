@@ -1,4 +1,5 @@
 build/
+build-san/
 *.ppm
 *.png
 *.raw

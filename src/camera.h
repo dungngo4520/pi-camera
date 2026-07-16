@@ -38,7 +38,7 @@ public:
     void shutdown();
 
 private:
-    void applyControls(libcamera::Request *req, const CameraConfig &cfg);
+    static void applyControls(libcamera::Request *req, const CameraConfig &cfg);
     bool saveFrame(const libcamera::Request *req, const std::string &filename);
     void stopCamera();  // idempotent: stop + clear started_ flag
 

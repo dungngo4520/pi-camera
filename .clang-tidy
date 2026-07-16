@@ -1,0 +1,43 @@
+# clang-tidy config for picamera.
+# Focused on correctness and modern C++20 — not style pedantry.
+# Noisy style checks are disabled; enable them file-by-file when refactoring.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-slicing,
+  misc-*,
+  performance-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -cert-err33-c,
+  -cert-err52-cpp,
+  -cert-err58-cpp,
+  -cert-oop54-cpp,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-use-internal-linkage,
+  -performance-enum-size,
+  -performance-no-int-to-ptr-cast,
+  -readability-avoid-nested-conditional-operator,
+  -readability-braces-around-statements,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-implicit-bool-conversion,
+  -readability-inconsistent-ifelse-braces,
+  -readability-magic-numbers,
+  -readability-math-missing-parentheses,
+  -readability-named-parameter,
+  -readability-simplify-boolean-expr,
+  -readability-uppercase-literal-suffix,
+  -cppcoreguidelines-pro-type-cstyle-cast
+
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/.*'
+FormatStyle: file
+
+

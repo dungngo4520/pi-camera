@@ -1,6 +1,7 @@
 #include "camera.h"
 #include "image.h"
 #include "output.h"
+#include "timelapse.h"
 
 #include <iostream>
 #include <fstream>
@@ -9,8 +10,9 @@
 #include <cstring>
 #include <csignal>
 #include <stdexcept>
-#include <algorithm>
-#include <map>
+#include <array>
+#include <optional>
+#include <string_view>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -39,9 +41,15 @@ void restoreStopHandler() {
     std::signal(SIGINT, SIG_DFL);
     std::signal(SIGTERM, SIG_DFL);
 }
-} // namespace
 
-static const std::map<std::string, controls::AwbModeEnum> awbMap = {
+// AWB mode name -> enum. A plain array of pairs avoids the heap allocation
+// (and potential throwing) of a std::map with static storage duration; linear
+// search over 7 entries is faster than a map lookup anyway.
+struct AwbEntry {
+    const char *name;
+    controls::AwbModeEnum mode;
+};
+constexpr AwbEntry awbTable[] = {
     {"auto",         controls::AwbAuto},
     {"incandescent", controls::AwbIncandescent},
     {"tungsten",     controls::AwbTungsten},
@@ -50,6 +58,14 @@ static const std::map<std::string, controls::AwbModeEnum> awbMap = {
     {"daylight",     controls::AwbDaylight},
     {"cloudy",       controls::AwbCloudy},
 };
+
+std::optional<controls::AwbModeEnum> lookupAwb(std::string_view name) {
+    for (const auto &e : awbTable) {
+        if (name == e.name) return e.mode;
+    }
+    return std::nullopt;
+}
+} // namespace
 
 CameraApp::CameraApp() = default;
 CameraApp::~CameraApp() { shutdown(); }
@@ -126,7 +142,7 @@ bool CameraApp::capture(const std::string &filename) {
         return false;
     }
 
-    auto &buffers = allocator_->buffers(stream_);
+    const auto &buffers = allocator_->buffers(stream_);
     if (buffers.empty()) return false;
 
     if (cam_->start()) {
@@ -213,75 +229,6 @@ bool CameraApp::capture(const std::string &filename) {
     return saved;
 }
 
-// Build a timelapse filename from a user-supplied pattern.
-//
-// If the pattern contains a printf-style integer conversion (e.g. "%04d"),
-// the sequence index `i` is substituted. Otherwise the pattern is treated as
-// a strftime template and expanded with the current local time.
-//
-// Security: the printf path passes the user pattern to snprintf, so it must
-// contain ONLY integer conversions (`%d`/`%i`/`%u`/`%x`/`%X`/`%o`) and `%%`.
-// Any other `%` specifier (e.g. `%s`, `%n`, `%p`, or a strftime-style `%Y`)
-// mixed with an integer conversion is rejected — otherwise `%s`/`%n` would
-// read garbage off the stack. A pure strftime pattern (no integer conversion)
-// is safe because strftime only reads the struct tm we pass it.
-std::string formatTimelapseName(const std::string &pattern, int i) {
-    auto isPrintfInt = [](char conv) {
-        return conv == 'd' || conv == 'i' || conv == 'u' ||
-               conv == 'x' || conv == 'X' || conv == 'o';
-    };
-
-    bool hasIntConv = false;
-    bool hasOtherConv = false;  // any %-specifier that isn't an int conv or %%
-
-    for (size_t p = 0; p < pattern.size(); ++p) {
-        if (pattern[p] != '%') continue;
-        if (p + 1 >= pattern.size()) {
-            throw std::invalid_argument("output pattern ends with stray '%'");
-        }
-        char next = pattern[p + 1];
-        if (next == '%') { ++p; continue; }            // literal %
-        // Skip printf flags/width/precision: [-+ 0#]*[0-9]*.?[0-9]*
-        size_t q = p + 1;
-        while (q < pattern.size() &&
-               (pattern[q] == '-' || pattern[q] == '+' || pattern[q] == ' ' ||
-                pattern[q] == '0' || pattern[q] == '#' || pattern[q] == '.' ||
-                (pattern[q] >= '0' && pattern[q] <= '9'))) {
-            ++q;
-        }
-        if (q >= pattern.size()) {
-            throw std::invalid_argument("output pattern has incomplete '%...' specifier");
-        }
-        char conv = pattern[q];
-        if (isPrintfInt(conv)) {
-            hasIntConv = true;
-        } else {
-            hasOtherConv = true;
-        }
-        p = q;
-    }
-
-    if (hasIntConv && hasOtherConv) {
-        throw std::invalid_argument(
-            "output pattern mixes integer conversions with other '%...' specifiers; "
-            "use either a printf %%d-style pattern or a strftime pattern, not both");
-    }
-
-    if (hasIntConv) {
-        char buf[512];
-        int n = snprintf(buf, sizeof(buf), pattern.c_str(), i);
-        if (n < 0) throw std::runtime_error("snprintf failed on output pattern");
-        return std::string(buf, std::min<int>(n, static_cast<int>(sizeof(buf) - 1)));
-    }
-
-    char buf[512];
-    auto now = std::chrono::system_clock::now();
-    auto t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm = *std::localtime(&t);
-    strftime(buf, sizeof(buf), pattern.c_str(), &tm);
-    return std::string(buf);
-}
-
 bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern) {
     bool infinite = (count == 0);
 
@@ -328,16 +275,16 @@ bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern
 void CameraApp::listControls() {
     if (!cam_) return;
 
-    auto &controls = cam_->controls();
+    const auto &controls = cam_->controls();
     std::cout << "=== Controls ===\n";
-    for (auto &[id, info] : controls) {
+    for (const auto &[id, info] : controls) {
         std::cout << "  " << id->name() << ": " << info.toString() << "\n";
     }
 
-    auto &props = cam_->properties();
+    const auto &props = cam_->properties();
     std::cout << "\n=== Properties ===\n";
     const auto *propIdMap = props.idMap();
-    for (auto &[id, val] : props) {
+    for (const auto &[id, val] : props) {
         std::string name = std::to_string(id);
         if (propIdMap) {
             auto it = propIdMap->find(id);
@@ -389,27 +336,26 @@ void CameraApp::applyControls(Request *req, const CameraConfig &cfg) {
     if (!cfg.awbEnable) {
         ctrls.set(controls::AwbEnable, false);
     } else {
-        auto it = awbMap.find(cfg.awbMode);
-        if (it != awbMap.end()) {
-            ctrls.set(controls::AwbMode, it->second);
+        if (auto mode = lookupAwb(cfg.awbMode)) {
+            ctrls.set(controls::AwbMode, *mode);
         }
     }
 }
 
 bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
-    auto &buffers = req->buffers();
+    const auto &buffers = req->buffers();
     if (buffers.empty()) return false;
 
-    auto &[stream, buffer] = *buffers.begin();
+    const auto &[stream, buffer] = *buffers.begin();
     auto planes = buffer->planes();
     if (planes.size() < 2) {
         std::cerr << "Expected >=2 planes (NV12), got " << planes.size() << "\n";
         return false;
     }
 
-    auto &sc = stream_->configuration();
-    auto &yPlane = planes[0];
-    auto &uvPlane = planes[1];
+    const auto &sc = stream_->configuration();
+    const auto &yPlane = planes[0];
+    const auto &uvPlane = planes[1];
     uint32_t w = sc.size.width;
     uint32_t h = sc.size.height;
     uint32_t stride = sc.stride;

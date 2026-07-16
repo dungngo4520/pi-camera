@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Native build + unit tests + sanitizers on x86_64. This is the fast
+  # feedback loop — no camera hardware, no cross-compilation.
+  build-and-test:
+    name: Build, test, sanitize (x86-64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libcamera-dev libpng-dev \
+            clang clang-tidy
+
+      - name: Configure (Debug + sanitizers + compile_commands.json)
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DPICAMERA_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run unit tests (ASan + UBSan)
+        env:
+          ASAN_OPTIONS: detect_leaks=1,abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          ./build/picamera_tests
+          ctest --test-dir build --output-on-failure
+
+      - name: clang-tidy
+        run: |
+          set +e
+          clang-tidy -p build src/*.cpp 2>&1 | tee tidy.log
+          # Filter out warnings from system headers (libcamera/png) — only
+          # fail on warnings originating in our src/ files. clang-tidy emits
+          # absolute paths from compile_commands.json, so match on the
+          # trailing /src/...cpp path component.
+          if grep -E "/src/[^/]+\.cpp:[0-9]+:[0-9]+: warning:" \
+             <(grep -v "libcamera\|png.h\|cstddef\|generated" tidy.log); then
+            echo "clang-tidy found warnings in src/"
+            exit 1
+          fi
+
+  # Cross-build for aarch64 (Raspberry Pi) in Docker — verifies the binary
+  # builds for the actual target. No tests (no ARM camera hardware in CI).
+  cross-build:
+    name: Cross-build (aarch64, Docker)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cross-build picamera-arm64
+        run: ./scripts/cross-build.sh
+
+      - name: Verify binary
+        run: |
+          file ./picamera-arm64
+          # Confirm it's an aarch64 ELF.
+          if ! file ./picamera-arm64 | grep -q "ELF 64-bit LSB.*ARM aarch64"; then
+            echo "Binary is not aarch64!"
+            exit 1
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picamera-arm64
+          path: picamera-arm64
+          if-no-files-found: error
