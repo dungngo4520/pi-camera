@@ -120,6 +120,38 @@ TEST(write_to_unwritable_path_fails) {
     CHECK(!writePpm(rgb.data(), rgb.size(), 1, 1, "/nonexistent_dir_xyz/file.ppm"));
     CHECK(!writePng("/nonexistent_dir_xyz/file.png", rgb.data(), 1, 1));
     CHECK(!writeRaw(rgb.data(), 3, rgb.data(), 3, "/nonexistent_dir_xyz/file.raw"));
+    CHECK(!writeJpeg(rgb.data(), 3, "/nonexistent_dir_xyz/file.jpg"));
+}
+
+TEST(png_compression_level_affects_size) {
+    // A 16x16 solid-color image compresses much smaller at level 9 than 0.
+    const uint32_t w = 16, h = 16;
+    std::vector<uint8_t> rgb(w * h * 3, 128);  // uniform grey
+    std::string path0 = tmpPath(".png");
+    std::string path9 = tmpPath(".png");
+    CHECK(writePng(path0.c_str(), rgb.data(), w, h, 0));  // no compression
+    CHECK(writePng(path9.c_str(), rgb.data(), w, h, 9));  // max compression
+    size_t sz0 = std::ifstream(path0, std::ios::binary | std::ios::ate).tellg();
+    size_t sz9 = std::ifstream(path9, std::ios::binary | std::ios::ate).tellg();
+    // Level 9 should produce a strictly smaller file for uniform input.
+    CHECK(sz9 < sz0);
+    unlink(path0.c_str());
+    unlink(path9.c_str());
+}
+
+TEST(jpeg_write_roundtrip) {
+    // writeJpeg just writes raw bytes to disk; verify the bytes match.
+    std::vector<uint8_t> fakeJpeg = {0xFF, 0xD8, 0xFF, 0xE0,
+                                      0x00, 0x10, 'J', 'F', 'I', 'F',
+                                      0xFF, 0xD9};
+    std::string path = tmpPath(".jpg");
+    CHECK(writeJpeg(fakeJpeg.data(), fakeJpeg.size(), path));
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    std::vector<uint8_t> got(fakeJpeg.size());
+    in.read(reinterpret_cast<char *>(got.data()), got.size());
+    CHECK(got == fakeJpeg);
+    unlink(path.c_str());
 }
 
 } // namespace

@@ -10,6 +10,7 @@ enum class OutputFormat {
     PPM,
     RAW_NV12,
     PNG,
+    JPEG,  // ISP hardware-encoded MJPEG (Pi only); buffer is a complete JPEG
 };
 
 struct CameraConfig {
@@ -23,6 +24,7 @@ struct CameraConfig {
     bool awbEnable = true;
     OutputFormat format = OutputFormat::PPM;
     uint32_t warmupFrames = 8;  // frames to let AE/AWB converge before saving
+    int pngLevel = 6;  // zlib compression level for PNG (0=none, 1=fast, 6=default, 9=best)
 };
 
 class CameraApp {

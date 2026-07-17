@@ -75,4 +75,52 @@ TEST(nv12_red_bias_with_positive_v) {
     CHECK(rgb[0] > rgb[2]);   // R > B at pixel (0,0)
 }
 
+TEST(nv12_large_image_multithreaded) {
+    // 64x32 image — large enough to trigger the multi-threaded path
+    // (h >= 8, hardware_concurrency() > 1 on most systems). Uses a simple
+    // Y gradient + neutral chroma so every pixel has R==G==B and the value
+    // depends only on Y. This verifies the threaded strip boundaries don't
+    // corrupt pixels or drop rows.
+    const uint32_t w = 64, h = 32, stride = 64;
+    std::vector<uint8_t> y(stride * h);
+    for (uint32_t r = 0; r < h; ++r)
+        for (uint32_t c = 0; c < w; ++c)
+            y[r * stride + c] = static_cast<uint8_t>(16 + (r * w + c) % 220);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);  // neutral chroma
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+
+    // With neutral chroma, R==G==B for every pixel. Verify this holds across
+    // all thread-strip boundaries (rows 0, 16, 32 if 2 threads; etc.).
+    for (uint32_t p = 0; p < w * h; ++p) {
+        CHECK_EQ(rgb[p * 3 + 0], rgb[p * 3 + 1]);
+        CHECK_EQ(rgb[p * 3 + 1], rgb[p * 3 + 2]);
+    }
+
+    // Verify a few specific pixels against the scalar formula.
+    // Pixel (0,0): Y=16, C=0, R=G=B=(298*0+0+128)>>8 = 0.
+    CHECK_EQ(rgb[0], 0u);
+    // Pixel (0,1): Y=17, C=1, R=(298*1+128)>>8 = 426>>8 = 1.
+    CHECK_EQ(rgb[3], 1u);
+}
+
+TEST(nv12_large_image_odd_dimensions) {
+    // 65x33 — odd width and height, large enough for threading. Verifies
+    // the NEON remainder path and the last-odd-row handling both work under
+    // threading.
+    const uint32_t w = 65, h = 33, stride = 66;  // stride > w
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * ((h + 1) / 2), 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+    // Uniform grey input -> uniform output. Check first, last, and a
+    // boundary row.
+    uint8_t first = rgb[0];
+    uint8_t last = rgb[rgb.size() - 1];
+    CHECK_EQ(first, last);
+    // A mid-boundary pixel (row 16, col 32).
+    size_t mid = (static_cast<size_t>(16) * w + 32) * 3;
+    CHECK_EQ(rgb[mid], first);
+}
+
 } // namespace

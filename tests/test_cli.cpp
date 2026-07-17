@@ -57,10 +57,33 @@ TEST(cli_format_raw) {
     CHECK(cfg.format == OutputFormat::RAW_NV12);
 }
 
+TEST(cli_format_jpeg_accepted) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "jpeg"}, opts, cfg));
+    CHECK(cfg.format == OutputFormat::JPEG);
+    // "jpg" alias should also work.
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "jpg"}, opts, cfg));
+    CHECK(cfg.format == OutputFormat::JPEG);
+}
+
 TEST(cli_format_invalid_rejected) {
     CliOptions opts;
     CameraConfig cfg;
-    CHECK(!runParse({"picamera", "--capture", "x", "--format", "jpeg"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--capture", "x", "--format", "tiff"}, opts, cfg));
+}
+
+TEST(cli_png_level_validated) {
+    CliOptions opts;
+    CameraConfig cfg;
+    // Valid levels 0-9.
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "1"}, opts, cfg));
+    CHECK_EQ(cfg.pngLevel, 1);
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "9"}, opts, cfg));
+    CHECK_EQ(cfg.pngLevel, 9);
+    // Out of range.
+    CHECK(!runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "10"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "-1"}, opts, cfg));
 }
 
 TEST(cli_unknown_flag_rejected) {

@@ -107,7 +107,11 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     auto &sc = camCfg->at(0);
     sc.size.width = cfg.width;
     sc.size.height = cfg.height;
-    sc.pixelFormat = formats::NV12;
+    // JPEG output uses the Pi ISP's hardware MJPEG encoder — the buffer
+    // contains a complete JPEG bitstream, no NV12->RGB conversion needed.
+    // Everything else uses NV12 and converts in software.
+    sc.pixelFormat = (cfg.format == OutputFormat::JPEG) ? formats::MJPEG
+                                                        : formats::NV12;
     sc.bufferCount = 4;
 
     auto status = camCfg->validate();
@@ -348,16 +352,55 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
 
     const auto &[stream, buffer] = *buffers.begin();
     auto planes = buffer->planes();
+    if (planes.empty()) {
+        std::cerr << "No planes in buffer\n";
+        return false;
+    }
+
+    const auto &sc = stream_->configuration();
+    uint32_t w = sc.size.width;
+    uint32_t h = sc.size.height;
+
+    // --- JPEG path: single-plane MJPEG bitstream, write directly. ---
+    // The Pi ISP hardware-encodes the JPEG; the buffer is a complete JPEG
+    // file. No NV12->RGB conversion, no software encode — just mmap + write.
+    if (config_.format == OutputFormat::JPEG) {
+        const auto &plane = planes[0];
+        void *base = mmap(nullptr, plane.offset + plane.length, PROT_READ,
+                          MAP_SHARED, plane.fd.get(), 0);
+        if (base == MAP_FAILED) {
+            std::cerr << "mmap JPEG failed: " << strerror(errno) << "\n";
+            return false;
+        }
+        auto *data = static_cast<uint8_t *>(base) + plane.offset;
+        // MJPEG buffers may be padded; use the JPEG end marker (FFD9) to
+        // find the real end if the plane length exceeds it.
+        size_t writeLen = plane.length;
+        for (size_t i = 0; i + 1 < plane.length; ++i) {
+            if (data[i] == 0xFF && data[i + 1] == 0xD9) {
+                writeLen = i + 2;
+                break;
+            }
+        }
+        bool ok = writeJpeg(data, writeLen, filename);
+        munmap(base, plane.offset + plane.length);
+        if (ok) {
+            std::cout << "Saved JPEG: " << filename << " (" << w << "x" << h
+                      << ") " << writeLen << " bytes\n";
+        } else {
+            std::cerr << "Failed to write JPEG: " << filename << "\n";
+        }
+        return ok;
+    }
+
+    // --- NV12 path: 2 planes, convert to RGB then encode. ---
     if (planes.size() < 2) {
         std::cerr << "Expected >=2 planes (NV12), got " << planes.size() << "\n";
         return false;
     }
 
-    const auto &sc = stream_->configuration();
     const auto &yPlane = planes[0];
     const auto &uvPlane = planes[1];
-    uint32_t w = sc.size.width;
-    uint32_t h = sc.size.height;
     uint32_t stride = sc.stride;
 
     // Map each plane through its own dmabuf fd. libcamera backends may put
@@ -396,7 +439,7 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
         if (rgb.empty()) {
             ok = false;
         } else if (config_.format == OutputFormat::PNG) {
-            ok = writePng(filename.c_str(), rgb.data(), w, h);
+            ok = writePng(filename.c_str(), rgb.data(), w, h, config_.pngLevel);
             if (ok)
                 std::cout << "Saved PNG: " << filename
                           << " (" << w << "x" << h << ")\n";

@@ -8,7 +8,8 @@
 
 namespace picamera {
 
-bool writePng(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h) {
+bool writePng(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h,
+              int compressionLevel) {
     FILE *fp = fopen(path, "wb");
     if (!fp) return false;
 
@@ -26,6 +27,16 @@ bool writePng(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h) {
         png_destroy_write_struct(&png, &info);
         fclose(fp);
         return false;
+    }
+
+    // Compression level: 0=none, 1=fastest, 6=zlib default, 9=best.
+    // Lower levels trade ~15% larger files for ~2x faster encode — useful
+    // on the Pi Zero where PNG encode dominates capture time.
+    png_set_compression_level(png, compressionLevel);
+    // Filter heuristic: let libpng pick the best filter per row (default).
+    // For maximum speed use PNG_FILTER_NONE; for best ratio use PNG_ALL_FILTERS.
+    if (compressionLevel <= 1) {
+        png_set_filter(png, PNG_FILTER_TYPE_BASE, PNG_FILTER_NONE);
     }
 
     png_init_io(png, fp);
@@ -59,6 +70,16 @@ bool writeRaw(const uint8_t *y, size_t ySize, const uint8_t *uv, size_t uvSize, 
     if (!out) return false;
     out.write(reinterpret_cast<const char *>(y), static_cast<std::streamsize>(ySize));
     out.write(reinterpret_cast<const char *>(uv), static_cast<std::streamsize>(uvSize));
+    out.flush();
+    return out.good();
+}
+
+bool writeJpeg(const uint8_t *data, size_t size, const std::string &path) {
+    // The Pi ISP produces a complete JPEG bitstream in the MJPEG buffer;
+    // we just write it to disk. No software encode needed.
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
     out.flush();
     return out.good();
 }

@@ -30,7 +30,9 @@ void printUsage(const char *prog) {
               << "  " << prog << " --list-controls               List camera controls\n"
               << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n\n"
               << "Options:\n"
-              << "  --format <type>         Output format: ppm, raw, png (default: ppm)\n"
+              << "  --format <type>         Output format: ppm, raw, png, jpeg (default: ppm)\n"
+              << "                          jpeg = ISP hardware-encoded (Pi only), ~10x faster\n"
+              << "  --png-level <0-9>       PNG compression level (0=none, 1=fast, 6=default, 9=best)\n"
               << "  --output <pattern>      Output filename pattern (default: capture_%04d.ppm)\n"
               << "  --count <n>             Number of shots (0 = infinite)\n"
               << "  --width <px>            Image width (default: 4056)\n"
@@ -45,6 +47,7 @@ void printUsage(const char *prog) {
               << "  --warmup <n>            Frames to let AE/AWB converge (default: 8)\n\n"
               << "Examples:\n"
               << "  " << prog << " --capture photo.png --format png\n"
+              << "  " << prog << " --capture photo.jpg --format jpeg       (ISP hardware encode, ~10x faster)\n"
               << "  " << prog << " --capture photo.raw --format raw\n"
               << "  " << prog << " --capture photo.ppm --iso 2.0 --shutter 30000\n"
               << "  " << prog << " --timelapse 60 --count 10 --output timelapse_%04d.png --format png\n";
@@ -100,10 +103,21 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
                 if (fmt == "ppm")       cfg.format = OutputFormat::PPM;
                 else if (fmt == "raw")  cfg.format = OutputFormat::RAW_NV12;
                 else if (fmt == "png")  cfg.format = OutputFormat::PNG;
+                else if (fmt == "jpeg" || fmt == "jpg")
+                                            cfg.format = OutputFormat::JPEG;
                 else {
-                    std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png)\n";
+                    std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg)\n";
                     return false;
                 }
+            }
+        } else if (arg == "--png-level") {
+            if (!parseIntArg(argc, argv, i, "--png-level",
+                             [](const char *s) { return std::stoi(s); },
+                             cfg.pngLevel))
+                return false;
+            if (cfg.pngLevel < 0 || cfg.pngLevel > 9) {
+                std::cerr << "--png-level must be 0-9, got " << cfg.pngLevel << "\n";
+                return false;
             }
         } else if (arg == "--awb-disable") {
             cfg.awbEnable = false;
