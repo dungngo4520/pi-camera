@@ -15,6 +15,7 @@ add_executable(picamera
     src/image.cpp
     src/output.cpp
     src/timelapse.cpp
+    src/dng.cpp
 )
 
 target_include_directories(picamera PRIVATE
@@ -61,10 +62,12 @@ if(PICAMERA_BUILD_TESTS)
         tests/test_output.cpp
         tests/test_cli.cpp
         tests/test_timelapse.cpp
+        tests/test_dng.cpp
         src/image.cpp
         src/output.cpp
         src/cli.cpp
         src/timelapse.cpp
+        src/dng.cpp
     )
 
     add_executable(picamera_tests ${test_sources})

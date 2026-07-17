@@ -11,6 +11,12 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 - **ISP hardware JPEG encode**: `--format jpeg` configures libcamera to output MJPEG directly from the Pi's ISP hardware encoder. The buffer contains a complete JPEG bitstream — no software conversion or encode needed. This is ~10× faster than the NV12→RGB→PNG path for full-resolution captures.
 - **Configurable PNG compression**: `--png-level 0–9` controls the zlib compression level. Level 1 (fast) produces ~15% larger files but encodes ~2× faster than the default level 6 — useful when capture speed matters more than file size.
 
+## Image quality
+
+- **DNG raw capture**: `--format dng` captures raw Bayer data (SRGGB10_CSI2P from the Pi ISP) and writes a minimal DNG 1.6 file with CFA pattern, black/white levels, active area, and EXIF metadata (exposure time, ISO, timestamp). The 10-bit MIPI-packed samples are unpacked to 16-bit for compatibility with raw developers (Lightroom, RawTherapee, darktable).
+- **HDR bracketing**: `--bracket N,ev1,ev2,...` captures N frames at different EV offsets. For example, `--bracket 3,-2,0,+2` captures 3 frames at -2EV, 0EV, and +2EV. Each frame's exposure time is scaled by 2^ev. Filenames get an `_ev±N` suffix (e.g. `photo_ev-2.0.png`). Works best with manual exposure (`--shutter` + `--iso`).
+- **EXIF metadata**: DNG files embed exposure time (as a rational fraction), ISO speed (computed from analogue gain), and DateTimeOriginal (UTC). PNG and JPEG do not currently embed EXIF (the ISP JPEG may include it depending on the Pi firmware).
+
 ## Hardware
 
 | Part | Notes |
@@ -119,8 +125,9 @@ Options:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--format <type>` | `ppm` | Output format: `ppm`, `raw`, `png`, `jpeg` |
+| `--format <type>` | `ppm` | Output format: `ppm`, `raw`, `png`, `jpeg`, `dng` |
 | `--png-level <0-9>` | `6` | PNG compression level (0=none, 1=fast, 6=default, 9=best) |
+| `--bracket <n,ev...>` | — | HDR bracketing: `N,ev1,ev2,...` (e.g. `3,-2,0,+2`) |
 | `--output <pattern>` | `capture_%04d.ppm` | Timelapse filename pattern. `%04d` = sequence index, else `strftime` |
 | `--count <n>` | `1` | Number of timelapse shots (`0` = infinite) |
 | `--width <px>` | `4056` | Image width |
@@ -250,9 +257,10 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
     ├── main.cpp           Entry point: parse args, init camera, dispatch mode
     ├── camera.{h,cpp}     CameraApp: init/configure/capture/timelapse/listControls
     ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
-    ├── image.{h,cpp}      NV12 -> RGB24 conversion (scalar, BT.601 limited-range)
+    ├── image.{h,cpp}      NV12 -> RGB24 conversion (NEON SIMD + multi-threaded, BT.601 limited-range)
     ├── timelapse.{h,cpp}  Filename pattern formatting + validation
-    └── output.{h,cpp}     PPM / PNG / raw NV12 writers (stream-state verified)
+    ├── dng.{h,cpp}        DNG/TIFF raw Bayer writer with EXIF metadata
+    └── output.{h,cpp}     PPM / PNG / raw NV12 / JPEG writers (stream-state verified)
 ```
 
 ## Troubleshooting

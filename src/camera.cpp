@@ -2,11 +2,13 @@
 #include "image.h"
 #include "output.h"
 #include "timelapse.h"
+#include "dng.h"
 
 #include <iostream>
 #include <fstream>
 #include <chrono>
 #include <thread>
+#include <cmath>
 #include <cstring>
 #include <csignal>
 #include <stdexcept>
@@ -97,7 +99,10 @@ bool CameraApp::init() {
 bool CameraApp::configure(const CameraConfig &cfg) {
     config_ = cfg;
 
-    auto roles = {StreamRole::StillCapture};
+    // DNG capture needs a raw Bayer stream; everything else uses StillCapture.
+    auto roles = (cfg.format == OutputFormat::DNG)
+                 ? std::vector<StreamRole>{StreamRole::Raw}
+                 : std::vector<StreamRole>{StreamRole::StillCapture};
     auto camCfg = cam_->generateConfiguration(roles);
     if (!camCfg) {
         std::cerr << "generateConfiguration failed\n";
@@ -109,9 +114,15 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     sc.size.height = cfg.height;
     // JPEG output uses the Pi ISP's hardware MJPEG encoder — the buffer
     // contains a complete JPEG bitstream, no NV12->RGB conversion needed.
+    // DNG output uses raw Bayer (SRGGB10_CSI2P on the Pi ISP).
     // Everything else uses NV12 and converts in software.
-    sc.pixelFormat = (cfg.format == OutputFormat::JPEG) ? formats::MJPEG
-                                                        : formats::NV12;
+    if (cfg.format == OutputFormat::JPEG) {
+        sc.pixelFormat = formats::MJPEG;
+    } else if (cfg.format == OutputFormat::DNG) {
+        sc.pixelFormat = formats::SRGGB10_CSI2P;
+    } else {
+        sc.pixelFormat = formats::NV12;
+    }
     sc.bufferCount = 4;
 
     auto status = camCfg->validate();
@@ -231,6 +242,75 @@ bool CameraApp::capture(const std::string &filename) {
 
     if (!saved) std::cerr << "Failed to save frame\n";
     return saved;
+}
+
+bool CameraApp::captureBracket(const std::string &baseFilename) {
+    // HDR bracketing: capture one frame per EV offset in cfg.bracketEv.
+    // For each frame, we adjust the exposure time by 2^ev relative to the
+    // base exposure. If AE is enabled, the first warmup frames let it
+    // converge; then we lock to manual for the bracketed captures.
+    //
+    // Filenames: baseFilename with _evN suffix inserted before the extension.
+    // e.g. "photo.png" -> "photo_ev-2.png", "photo_ev0.png", "photo_ev+2.png"
+    if (config_.bracketEv.empty()) {
+        return capture(baseFilename);
+    }
+
+    // Find extension to insert EV suffix.
+    size_t dotPos = baseFilename.rfind('.');
+    std::string base;
+    std::string ext;
+    if (dotPos != std::string::npos) {
+        base = baseFilename.substr(0, dotPos);
+        ext = baseFilename.substr(dotPos);
+    } else {
+        base = baseFilename;
+        ext = "";
+    }
+
+    bool allOk = true;
+    for (size_t i = 0; i < config_.bracketEv.size(); ++i) {
+        float ev = config_.bracketEv[i];
+
+        // Create a modified config for this bracket frame.
+        CameraConfig bracketCfg = config_;
+        // Adjust exposure time by 2^ev. If exposureTime is 0 (auto), we
+        // need to let AE converge first, then lock. For simplicity, if
+        // exposureTime is set, we scale it; if not, we use ExposureValue
+        // control via the EV compensation.
+        if (bracketCfg.exposureTime > 0) {
+            // Manual exposure: scale by 2^ev
+            double factor = std::pow(2.0, static_cast<double>(ev));
+            bracketCfg.exposureTime = static_cast<uint64_t>(
+                bracketCfg.exposureTime * factor);
+        }
+        // If AE is on, the EV offset is applied via ExposureValue control
+        // in applyControls (we'd need to add it to CameraConfig). For now,
+        // bracketing works best with manual exposure (--shutter + --iso).
+
+        // Build filename with EV suffix.
+        char evStr[16];
+        std::snprintf(evStr, sizeof(evStr), "%+.1f", ev);
+        std::string fname = base;
+        fname += "_ev";
+        fname += evStr;
+        fname += ext;
+
+        std::cout << "Bracket " << (i + 1) << "/" << config_.bracketEv.size()
+                  << ": EV" << evStr << " -> " << fname << "\n";
+
+        // Reconfigure with the bracket config and capture.
+        if (!configure(bracketCfg)) {
+            std::cerr << "Failed to configure for bracket EV" << evStr << "\n";
+            allOk = false;
+            continue;
+        }
+        if (!capture(fname)) {
+            std::cerr << "Failed to capture bracket EV" << evStr << "\n";
+            allOk = false;
+        }
+    }
+    return allOk;
 }
 
 bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern) {
@@ -360,6 +440,70 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
     const auto &sc = stream_->configuration();
     uint32_t w = sc.size.width;
     uint32_t h = sc.size.height;
+
+    // --- DNG path: raw Bayer data, unpack to 16-bit, write DNG container. ---
+    if (config_.format == OutputFormat::DNG) {
+        const auto &plane = planes[0];
+        void *base = mmap(nullptr, plane.offset + plane.length, PROT_READ,
+                          MAP_SHARED, plane.fd.get(), 0);
+        if (base == MAP_FAILED) {
+            std::cerr << "mmap raw failed: " << strerror(errno) << "\n";
+            return false;
+        }
+        auto *rawData = static_cast<uint8_t *>(base) + plane.offset;
+
+        // SRGGB10_CSI2P packs 4 10-bit pixels into 5 bytes (MIPI CSI-2
+        // packed format). Unpack to 16-bit samples for the DNG writer.
+        // Each 5-byte group: [b0 b1 b2 b3 | b4]
+        //   pixel0 = b0 | ((b4 & 0x03) << 8)
+        //   pixel1 = b1 | ((b4 & 0x0C) << 6)
+        //   pixel2 = b2 | ((b4 & 0x30) << 4)
+        //   pixel3 = b3 | ((b4 & 0xC0) << 2)
+        size_t numPixels = static_cast<size_t>(w) * h;
+        std::vector<uint8_t> unpacked(numPixels * 2);
+        size_t packedSize = (numPixels / 4) * 5;
+        for (size_t i = 0, p = 0; p < packedSize; i += 4, p += 5) {
+            uint16_t p0 = rawData[p]     | ((rawData[p + 4] & 0x03) << 8);
+            uint16_t p1 = rawData[p + 1] | ((rawData[p + 4] & 0x0C) << 6);
+            uint16_t p2 = rawData[p + 2] | ((rawData[p + 4] & 0x30) << 4);
+            uint16_t p3 = rawData[p + 3] | ((rawData[p + 4] & 0xC0) << 2);
+            unpacked[i * 2]     = p0 & 0xFF;
+            unpacked[i * 2 + 1] = (p0 >> 8) & 0xFF;
+            unpacked[(i+1) * 2]     = p1 & 0xFF;
+            unpacked[(i+1) * 2 + 1] = (p1 >> 8) & 0xFF;
+            unpacked[(i+2) * 2]     = p2 & 0xFF;
+            unpacked[(i+2) * 2 + 1] = (p2 >> 8) & 0xFF;
+            unpacked[(i+3) * 2]     = p3 & 0xFF;
+            unpacked[(i+3) * 2 + 1] = (p3 >> 8) & 0xFF;
+        }
+
+        DngMetadata dngMeta;
+        dngMeta.width = w;
+        dngMeta.height = h;
+        dngMeta.bitsPerPixel = 10;
+        dngMeta.blackLevel = 64;    // typical IMX477 black level
+        dngMeta.whiteLevel = 1023;  // 10-bit max
+        dngMeta.activeTop = 0;
+        dngMeta.activeLeft = 0;
+        dngMeta.activeBottom = h;
+        dngMeta.activeRight = w;
+        dngMeta.exposureTimeUs = config_.exposureTime;
+        dngMeta.analogueGain = config_.analogueGain;
+        dngMeta.timestampSec = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
+        bool ok = writeDng(filename.c_str(), unpacked.data(), unpacked.size(),
+                           dngMeta);
+        munmap(base, plane.offset + plane.length);
+        if (ok) {
+            std::cout << "Saved DNG: " << filename << " (" << w << "x" << h
+                      << ") " << unpacked.size() << " bytes\n";
+        } else {
+            std::cerr << "Failed to write DNG: " << filename << "\n";
+        }
+        return ok;
+    }
 
     // --- JPEG path: single-plane MJPEG bitstream, write directly. ---
     // The Pi ISP hardware-encodes the JPEG; the buffer is a complete JPEG

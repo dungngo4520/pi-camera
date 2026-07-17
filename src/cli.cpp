@@ -30,9 +30,12 @@ void printUsage(const char *prog) {
               << "  " << prog << " --list-controls               List camera controls\n"
               << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n\n"
               << "Options:\n"
-              << "  --format <type>         Output format: ppm, raw, png, jpeg (default: ppm)\n"
+              << "  --format <type>         Output format: ppm, raw, png, jpeg, dng (default: ppm)\n"
               << "                          jpeg = ISP hardware-encoded (Pi only), ~10x faster\n"
+              << "                          dng  = raw Bayer DNG (10-bit, for raw development)\n"
               << "  --png-level <0-9>       PNG compression level (0=none, 1=fast, 6=default, 9=best)\n"
+              << "  --bracket <n,ev...>     HDR bracketing: capture N frames at EV offsets\n"
+              << "                          e.g. --bracket 3,-2,0,+2 (3 frames: -2EV, 0EV, +2EV)\n"
               << "  --output <pattern>      Output filename pattern (default: capture_%04d.ppm)\n"
               << "  --count <n>             Number of shots (0 = infinite)\n"
               << "  --width <px>            Image width (default: 4056)\n"
@@ -105,8 +108,9 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
                 else if (fmt == "png")  cfg.format = OutputFormat::PNG;
                 else if (fmt == "jpeg" || fmt == "jpg")
                                             cfg.format = OutputFormat::JPEG;
+                else if (fmt == "dng")  cfg.format = OutputFormat::DNG;
                 else {
-                    std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg)\n";
+                    std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg, dng)\n";
                     return false;
                 }
             }
@@ -121,6 +125,50 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             }
         } else if (arg == "--awb-disable") {
             cfg.awbEnable = false;
+        } else if (arg == "--bracket") {
+            // Format: --bracket count,ev1,ev2,...
+            // e.g. --bracket 3,-2,0,+2  (3 frames at -2EV, 0EV, +2EV)
+            if (i + 1 >= argc) {
+                std::cerr << "--bracket requires an argument\n";
+                return false;
+            }
+            std::string spec = argv[++i];
+            // Parse comma-separated values: first is count, rest are EV offsets.
+            std::vector<float> evs;
+            size_t pos = 0;
+            int count = 0;
+            try {
+                size_t comma = spec.find(',');
+                if (comma == std::string::npos) {
+                    std::cerr << "--bracket format: count,ev1,ev2,... (e.g. 3,-2,0,+2)\n";
+                    return false;
+                }
+                count = std::stoi(spec.substr(0, comma));
+                pos = comma + 1;
+                while (pos <= spec.size()) {
+                    size_t next = spec.find(',', pos);
+                    std::string token = (next == std::string::npos)
+                                        ? spec.substr(pos)
+                                        : spec.substr(pos, next - pos);
+                    if (!token.empty())
+                        evs.push_back(std::stof(token));
+                    if (next == std::string::npos) break;
+                    pos = next + 1;
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "--bracket parse error: " << e.what() << "\n";
+                return false;
+            }
+            if (count <= 0 || count > 9) {
+                std::cerr << "--bracket count must be 1-9, got " << count << "\n";
+                return false;
+            }
+            if (static_cast<int>(evs.size()) != count) {
+                std::cerr << "--bracket: expected " << count << " EV values, got "
+                          << evs.size() << "\n";
+                return false;
+            }
+            cfg.bracketEv = evs;
         } else if (arg == "--warmup") {
             if (!parseIntArg(argc, argv, i, "--warmup",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },

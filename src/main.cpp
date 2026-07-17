@@ -30,7 +30,11 @@ int main(int argc, char **argv) {
 
     bool ok = false;
     if (opts.mode == "capture") {
-        ok = app.capture(opts.captureFile.empty() ? "capture.ppm" : opts.captureFile);
+        if (!cfg.bracketEv.empty()) {
+            ok = app.captureBracket(opts.captureFile.empty() ? "capture.ppm" : opts.captureFile);
+        } else {
+            ok = app.capture(opts.captureFile.empty() ? "capture.ppm" : opts.captureFile);
+        }
     } else if (opts.mode == "timelapse") {
         ok = app.timelapse(opts.timelapseInterval, opts.timelapseCount, opts.outputPattern);
     }

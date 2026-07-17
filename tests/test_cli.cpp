@@ -1,6 +1,7 @@
 #include "test_runner.h"
 #include "cli.h"
 
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -65,6 +66,13 @@ TEST(cli_format_jpeg_accepted) {
     // "jpg" alias should also work.
     CHECK(runParse({"picamera", "--capture", "x", "--format", "jpg"}, opts, cfg));
     CHECK(cfg.format == OutputFormat::JPEG);
+}
+
+TEST(cli_format_dng_accepted) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--capture", "x.dng", "--format", "dng"}, opts, cfg));
+    CHECK(cfg.format == OutputFormat::DNG);
 }
 
 TEST(cli_format_invalid_rejected) {
@@ -163,6 +171,37 @@ TEST(cli_missing_value_rejected) {
     CameraConfig cfg;
     // --width with no following value
     CHECK(!runParse({"picamera", "--capture", "x", "--width"}, opts, cfg));
+}
+
+TEST(cli_bracket_parsed) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--capture", "x.png", "--bracket", "3,-2,0,+2"}, opts, cfg));
+    REQUIRE(cfg.bracketEv.size() == 3);
+    // Use a tolerance for float comparison
+    CHECK(std::abs(cfg.bracketEv[0] - (-2.0f)) < 0.01f);
+    CHECK(std::abs(cfg.bracketEv[1] - 0.0f) < 0.01f);
+    CHECK(std::abs(cfg.bracketEv[2] - 2.0f) < 0.01f);
+}
+
+TEST(cli_bracket_count_mismatch_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    // Says 3 but only gives 2 EV values
+    CHECK(!runParse({"picamera", "--capture", "x", "--bracket", "3,-2,0"}, opts, cfg));
+}
+
+TEST(cli_bracket_no_comma_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--bracket", "3"}, opts, cfg));
+}
+
+TEST(cli_bracket_count_out_of_range_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--bracket", "10,0"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--capture", "x", "--bracket", "0"}, opts, cfg));
 }
 
 } // namespace
