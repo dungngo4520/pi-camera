@@ -204,4 +204,24 @@ TEST(cli_bracket_count_out_of_range_rejected) {
     CHECK(!runParse({"picamera", "--capture", "x", "--bracket", "0"}, opts, cfg));
 }
 
+TEST(cli_preview_mode_parsed) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview"}, opts, cfg));
+    CHECK_EQ(opts.mode, std::string("preview"));
+}
+
+TEST(cli_preview_options_parsed) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--preview-w", "240",
+                    "--preview-h", "240", "--preview-fps", "10",
+                    "--fb", "/dev/fb1"}, opts, cfg));
+    CHECK_EQ(opts.mode, std::string("preview"));
+    CHECK_EQ(opts.previewWidth, 240u);
+    CHECK_EQ(opts.previewHeight, 240u);
+    CHECK_EQ(opts.previewFps, 10u);
+    CHECK_EQ(opts.fbDevice, std::string("/dev/fb1"));
+}
+
 } // namespace

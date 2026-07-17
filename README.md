@@ -17,6 +17,29 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 - **HDR bracketing**: `--bracket N,ev1,ev2,...` captures N frames at different EV offsets. For example, `--bracket 3,-2,0,+2` captures 3 frames at -2EV, 0EV, and +2EV. Each frame's exposure time is scaled by 2^ev. Filenames get an `_ev±N` suffix (e.g. `photo_ev-2.0.png`). Works best with manual exposure (`--shutter` + `--iso`).
 - **EXIF metadata**: DNG files embed exposure time (as a rational fraction), ISO speed (computed from analogue gain), and DateTimeOriginal (UTC). PNG and JPEG do not currently embed EXIF (the ISP JPEG may include it depending on the Pi firmware).
 
+## Live preview (LCD/HDMI)
+
+`--preview` runs a live viewfinder that captures frames at low resolution and writes them directly to the Linux framebuffer (`/dev/fb0` by default). This is designed for Waveshare SPI LCDs and HDMI displays — the Waveshare drivers create a framebuffer device, and writing directly to it gives the lowest latency (no HTTP, no pipe, no decode).
+
+```bash
+# Preview to default framebuffer (/dev/fb0) at 320x240, 15fps
+./picamera --preview
+
+# Preview to a specific framebuffer at 240x240 (1.4" Waveshare LCD)
+./picamera --preview --preview-w 240 --preview-h 240 --fb /dev/fb0
+
+# Lower frame rate to save power
+./picamera --preview --preview-fps 10
+```
+
+The preview loop:
+1. Captures NV12 frames at the configured preview resolution (default 320x240)
+2. Converts to RGB24 using the NEON SIMD + multi-threaded path
+3. Scales and writes to the framebuffer (supports 16/24/32 bpp, auto-detects RGB vs BGR ordering)
+4. Runs until Ctrl+C (SIGINT/SIGTERM)
+
+Frame rate is capped at `--preview-fps` (default 15) to avoid burning CPU on the Pi Zero. AE/AWB run continuously with a 3-frame warmup for quick convergence.
+
 ## Hardware
 
 | Part | Notes |
@@ -128,6 +151,10 @@ Options:
 | `--format <type>` | `ppm` | Output format: `ppm`, `raw`, `png`, `jpeg`, `dng` |
 | `--png-level <0-9>` | `6` | PNG compression level (0=none, 1=fast, 6=default, 9=best) |
 | `--bracket <n,ev...>` | — | HDR bracketing: `N,ev1,ev2,...` (e.g. `3,-2,0,+2`) |
+| `--fb <device>` | `/dev/fb0` | Framebuffer device for `--preview` |
+| `--preview-w <px>` | `320` | Preview capture width |
+| `--preview-h <px>` | `240` | Preview capture height |
+| `--preview-fps <n>` | `15` | Preview max frame rate |
 | `--output <pattern>` | `capture_%04d.ppm` | Timelapse filename pattern. `%04d` = sequence index, else `strftime` |
 | `--count <n>` | `1` | Number of timelapse shots (`0` = infinite) |
 | `--width <px>` | `4056` | Image width |
@@ -260,6 +287,7 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
     ├── image.{h,cpp}      NV12 -> RGB24 conversion (NEON SIMD + multi-threaded, BT.601 limited-range)
     ├── timelapse.{h,cpp}  Filename pattern formatting + validation
     ├── dng.{h,cpp}        DNG/TIFF raw Bayer writer with EXIF metadata
+    ├── preview.{h,cpp}    Live framebuffer preview (LCD/HDMI viewfinder)
     └── output.{h,cpp}     PPM / PNG / raw NV12 / JPEG writers (stream-state verified)
 ```
 

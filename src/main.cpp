@@ -1,5 +1,6 @@
 #include "camera.h"
 #include "cli.h"
+#include "preview.h"
 
 int main(int argc, char **argv) {
     using namespace picamera;
@@ -13,6 +14,16 @@ int main(int argc, char **argv) {
     CameraConfig cfg;
     if (!parseArgs(argc, argv, opts, cfg)) {
         return 1;
+    }
+
+    // Preview mode has its own camera lifecycle.
+    if (opts.mode == "preview") {
+        PreviewConfig pcfg;
+        pcfg.fbDevice = opts.fbDevice;
+        pcfg.width = opts.previewWidth;
+        pcfg.height = opts.previewHeight;
+        pcfg.maxFps = opts.previewFps;
+        return runPreview(pcfg) ? 0 : 1;
     }
 
     CameraApp app;

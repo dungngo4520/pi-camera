@@ -28,7 +28,8 @@ void printUsage(const char *prog) {
               << "Usage:\n"
               << "  " << prog << " --capture <file>              Capture a still\n"
               << "  " << prog << " --list-controls               List camera controls\n"
-              << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n\n"
+              << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n"
+              << "  " << prog << " --preview [options]           Live preview to framebuffer (LCD/HDMI)\n\n"
               << "Options:\n"
               << "  --format <type>         Output format: ppm, raw, png, jpeg, dng (default: ppm)\n"
               << "                          jpeg = ISP hardware-encoded (Pi only), ~10x faster\n"
@@ -47,13 +48,18 @@ void printUsage(const char *prog) {
               << "                          incandescent, tungsten, fluorescent, indoor\n"
               << "  --ae-disable            Disable auto exposure\n"
               << "  --awb-disable           Disable auto white balance\n"
-              << "  --warmup <n>            Frames to let AE/AWB converge (default: 8)\n\n"
+              << "  --warmup <n>            Frames to let AE/AWB converge (default: 8)\n"
+              << "  --fb <device>           Framebuffer device for --preview (default: /dev/fb0)\n"
+              << "  --preview-w <px>        Preview capture width (default: 320)\n"
+              << "  --preview-h <px>        Preview capture height (default: 240)\n"
+              << "  --preview-fps <n>       Preview max frame rate (default: 15)\n\n"
               << "Examples:\n"
               << "  " << prog << " --capture photo.png --format png\n"
               << "  " << prog << " --capture photo.jpg --format jpeg       (ISP hardware encode, ~10x faster)\n"
               << "  " << prog << " --capture photo.raw --format raw\n"
               << "  " << prog << " --capture photo.ppm --iso 2.0 --shutter 30000\n"
-              << "  " << prog << " --timelapse 60 --count 10 --output timelapse_%04d.png --format png\n";
+              << "  " << prog << " --timelapse 60 --count 10 --output timelapse_%04d.png --format png\n"
+              << "  " << prog << " --preview --preview-w 240 --preview-h 240 --fb /dev/fb0\n";
 }
 
 bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
@@ -65,6 +71,8 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             if (i + 1 < argc) opts.captureFile = argv[++i];
         } else if (arg == "--list-controls") {
             opts.mode = "list-controls";
+        } else if (arg == "--preview") {
+            opts.mode = "preview";
         } else if (arg == "--timelapse") {
             opts.mode = "timelapse";
             if (!parseIntArg(argc, argv, i, "--timelapse",
@@ -169,6 +177,20 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
                 return false;
             }
             cfg.bracketEv = evs;
+        } else if (arg == "--fb") {
+            if (i + 1 < argc) opts.fbDevice = argv[++i];
+        } else if (arg == "--preview-w") {
+            if (!parseIntArg(argc, argv, i, "--preview-w",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             opts.previewWidth)) return false;
+        } else if (arg == "--preview-h") {
+            if (!parseIntArg(argc, argv, i, "--preview-h",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             opts.previewHeight)) return false;
+        } else if (arg == "--preview-fps") {
+            if (!parseIntArg(argc, argv, i, "--preview-fps",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             opts.previewFps)) return false;
         } else if (arg == "--warmup") {
             if (!parseIntArg(argc, argv, i, "--warmup",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },

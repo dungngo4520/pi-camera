@@ -16,6 +16,7 @@ add_executable(picamera
     src/output.cpp
     src/timelapse.cpp
     src/dng.cpp
+    src/preview.cpp
 )
 
 target_include_directories(picamera PRIVATE
