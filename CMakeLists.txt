@@ -18,48 +18,6 @@ pkg_check_modules(JPEG QUIET IMPORTED_TARGET libjpeg)
 # Optional on x86 dev builds — preview will print an error if not built with it.
 pkg_check_modules(LIBGPIOD QUIET IMPORTED_TARGET libgpiod)
 
-set(picamera_sources
-    src/main.cpp
-    src/camera.cpp
-    src/cli.cpp
-    src/image.cpp
-    src/encoders.cpp
-    src/output_writer.cpp
-    src/timelapse.cpp
-    src/dng.cpp
-    src/preview.cpp
-    src/stream.cpp
-    src/battery.cpp
-    src/font.cpp
-)
-
-if(LIBGPIOD_FOUND)
-    list(APPEND picamera_sources src/display.cpp src/buttons.cpp)
-endif()
-
-add_executable(picamera ${picamera_sources})
-
-target_compile_features(picamera PRIVATE cxx_std_20)
-
-target_include_directories(picamera PRIVATE src)
-target_link_libraries(picamera
-    PRIVATE
-        PkgConfig::LIBCAMERA
-        PkgConfig::PNG
-        dl
-        pthread
-)
-
-if(LIBGPIOD_FOUND)
-    target_compile_definitions(picamera PRIVATE HAVE_GPIOD)
-    target_link_libraries(picamera PRIVATE PkgConfig::LIBGPIOD)
-endif()
-
-if(JPEG_FOUND)
-    target_compile_definitions(picamera PRIVATE HAVE_JPEG)
-    target_link_libraries(picamera PRIVATE PkgConfig::JPEG)
-endif()
-
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -73,14 +31,65 @@ option(PICAMERA_BUILD_TESTS "Build unit tests" ON)
 option(PICAMERA_ENABLE_SANITIZERS "Enable ASan+UBSan for the test build" OFF)
 
 # --------------------------------------------------------------------------- #
-# Unit tests — pure-logic only (no camera hardware needed). Links the same
-# image/output/cli/timelapse TUs as the main binary plus a tiny hand-rolled
-# test runner in tests/.
+# picamera_core — pure-logic TUs shared by the app and the unit tests.
+#
+# Built once as a STATIC library so the source list lives in exactly one
+# place; both the picamera executable and the picamera_tests executable link
+# it. libcamera is header-only here (camera.cpp is NOT in core — cli.h
+# includes camera.h which pulls libcamera headers), but linking it PUBLIC
+# lets consumers inherit the include dirs. libpng is used directly by
+# encoders.cpp. libjpeg is optional (HAVE_JPEG gates the software encode
+# path in encoders.cpp). pthread is for image.cpp's std::thread workers.
+# --------------------------------------------------------------------------- #
+add_library(picamera_core STATIC
+    src/image.cpp
+    src/encoders.cpp
+    src/output_writer.cpp
+    src/cli.cpp
+    src/timelapse.cpp
+    src/dng.cpp
+    src/battery.cpp
+    src/font.cpp
+)
+target_compile_features(picamera_core PUBLIC cxx_std_20)
+target_include_directories(picamera_core PUBLIC src)
+target_link_libraries(picamera_core
+    PUBLIC
+        PkgConfig::LIBCAMERA
+        PkgConfig::PNG
+        pthread
+)
+if(JPEG_FOUND)
+    target_compile_definitions(picamera_core PUBLIC HAVE_JPEG)
+    target_link_libraries(picamera_core PUBLIC PkgConfig::JPEG)
+endif()
+
+# --------------------------------------------------------------------------- #
+# picamera — the app. Hardware TUs (camera, preview, stream, display, buttons)
+# live here; they are not unit-testable on x86. display.cpp/buttons.cpp are
+# gated on libgpiod.
+# --------------------------------------------------------------------------- #
+add_executable(picamera
+    src/main.cpp
+    src/camera.cpp
+    src/preview.cpp
+    src/stream.cpp
+)
+target_link_libraries(picamera PRIVATE picamera_core dl)
+if(LIBGPIOD_FOUND)
+    target_sources(picamera PRIVATE src/display.cpp src/buttons.cpp)
+    target_compile_definitions(picamera PRIVATE HAVE_GPIOD)
+    target_link_libraries(picamera PRIVATE PkgConfig::LIBGPIOD)
+endif()
+
+# --------------------------------------------------------------------------- #
+# Unit tests — pure-logic only (no camera hardware needed). Links picamera_core
+# plus a tiny hand-rolled test runner in tests/.
 # --------------------------------------------------------------------------- #
 if(PICAMERA_BUILD_TESTS)
     enable_testing()
 
-    set(test_sources
+    add_executable(picamera_tests
         tests/test_main.cpp
         tests/test_image.cpp
         tests/test_output.cpp
@@ -89,33 +98,10 @@ if(PICAMERA_BUILD_TESTS)
         tests/test_timelapse.cpp
         tests/test_dng.cpp
         tests/test_battery.cpp
-        src/image.cpp
-        src/encoders.cpp
-        src/output_writer.cpp
-        src/cli.cpp
-        src/timelapse.cpp
-        src/dng.cpp
-        src/battery.cpp
-        src/font.cpp
     )
-
-    add_executable(picamera_tests ${test_sources})
     target_compile_features(picamera_tests PRIVATE cxx_std_20)
-
-    target_include_directories(picamera_tests PRIVATE src tests)
-    # LIBCAMERA is header-only here (camera.cpp is not compiled into tests,
-    # but cli.h includes camera.h which pulls libcamera headers). PNG is
-    # linked because output.cpp uses libpng directly.
-    target_link_libraries(picamera_tests
-        PRIVATE
-            PkgConfig::LIBCAMERA
-            PkgConfig::PNG
-    )
-
-    if(JPEG_FOUND)
-        target_compile_definitions(picamera_tests PRIVATE HAVE_JPEG)
-        target_link_libraries(picamera_tests PRIVATE PkgConfig::JPEG)
-    endif()
+    target_include_directories(picamera_tests PRIVATE tests)
+    target_link_libraries(picamera_tests PRIVATE picamera_core)
 
     if(PICAMERA_ENABLE_SANITIZERS)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
