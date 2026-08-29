@@ -216,12 +216,20 @@ TEST(cli_preview_options_parsed) {
     CameraConfig cfg;
     CHECK(runParse({"picamera", "--preview", "--preview-w", "240",
                     "--preview-h", "240", "--preview-fps", "10",
-                    "--fb", "/dev/fb1"}, opts, cfg));
+                    "--spi-device", "/dev/spidev0.1",
+                    "--display-rotate", "90",
+                    "--capture-format", "png",
+                    "--capture-dir", "/tmp/captures",
+                    "--capture-prefix", "shot"}, opts, cfg));
     CHECK_EQ(opts.mode, std::string("preview"));
     CHECK_EQ(opts.previewWidth, 240u);
     CHECK_EQ(opts.previewHeight, 240u);
     CHECK_EQ(opts.previewFps, 10u);
-    CHECK_EQ(opts.fbDevice, std::string("/dev/fb1"));
+    CHECK_EQ(opts.spiDevice, std::string("/dev/spidev0.1"));
+    CHECK_EQ(opts.displayRotation, 90);
+    CHECK_EQ(opts.captureFormat, std::string("png"));
+    CHECK_EQ(opts.captureDir, std::string("/tmp/captures"));
+    CHECK_EQ(opts.capturePrefix, std::string("shot"));
 }
 
 } // namespace

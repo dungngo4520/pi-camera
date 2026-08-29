@@ -57,6 +57,7 @@ private:
     libcamera::Stream *stream_ = nullptr;
     CameraConfig config_;
     bool started_ = false;
+    bool swJpegEncode_ = false;  // true when HW MJPEG unavailable, encode via libjpeg
 };
 
 }

@@ -125,10 +125,34 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     }
     sc.bufferCount = 4;
 
+    // For high-res NV12 captures (e.g. 4056x3040), the Pi may not have
+    // enough memory for 4 buffers. Use 1 buffer for still capture.
+    if (sc.pixelFormat == formats::NV12 && cfg.width * cfg.height > 2000000) {
+        sc.bufferCount = 1;
+    }
+
     auto status = camCfg->validate();
     if (status == CameraConfiguration::Invalid) {
         std::cerr << "Camera configuration invalid\n";
         return false;
+    }
+
+    // Check if MJPEG was rejected by the pipeline handler (Pi VC4 may fall
+    // back to YUYV at high resolutions). If so, switch to NV12 and encode
+    // JPEG in software via libjpeg.
+    if (cfg.format == OutputFormat::JPEG && sc.pixelFormat != formats::MJPEG) {
+        std::cerr << "Warning: HW MJPEG unavailable (got " << sc.pixelFormat
+                  << "), falling back to software JPEG encode\n";
+        sc.pixelFormat = formats::NV12;
+        // High-res NV12 needs fewer buffers on the Pi
+        if (cfg.width * cfg.height > 2000000)
+            sc.bufferCount = 1;
+        auto status2 = camCfg->validate();
+        if (status2 == CameraConfiguration::Invalid) {
+            std::cerr << "Camera configuration invalid (NV12 fallback)\n";
+            return false;
+        }
+        swJpegEncode_ = true;
     }
 
     if (cam_->configure(camCfg.get())) {
@@ -137,6 +161,26 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     }
 
     stream_ = sc.stream();
+
+    // Double-check: configure() may silently change the pixel format even
+    // if validate() accepted MJPEG. Check the actual stream configuration.
+    if (cfg.format == OutputFormat::JPEG && !swJpegEncode_) {
+        const auto &actualFmt = stream_->configuration().pixelFormat;
+        if (actualFmt != formats::MJPEG) {
+            std::cerr << "Warning: HW MJPEG unavailable after configure (got "
+                      << actualFmt << "), reconfiguring with NV12\n";
+            // Reconfigure with NV12
+            sc.pixelFormat = formats::NV12;
+            if (cfg.width * cfg.height > 2000000)
+                sc.bufferCount = 1;
+            camCfg->validate();
+            if (cam_->configure(camCfg.get())) {
+                std::cerr << "cam->configure() failed (NV12 fallback)\n";
+                return false;
+            }
+            swJpegEncode_ = true;
+        }
+    }
 
     allocator_ = std::make_unique<FrameBufferAllocator>(cam_);
     if (allocator_->allocate(stream_) < 0) {
@@ -508,7 +552,7 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
     // --- JPEG path: single-plane MJPEG bitstream, write directly. ---
     // The Pi ISP hardware-encodes the JPEG; the buffer is a complete JPEG
     // file. No NV12->RGB conversion, no software encode — just mmap + write.
-    if (config_.format == OutputFormat::JPEG) {
+    if (config_.format == OutputFormat::JPEG && !swJpegEncode_) {
         const auto &plane = planes[0];
         void *base = mmap(nullptr, plane.offset + plane.length, PROT_READ,
                           MAP_SHARED, plane.fd.get(), 0);
@@ -589,6 +633,14 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
                           << " (" << w << "x" << h << ")\n";
             else
                 std::cerr << "Failed to write PNG: " << filename << "\n";
+        } else if (config_.format == OutputFormat::JPEG && swJpegEncode_) {
+            // Software JPEG encode via libjpeg-turbo (HW MJPEG unavailable)
+            ok = writeJpegRgb(rgb.data(), w, h, filename, 90);
+            if (ok)
+                std::cout << "Saved JPEG: " << filename
+                          << " (" << w << "x" << h << ") [sw encode]\n";
+            else
+                std::cerr << "Failed to write JPEG: " << filename << "\n";
         } else {
             ok = writePpm(rgb.data(), rgb.size(), w, h, filename);
             if (ok)

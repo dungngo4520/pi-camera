@@ -274,4 +274,77 @@ std::vector<uint8_t> nv12ToRgb(const uint8_t *y, const uint8_t *uv,
     return rgb;
 }
 
+// ---------------------------------------------------------------------------
+// NV12 -> RGB565 with center-crop + nearest-neighbor scaling.
+//
+// Output is big-endian RGB565 (high byte first) for SPI displays like the
+// ST7735S. The source is center-cropped to match the display aspect ratio,
+// then scaled to dispW x dispH.
+// ---------------------------------------------------------------------------
+void nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv,
+                        uint32_t srcW, uint32_t srcH, uint32_t stride,
+                        uint8_t *out, uint32_t dispW, uint32_t dispH) {
+    // Compute center-crop region to match display aspect ratio
+    float srcAspect = static_cast<float>(srcW) / srcH;
+    float dispAspect = static_cast<float>(dispW) / dispH;
+
+    uint32_t cropW, cropH, cropX, cropY;
+    if (srcAspect > dispAspect) {
+        // Source is wider — crop horizontally
+        cropH = srcH;
+        cropW = static_cast<uint32_t>(srcH * dispAspect);
+        cropX = (srcW - cropW) / 2;
+        cropY = 0;
+    } else {
+        // Source is taller — crop vertically
+        cropW = srcW;
+        cropH = static_cast<uint32_t>(srcW / dispAspect);
+        cropX = 0;
+        cropY = (srcH - cropH) / 2;
+    }
+    if (cropH > srcH) cropH = srcH;
+    if (cropW > srcW) cropW = srcW;
+
+    for (uint32_t dy = 0; dy < dispH; ++dy) {
+        // Map display row to source row (nearest-neighbor)
+        uint32_t sy = cropY + (dy * cropH) / dispH;
+        if (sy >= srcH) sy = srcH - 1;
+
+        for (uint32_t dx = 0; dx < dispW; ++dx) {
+            // Map display column to source column
+            uint32_t sx = cropX + (dx * cropW) / dispW;
+            if (sx >= srcW) sx = srcW - 1;
+
+            // Get Y sample
+            int Y = y[sy * stride + sx];
+
+            // Get UV sample (NV12: UV is interleaved, subsampled 2x2)
+            uint32_t uvX = (sx / 2) * 2;
+            uint32_t uvY = sy / 2;
+            int U = uv[uvY * stride + uvX] - 128;
+            int V = uv[uvY * stride + uvX + 1] - 128;
+
+            // BT.601 limited-range YUV -> RGB
+            int C = Y - 16;
+            int R = (298 * C + 409 * V + 128) >> 8;
+            int G = (298 * C - 100 * U - 208 * V + 128) >> 8;
+            int B = (298 * C + 516 * U + 128) >> 8;
+
+            // Clamp to [0, 255]
+            R = R < 0 ? 0 : R > 255 ? 255 : R;
+            G = G < 0 ? 0 : G > 255 ? 255 : G;
+            B = B < 0 ? 0 : B > 255 ? 255 : B;
+
+            // Pack to RGB565: RRRRRGGG GGGBBBBB
+            uint16_t pixel = static_cast<uint16_t>(
+                ((R >> 3) << 11) | ((G >> 2) << 5) | (B >> 3));
+
+            // Store big-endian (high byte first for SPI)
+            size_t outIdx = (static_cast<size_t>(dy) * dispW + dx) * 2;
+            out[outIdx] = static_cast<uint8_t>(pixel >> 8);
+            out[outIdx + 1] = static_cast<uint8_t>(pixel & 0xFF);
+        }
+    }
+}
+
 } // namespace picamera

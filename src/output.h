@@ -11,4 +11,9 @@ bool writePpm(const uint8_t *rgb, size_t size, uint32_t w, uint32_t h, const std
 bool writeRaw(const uint8_t *y, size_t ySize, const uint8_t *uv, size_t uvSize, const std::string &path);
 bool writeJpeg(const uint8_t *data, size_t size, const std::string &path);
 
+// Software JPEG encode from RGB data via libjpeg-turbo.
+// quality: 1-100 (default 90). Returns true on success.
+bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
+                  const std::string &path, int quality = 90);
+
 }

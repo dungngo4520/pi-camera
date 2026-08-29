@@ -2,20 +2,33 @@
 
 #include <cstdint>
 #include <string>
+#include "display.h"
+#include "battery.h"
 
 namespace picamera {
 
 struct PreviewConfig {
-    std::string fbDevice = "/dev/fb0";
-    uint32_t width = 320;       // preview capture resolution
-    uint32_t height = 240;
-    bool fullscreen = true;     // stretch to fill framebuffer
-    uint32_t maxFps = 15;       // cap to avoid burning CPU on Pi Zero
+    // Display
+    DisplayConfig displayCfg;
+    // Camera viewfinder
+    uint32_t previewWidth = 320;
+    uint32_t previewHeight = 240;
+    uint32_t maxFps = 20;
+    // Still capture (on button press)
+    uint32_t captureWidth = 4056;
+    uint32_t captureHeight = 3040;
+    std::string captureFormat = "jpeg";
+    std::string captureDir = ".";
+    std::string capturePrefix = "capture";
+    // Battery monitor (optional — set enableBattery=true to show
+    // battery icon + % overlay on the preview display)
+    bool enableBattery = false;
+    BatteryConfig batteryCfg;
 };
 
-// Run a live preview loop: capture frames at low resolution, convert to
-// RGB, and write them to the Linux framebuffer. Blocks until SIGINT/SIGTERM.
-// Returns true on clean shutdown, false on error.
+// Run a live preview loop: stream low-res frames to the SPI display,
+// and capture full-res images when the shutter button is pressed.
+// Blocks until SIGINT/SIGTERM. Returns true on clean shutdown.
 bool runPreview(const PreviewConfig &pcfg);
 
 } // namespace picamera

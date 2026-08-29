@@ -29,7 +29,7 @@ void printUsage(const char *prog) {
               << "  " << prog << " --capture <file>              Capture a still\n"
               << "  " << prog << " --list-controls               List camera controls\n"
               << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n"
-              << "  " << prog << " --preview [options]           Live preview to framebuffer (LCD/HDMI)\n\n"
+              << "  " << prog << " --preview [options]           Live preview to SPI LCD (Waveshare 1.44\" HAT)\n\n"
               << "Options:\n"
               << "  --format <type>         Output format: ppm, raw, png, jpeg, dng (default: ppm)\n"
               << "                          jpeg = ISP hardware-encoded (Pi only), ~10x faster\n"
@@ -49,17 +49,29 @@ void printUsage(const char *prog) {
               << "  --ae-disable            Disable auto exposure\n"
               << "  --awb-disable           Disable auto white balance\n"
               << "  --warmup <n>            Frames to let AE/AWB converge (default: 8)\n"
-              << "  --fb <device>           Framebuffer device for --preview (default: /dev/fb0)\n"
-              << "  --preview-w <px>        Preview capture width (default: 320)\n"
-              << "  --preview-h <px>        Preview capture height (default: 240)\n"
-              << "  --preview-fps <n>       Preview max frame rate (default: 15)\n\n"
+              << "  --preview-w <px>        Preview stream width (default: 320)\n"
+              << "  --preview-h <px>        Preview stream height (default: 240)\n"
+              << "  --preview-fps <n>       Preview max frame rate (default: 20)\n"
+              << "  --capture-w <px>        Still capture width (default: 4056)\n"
+              << "  --capture-h <px>        Still capture height (default: 3040)\n"
+              << "  --capture-format <type> Still capture format: jpeg, png, ppm, dng (default: jpeg)\n"
+              << "  --capture-dir <path>    Directory for captured images (default: .)\n"
+              << "  --capture-prefix <str>  Filename prefix for captures (default: capture)\n"
+              << "  --spi-device <path>     SPI device for display (default: /dev/spidev0.0)\n"
+              << "  --display-rotate <deg>  Display rotation: 0, 90, 180, 270 (default: 0)\n"
+              << "  --battery               Show battery level overlay on preview (ADS1115 ADC)\n"
+              << "  --battery-i2c <path>    I2C device for ADS1115 (default: /dev/i2c-1)\n"
+              << "  --battery-addr <hex>    ADS1115 I2C address (default: 0x48)\n\n"
               << "Examples:\n"
               << "  " << prog << " --capture photo.png --format png\n"
               << "  " << prog << " --capture photo.jpg --format jpeg       (ISP hardware encode, ~10x faster)\n"
               << "  " << prog << " --capture photo.raw --format raw\n"
               << "  " << prog << " --capture photo.ppm --iso 2.0 --shutter 30000\n"
               << "  " << prog << " --timelapse 60 --count 10 --output timelapse_%04d.png --format png\n"
-              << "  " << prog << " --preview --preview-w 240 --preview-h 240 --fb /dev/fb0\n";
+              << "  " << prog << " --preview                              (live preview, joystick=capture)\n"
+              << "  " << prog << " --preview --display-rotate 90          (rotated display)\n"
+              << "  " << prog << " --preview --capture-format png         (capture PNG on button press)\n"
+              << "  " << prog << " --preview --battery                   (show battery % on LCD)\n";
 }
 
 bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
@@ -177,8 +189,12 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
                 return false;
             }
             cfg.bracketEv = evs;
-        } else if (arg == "--fb") {
-            if (i + 1 < argc) opts.fbDevice = argv[++i];
+        } else if (arg == "--spi-device") {
+            if (i + 1 < argc) opts.spiDevice = argv[++i];
+        } else if (arg == "--display-rotate") {
+            if (!parseIntArg(argc, argv, i, "--display-rotate",
+                             [](const char *s) { return std::stoi(s); },
+                             opts.displayRotation)) return false;
         } else if (arg == "--preview-w") {
             if (!parseIntArg(argc, argv, i, "--preview-w",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
@@ -191,10 +207,32 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             if (!parseIntArg(argc, argv, i, "--preview-fps",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
                              opts.previewFps)) return false;
+        } else if (arg == "--capture-w") {
+            if (!parseIntArg(argc, argv, i, "--capture-w",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             opts.captureWidth)) return false;
+        } else if (arg == "--capture-h") {
+            if (!parseIntArg(argc, argv, i, "--capture-h",
+                             [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
+                             opts.captureHeight)) return false;
+        } else if (arg == "--capture-format") {
+            if (i + 1 < argc) opts.captureFormat = argv[++i];
+        } else if (arg == "--capture-dir") {
+            if (i + 1 < argc) opts.captureDir = argv[++i];
+        } else if (arg == "--capture-prefix") {
+            if (i + 1 < argc) opts.capturePrefix = argv[++i];
         } else if (arg == "--warmup") {
             if (!parseIntArg(argc, argv, i, "--warmup",
                              [](const char *s) { return static_cast<uint32_t>(std::stoul(s)); },
                              cfg.warmupFrames)) return false;
+        } else if (arg == "--battery") {
+            opts.enableBattery = true;
+        } else if (arg == "--battery-i2c") {
+            if (i + 1 < argc) opts.batteryI2cDevice = argv[++i];
+        } else if (arg == "--battery-addr") {
+            if (!parseIntArg(argc, argv, i, "--battery-addr",
+                             [](const char *s) { return static_cast<uint8_t>(std::stoul(s, nullptr, 16)); },
+                             opts.batteryI2cAddress)) return false;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             return false;

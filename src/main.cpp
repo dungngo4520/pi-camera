@@ -19,10 +19,21 @@ int main(int argc, char **argv) {
     // Preview mode has its own camera lifecycle.
     if (opts.mode == "preview") {
         PreviewConfig pcfg;
-        pcfg.fbDevice = opts.fbDevice;
-        pcfg.width = opts.previewWidth;
-        pcfg.height = opts.previewHeight;
+        pcfg.displayCfg.spiDevice = opts.spiDevice;
+        pcfg.displayCfg.rotation = opts.displayRotation;
+        pcfg.previewWidth = opts.previewWidth;
+        pcfg.previewHeight = opts.previewHeight;
         pcfg.maxFps = opts.previewFps;
+        pcfg.captureWidth = opts.captureWidth;
+        pcfg.captureHeight = opts.captureHeight;
+        pcfg.captureFormat = opts.captureFormat;
+        pcfg.captureDir = opts.captureDir;
+        pcfg.capturePrefix = opts.capturePrefix;
+        pcfg.enableBattery = opts.enableBattery;
+        pcfg.batteryCfg.i2cDevice = opts.batteryI2cDevice;
+        pcfg.batteryCfg.i2cAddress = opts.batteryI2cAddress;
+        // Use ±6.144V PGA for direct LiPo measurement (3.0-4.2V)
+        pcfg.batteryCfg.pgaGain = 0x0000;
         return runPreview(pcfg) ? 0 : 1;
     }
 

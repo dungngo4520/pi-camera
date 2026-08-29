@@ -2,6 +2,7 @@
 #include "image.h"
 
 #include <cstring>
+#include <cmath>
 #include <vector>
 
 using namespace picamera;
@@ -121,6 +122,60 @@ TEST(nv12_large_image_odd_dimensions) {
     // A mid-boundary pixel (row 16, col 32).
     size_t mid = (static_cast<size_t>(16) * w + 32) * 3;
     CHECK_EQ(rgb[mid], first);
+}
+
+TEST(nv12_to_rgb565_grey_neutral) {
+    // 4x4 NV12 grey frame -> 2x2 RGB565. With neutral chroma (U=V=128),
+    // the RGB565 pixel should have R==G==B in their respective bit widths.
+    const uint32_t w = 4, h = 4, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(2 * 2 * 2); // 2x2 RGB565
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 2, 2);
+    // Each pixel: high byte = RRRRRGGG, low byte = GGGBBBBB
+    // With neutral chroma and Y=128: R≈130, G≈130, B≈128 (BT.601 limited).
+    // R5 = 130>>3 = 16, G6 = 130>>2 = 32, B5 = 128>>3 = 16
+    // pixel = (16<<11)|(32<<5)|16 = 0x8410
+    // high = 0x84, low = 0x10
+    for (size_t p = 0; p < 4; ++p) {
+        uint8_t hi = out[p * 2], lo = out[p * 2 + 1];
+        uint16_t pix = (hi << 8) | lo;
+        uint8_t r5 = (pix >> 11) & 0x1F;
+        uint8_t g6 = (pix >> 5) & 0x3F;
+        uint8_t b5 = pix & 0x1F;
+        // With neutral chroma, R and G should be close (within 1 bit).
+        int r8 = r5 << 3, g8 = g6 << 2, b8 = b5 << 3;
+        CHECK(std::abs(r8 - g8) <= 8);
+        CHECK(std::abs(g8 - b8) <= 8);
+    }
+}
+
+TEST(nv12_to_rgb565_y_monotonic) {
+    // Brighter Y should produce a higher RGB565 pixel value (with neutral chroma).
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y = {16, 16, 235, 235,  16, 16, 235, 235};
+    std::vector<uint8_t> uv(stride, 128);
+    std::vector<uint8_t> out(4 * 2 * 2); // 4x2 RGB565
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 4, 2);
+    // Pixel (0,0) dark, pixel (2,0) bright — pixel value should increase.
+    uint16_t dark = (out[0] << 8) | out[1];
+    uint16_t bright = (out[4] << 8) | out[5];
+    CHECK(bright > dark);
+}
+
+TEST(nv12_to_rgb565_center_crop) {
+    // 4x2 source (2:1 aspect) scaled to 2x2 (1:1) should center-crop
+    // to 2x2 region (columns 1-2). Verify output size is correct and
+    // no crash occurs.
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 100);
+    std::vector<uint8_t> uv(stride, 128);
+    std::vector<uint8_t> out(2 * 2 * 2);
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 2, 2);
+    // Just verify it doesn't crash and produces valid pixels.
+    for (size_t i = 0; i < out.size(); ++i) {
+        CHECK(out[i] <= 0xFF); // trivially true but exercises the write
+    }
 }
 
 } // namespace

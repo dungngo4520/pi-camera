@@ -5,6 +5,9 @@
 #include <vector>
 
 #include <png.h>
+#ifdef HAVE_JPEG
+#include <jpeglib.h>
+#endif
 
 namespace picamera {
 
@@ -82,6 +85,50 @@ bool writeJpeg(const uint8_t *data, size_t size, const std::string &path) {
     out.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
     out.flush();
     return out.good();
+}
+
+bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
+                  const std::string &path, int quality) {
+#ifdef HAVE_JPEG
+    FILE *fp = fopen(path.c_str(), "wb");
+    if (!fp) return false;
+
+    struct jpeg_compress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_compress(&cinfo);
+    jpeg_stdio_dest(&cinfo, fp);
+
+    cinfo.image_width = w;
+    cinfo.image_height = h;
+    cinfo.input_components = 3;
+    cinfo.in_color_space = JCS_RGB;
+
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, quality, TRUE);
+    jpeg_start_compress(&cinfo, TRUE);
+
+    // libjpeg wants row pointers; allocate once
+    std::vector<JSAMPROW> rowPtrs(h);
+    for (uint32_t r = 0; r < h; ++r)
+        rowPtrs[r] = const_cast<JSAMPROW>(rgb + (size_t)r * w * 3);
+
+    while (cinfo.next_scanline < cinfo.image_height) {
+        JDIMENSION written = jpeg_write_scanlines(&cinfo, &rowPtrs[cinfo.next_scanline],
+                                                   h - cinfo.next_scanline);
+        if (written == 0) break;
+    }
+
+    jpeg_finish_compress(&cinfo);
+    jpeg_destroy_compress(&cinfo);
+    fclose(fp);
+    return true;
+#else
+    (void)rgb; (void)w; (void)h; (void)path; (void)quality;
+    std::cerr << "writeJpegRgb: libjpeg not available at build time\n";
+    return false;
+#endif
 }
 
 }
