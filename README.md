@@ -1,6 +1,6 @@
 # pi-camera
 
-A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, or raw NV12. Ships with a GPIO button daemon for headless one-button capture.
+A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, DNG, or raw NV12. A live `--preview` mode streams the viewfinder to a Waveshare 1.44" SPI LCD HAT and captures full-res stills on joystick press — headless one-button capture with no daemon required.
 
 ## Performance
 
@@ -17,28 +17,35 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 - **HDR bracketing**: `--bracket N,ev1,ev2,...` captures N frames at different EV offsets. For example, `--bracket 3,-2,0,+2` captures 3 frames at -2EV, 0EV, and +2EV. Each frame's exposure time is scaled by 2^ev. Filenames get an `_ev±N` suffix (e.g. `photo_ev-2.0.png`). Works best with manual exposure (`--shutter` + `--iso`).
 - **EXIF metadata**: DNG files embed exposure time (as a rational fraction), ISO speed (computed from analogue gain), and DateTimeOriginal (UTC). PNG and JPEG do not currently embed EXIF (the ISP JPEG may include it depending on the Pi firmware).
 
-## Live preview (LCD/HDMI)
+## Live preview (SPI LCD)
 
-`--preview` runs a live viewfinder that captures frames at low resolution and writes them directly to the Linux framebuffer (`/dev/fb0` by default). This is designed for Waveshare SPI LCDs and HDMI displays — the Waveshare drivers create a framebuffer device, and writing directly to it gives the lowest latency (no HTTP, no pipe, no decode).
+`--preview` runs a live viewfinder that streams low-res NV12 frames to a Waveshare 1.44" LCD HAT (ST7735S, 128x128, SPI) and captures full-resolution stills when the joystick is pressed. The display is driven from userspace via `spidev` + `libgpiod` — no kernel overlay or framebuffer required, which gives the lowest latency (no HTTP, no pipe, no decode).
 
 ```bash
-# Preview to default framebuffer (/dev/fb0) at 320x240, 15fps
+# Live preview to the default SPI device (/dev/spidev0.0) at 320x240, 20fps
 ./picamera --preview
 
-# Preview to a specific framebuffer at 240x240 (1.4" Waveshare LCD)
-./picamera --preview --preview-w 240 --preview-h 240 --fb /dev/fb0
+# Rotated display + PNG captures on joystick press
+./picamera --preview --display-rotate 90 --capture-format png
 
 # Lower frame rate to save power
 ./picamera --preview --preview-fps 10
+
+# Show battery level overlay (ADS1115 ADC on /dev/i2c-1)
+./picamera --preview --battery
 ```
 
 The preview loop:
-1. Captures NV12 frames at the configured preview resolution (default 320x240)
-2. Converts to RGB24 using the NEON SIMD + multi-threaded path
-3. Scales and writes to the framebuffer (supports 16/24/32 bpp, auto-detects RGB vs BGR ordering)
-4. Runs until Ctrl+C (SIGINT/SIGTERM)
+1. Captures NV12 frames at the configured preview resolution (default 320x240) via a `CameraStream` (libcamera Viewfinder role, 4 buffers, continuous re-queue).
+2. Converts to RGB565 with center-crop + nearest-neighbor scaling (BT.601 limited-range).
+3. Optionally draws a battery icon + percentage overlay (read from an ADS1115 ADC every 3 s).
+4. Blits the RGB565 buffer to the ST7735S over SPI in 256-byte chunks.
+5. On joystick press (BCM13): stops the stream, waits 500 ms for V4L2 buffer release, captures a full-res still via `CameraApp`, then restarts the stream.
+6. Runs until Ctrl+C (SIGINT/SIGTERM).
 
-Frame rate is capped at `--preview-fps` (default 15) to avoid burning CPU on the Pi Zero. AE/AWB run continuously with a 3-frame warmup for quick convergence.
+Frame rate is capped at `--preview-fps` (default 20) to avoid burning CPU on the Pi Zero. AE/AWB run continuously. SPI runs at 16 MHz, mode 0; GPIO DC=BCM25, RST=BCM27, BL=BCM24. Default rotation is 180 (MX|MY|BGR) to orient the Waveshare HAT right-way-up; adjust with `--display-rotate` (0/90/180/270).
+
+`--preview` requires **libgpiod** at build time. On x86 dev builds without it, `--preview` prints an error and exits — build on the Pi with `libgpiod-dev` installed.
 
 ## Hardware
 
@@ -47,7 +54,8 @@ Frame rate is capped at `--preview-fps` (default 15) to avoid burning CPU on the
 | Raspberry Pi Zero 2 W | aarch64, Raspberry Pi OS Lite (Debian 13 trixie) |
 | Raspberry Pi HQ Camera (IMX477) | 12.3 MP, 4056x3040 native, 7.9 mm C-mount |
 | C-mount lens | any CS/C-mount lens via the HQ Camera's C-CS adapter |
-| Push button | wired to GPIO17 + GND (see `scripts/button-daemon.py`) |
+| Waveshare 1.44" LCD HAT (ST7735S) | 128x128 SPI display + 3 keys + joystick, for `--preview` |
+| ADS1115 ADC (optional) | 16-bit I2C ADC reading LiPo cell voltage for the `--battery` overlay |
 
 Required `config.txt` overlay on the Pi boot partition:
 
@@ -58,14 +66,15 @@ dtoverlay=imx477,gpu_mem=256
 ## Software requirements (on the Pi)
 
 ```
-sudo apt install build-essential cmake pkg-config libcamera-dev libpng-dev
+sudo apt install build-essential cmake pkg-config \
+    libcamera-dev libpng-dev libjpeg-dev libgpiod-dev
 ```
 
-Python side (button daemon only):
-
-```
-sudo apt install python3-gpiod
-```
+`libgpiod-dev` is required for `--preview` (SPI display + joystick). `libjpeg-dev`
+is required for software JPEG encoding when the Pi VC4 pipeline handler rejects
+HW MJPEG at full resolution (it falls back to NV12 + libjpeg encode). Both are
+optional at build time via CMake `pkg_check_modules QUIET` — without them the
+relevant feature prints an error at runtime instead of failing to build.
 
 Verified versions on the target board:
 
@@ -151,10 +160,20 @@ Options:
 | `--format <type>` | `ppm` | Output format: `ppm`, `raw`, `png`, `jpeg`, `dng` |
 | `--png-level <0-9>` | `6` | PNG compression level (0=none, 1=fast, 6=default, 9=best) |
 | `--bracket <n,ev...>` | — | HDR bracketing: `N,ev1,ev2,...` (e.g. `3,-2,0,+2`) |
-| `--fb <device>` | `/dev/fb0` | Framebuffer device for `--preview` |
-| `--preview-w <px>` | `320` | Preview capture width |
-| `--preview-h <px>` | `240` | Preview capture height |
-| `--preview-fps <n>` | `15` | Preview max frame rate |
+| `--preview` | — | Live preview mode (streams to SPI LCD, joystick = capture) |
+| `--preview-w <px>` | `320` | Preview stream width |
+| `--preview-h <px>` | `240` | Preview stream height |
+| `--preview-fps <n>` | `20` | Preview max frame rate |
+| `--capture-w <px>` | `4056` | Still capture width (during `--preview`) |
+| `--capture-h <px>` | `3040` | Still capture height (during `--preview`) |
+| `--capture-format <type>` | `jpeg` | Still capture format: `jpeg`, `png`, `ppm`, `dng` |
+| `--capture-dir <path>` | `.` | Directory for captured stills (during `--preview`) |
+| `--capture-prefix <str>` | `capture` | Filename prefix for captures (during `--preview`) |
+| `--spi-device <path>` | `/dev/spidev0.0` | SPI device for the ST7735S display |
+| `--display-rotate <deg>` | `180` | Display rotation: `0`, `90`, `180`, `270` |
+| `--battery` | off | Show battery level overlay on preview (ADS1115 ADC) |
+| `--battery-i2c <path>` | `/dev/i2c-1` | I2C device for the ADS1115 |
+| `--battery-addr <hex>` | `0x48` | ADS1115 I2C address |
 | `--output <pattern>` | `capture_%04d.ppm` | Timelapse filename pattern. `%04d` = sequence index, else `strftime` |
 | `--count <n>` | `1` | Number of timelapse shots (`0` = infinite) |
 | `--width <px>` | `4056` | Image width |
@@ -184,6 +203,15 @@ Options:
 ./build/picamera --timelapse 60 --count 10 \
     --output timelapse_%04d.png --format png
 
+# ISP hardware JPEG (~10x faster than the PNG path)
+./build/picamera --capture photo.jpg --format jpeg
+
+# Raw Bayer DNG for raw development (Lightroom, darktable, RawTherapee)
+./build/picamera --capture photo.dng --format dng
+
+# Live preview with battery overlay; joystick press captures full-res JPEG
+./build/picamera --preview --battery
+
 # Quick 1080p capture
 ./build/picamera --capture quick.ppm --width 1920 --height 1080
 ```
@@ -200,6 +228,8 @@ Press `Ctrl-C` (SIGINT/SIGTERM) during a timelapse to stop gracefully after the 
 |---|---|---|---|
 | PPM | `.ppm` | ~37 MB | Uncompressed RGB, no encoder dependency. Fastest to write. |
 | PNG | `.png` | ~5-15 MB | Lossless, libpng. CPU-heavy on the Pi Zero (~40 s for 12 MP). |
+| JPEG | `.jpg` | ~2-6 MB | ISP hardware MJPEG (Pi only), ~10x faster than PNG. Falls back to software libjpeg encode if the VC4 pipeline rejects HW MJPEG at full res. |
+| DNG | `.dng` | ~24 MB | Raw Bayer (SRGGB10_CSI2P) unpacked to 16-bit, DNG 1.6 + EXIF. For raw development. |
 | Raw NV12 | `.raw` | ~18 MB | Y plane + UV plane as captured by the ISP. No color conversion. |
 
 ## Why warmup frames matter
@@ -215,32 +245,21 @@ Reference: a real 12 MP photo is typically:
 
 If your PNG is suspiciously small (under ~1 MB at full res), it's almost certainly a black or near-uniform frame — increase `--warmup`.
 
-## GPIO button daemon
+## Headless one-button capture (`--preview`)
 
-`scripts/button-daemon.py` watches a push button on GPIO17 (falling edge, internal pull-up) and runs `scripts/capture.sh` on each press. The ACT LED blinks on success, stays solid for 1.5 s on failure.
+The `--preview` mode is the headless capture path: the Waveshare HAT's joystick
+press (BCM13) triggers a full-res still capture without needing a separate
+daemon or SSH session. The display flashes white-then-black for visual feedback,
+the stream is briefly stopped to release the camera, the still is captured, and
+the stream restarts automatically. Captures are saved as
+`<prefix>_YYYYMMDD-HHMMSS.<ext>` in `--capture-dir`.
 
 ```bash
-# Install as a systemd service (run as root for LED + GPIO access)
-sudo cp scripts/button-daemon.py /usr/local/bin/
-sudo cp scripts/capture.sh /usr/local/bin/
-
-# /etc/systemd/system/picamera-button.service:
-# [Unit]
-# Description=Pi Camera Button Daemon
-# After=local-fs.target
-#
-# [Service]
-# ExecStart=/usr/local/bin/button-daemon.py
-# Restart=on-failure
-# User=root
-#
-# [Install]
-# WantedBy=multi-user.target
-
-sudo systemctl enable --now picamera-button
+./picamera --preview --capture-format jpeg --capture-dir ~/photos
 ```
 
-`capture.sh` defaults to `~/camera/build/picamera` and `~/photos/`. Use `--quick` for 1920x1080, `--full` for 4056x3040, `--dir <path>` to override the output directory.
+No systemd unit is needed — just run `--preview` (e.g. from a tty or an
+autostart script). Ctrl+C exits cleanly and releases the camera.
 
 ## Flashing the Pi (first-time setup)
 
@@ -248,7 +267,7 @@ sudo systemctl enable --now picamera-button
 
 ## Testing
 
-Unit tests cover the pure-logic parts of the codebase (no camera hardware needed): NV12→RGB conversion, CLI argument parsing, the output writers (PPM/PNG/raw round-trip), and the timelapse filename-pattern validator (including the format-string-vulnerability rejections).
+Unit tests cover the pure-logic parts of the codebase (no camera hardware needed): NV12→RGB conversion, CLI argument parsing, the output writers (PPM/PNG/raw/JPEG/DNG round-trip), the DNG/TIFF writer, the LiPo battery SOC curve + ADS1115, the font renderer, and the timelapse filename-pattern validator (including the format-string-vulnerability rejections).
 
 ```bash
 make test             # build + run unit tests (ctest)
@@ -264,31 +283,41 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
 
 ```
 .
-├── CMakeLists.txt         CMake build (C++20, libcamera + libpng via pkg-config)
+├── CMakeLists.txt         CMake build (C++20, libcamera/libpng/libjpeg/libgpiod via pkg-config)
+├── CMakePresets.json      native + asan configure/build/test presets
 ├── Makefile               build / clean / test / test-sanitize / tidy / deploy / cross-build / flash
 ├── .clang-tidy            clang-tidy checks (correctness-focused, style noise disabled)
 ├── .github/workflows/ci.yml  CI: build+test+sanitize+tidy (x86-64) + cross-build (aarch64)
 ├── config/
 │   └── wpa_supplicant.conf.example   WiFi config template (copy + edit before flashing)
 ├── scripts/
-│   ├── button-daemon.py   GPIO17 button watcher -> capture.sh, with ACT LED feedback
-│   └── capture.sh         Wrapper: picks resolution, timestamps filename, reports size
+│   └── cross-build.sh     Docker + qemu-user-static aarch64 cross-build
 ├── tests/
 │   ├── test_runner.h      Minimal test framework (TEST/CHECK/REQUIRE, no deps)
 │   ├── test_main.cpp      Runner: executes all registered tests
 │   ├── test_image.cpp     NV12->RGB conversion tests
 │   ├── test_output.cpp    PPM / PNG / raw writer round-trip tests
+│   ├── test_output_writer.cpp  OutputWriter factory + per-format writer tests
 │   ├── test_cli.cpp       Argument parsing tests
-│   └── test_timelapse.cpp Filename pattern validation tests
+│   ├── test_timelapse.cpp Filename pattern validation tests
+│   ├── test_dng.cpp       DNG/TIFF writer tests
+│   └── test_battery.cpp   LiPo SOC curve + font renderer tests
 └── src/
     ├── main.cpp           Entry point: parse args, init camera, dispatch mode
-    ├── camera.{h,cpp}     CameraApp: init/configure/capture/timelapse/listControls
+    ├── camera_config.h    OutputFormat enum + CameraConfig struct
+    ├── camera.{h,cpp}     CameraApp: init/configure/capture/bracket/timelapse/listControls
     ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
-    ├── image.{h,cpp}      NV12 -> RGB24 conversion (NEON SIMD + multi-threaded, BT.601 limited-range)
+    ├── image.{h,cpp}      NV12 -> RGB24 / RGB565 conversion (NEON SIMD + multi-threaded, BT.601)
+    ├── output.{h,cpp}     Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
+    ├── output_writer.{h,cpp}  OutputWriter Strategy + factory (per-format writers)
     ├── timelapse.{h,cpp}  Filename pattern formatting + validation
     ├── dng.{h,cpp}        DNG/TIFF raw Bayer writer with EXIF metadata
-    ├── preview.{h,cpp}    Live framebuffer preview (LCD/HDMI viewfinder)
-    └── output.{h,cpp}     PPM / PNG / raw NV12 / JPEG writers (stream-state verified)
+    ├── preview.{h,cpp}    Live SPI LCD preview loop (ST7735S viewfinder + joystick capture)
+    ├── stream.{h,cpp}     CameraStream: continuous Viewfinder-role NV12 streaming
+    ├── display.{h,cpp}    ST7735S SPI display driver (spidev + libgpiod)
+    ├── buttons.{h,cpp}    GPIO button/joystick input (libgpiod v2 edge events)
+    ├── battery.{h,cpp}    ADS1115 I2C ADC battery monitor + LiPo SOC curve
+    └── font.{h,cpp}       5x7 bitmap font + battery icon renderer for RGB565 overlays
 ```
 
 ## Troubleshooting
@@ -301,6 +330,6 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
 
 **`Failed to acquire camera`.** Another process (e.g. a leftover `picamera` or `libcamera-hello`) is holding the camera. Kill it and retry.
 
-**Permission errors writing to `/sys/class/leds/ACT/brightness`.** The button daemon needs root for LED control. Run via systemd as `User=root`, or accept that LED feedback is disabled (the daemon logs a warning and continues).
+**`Preview: libgpiod was not available at build time.`** `--preview` was built without libgpiod. Rebuild on the Pi with `libgpiod-dev` installed.
 
 **`configure()` failures.** The Pi VC4 ISP pipeline supports a limited set of resolutions/strides. If you request an unusual size, libcamera's `validate()` may adjust it; check the `Configured: WxH stride:S` log line for the actual negotiated values.

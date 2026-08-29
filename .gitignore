@@ -5,4 +5,4 @@ build-san/
 *.raw
 picamera-arm64
 config/wpa_supplicant.conf
-config/ssh
+tidy.log

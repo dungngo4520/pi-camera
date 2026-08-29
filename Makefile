@@ -25,9 +25,15 @@ test-sanitize: asan
 asan:
 	mkdir -p build-san && cd build-san && cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICAMERA_ENABLE_SANITIZERS=ON .. && make -j$$(nproc) picamera_tests
 
-# Run clang-tidy on all src/ files, ignoring system-header warnings.
+# Run clang-tidy on all src/ files. Mirrors the CI filter: only fail on
+# warnings originating in our src/ files (clang-tidy emits absolute paths
+# from compile_commands.json, so match on the trailing /src/...cpp component).
 tidy: build
-	@clang-tidy -p build src/*.cpp 2>&1 | grep -v "libcamera\|png.h\|cstddef\|generated" || true
+	@clang-tidy -p build src/*.cpp 2>&1 | tee tidy.log
+	@if grep -E "/src/[^/]+\.cpp:[0-9]+:[0-9]+: warning:" tidy.log; then \
+		echo "clang-tidy found warnings in src/"; rm -f tidy.log; exit 1; \
+	fi
+	@rm -f tidy.log
 
 flash:
 	@echo "=== Flash Pi OS via USB (rpiboot) ==="
