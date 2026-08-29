@@ -308,7 +308,7 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
     ├── camera.{h,cpp}     CameraApp: init/configure/capture/bracket/timelapse/listControls
     ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
     ├── image.{h,cpp}      NV12 -> RGB24 / RGB565 conversion (NEON SIMD + multi-threaded, BT.601)
-    ├── output.{h,cpp}     Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
+    ├── encoders.{h,cpp}    Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
     ├── output_writer.{h,cpp}  OutputWriter Strategy + factory (per-format writers)
     ├── timelapse.{h,cpp}  Filename pattern formatting + validation
     ├── dng.{h,cpp}        DNG/TIFF raw Bayer writer with EXIF metadata

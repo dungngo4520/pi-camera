@@ -1,5 +1,5 @@
 #include "test_runner.h"
-#include "output.h"
+#include "encoders.h"
 
 #include <cstdio>
 #include <cstring>

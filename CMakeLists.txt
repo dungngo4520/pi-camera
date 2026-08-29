@@ -23,7 +23,7 @@ set(picamera_sources
     src/camera.cpp
     src/cli.cpp
     src/image.cpp
-    src/output.cpp
+    src/encoders.cpp
     src/output_writer.cpp
     src/timelapse.cpp
     src/dng.cpp
@@ -90,7 +90,7 @@ if(PICAMERA_BUILD_TESTS)
         tests/test_dng.cpp
         tests/test_battery.cpp
         src/image.cpp
-        src/output.cpp
+        src/encoders.cpp
         src/output_writer.cpp
         src/cli.cpp
         src/timelapse.cpp

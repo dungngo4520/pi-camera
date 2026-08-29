@@ -2,7 +2,7 @@
 
 #include "dng.h"
 #include "image.h"
-#include "output.h"
+#include "encoders.h"
 
 #include <chrono>
 #include <cmath>
