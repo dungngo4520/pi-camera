@@ -36,11 +36,11 @@ constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
                                  (b >> 3));
 }
 
-constexpr uint16_t COLOR_WHITE  = 0xFFFF;
-constexpr uint16_t COLOR_BLACK  = 0x0000;
-constexpr uint16_t COLOR_GREEN  = rgb565(0, 200, 0);
-constexpr uint16_t COLOR_YELLOW = rgb565(220, 200, 0);
-constexpr uint16_t COLOR_RED    = rgb565(220, 0, 0);
-constexpr uint16_t COLOR_GRAY   = rgb565(120, 120, 120);
+constexpr uint16_t kColorWhite  = 0xFFFF;
+constexpr uint16_t kColorBlack  = 0x0000;
+constexpr uint16_t kColorGreen  = rgb565(0, 200, 0);
+constexpr uint16_t kColorYellow = rgb565(220, 200, 0);
+constexpr uint16_t kColorRed    = rgb565(220, 0, 0);
+constexpr uint16_t kColorGray   = rgb565(120, 120, 120);
 
 } // namespace picamera

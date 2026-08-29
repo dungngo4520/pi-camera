@@ -54,7 +54,7 @@ TEST(font_draw_text_returns_width) {
     // "85%" = 3 chars × 6px (5+1 spacing) = 18px
     std::vector<uint8_t> fb(128 * 128 * 2, 0);
     int w = drawText(fb.data(), 128, 128, 0, 0, "85%",
-                     COLOR_WHITE, COLOR_BLACK, false);
+                     kColorWhite, kColorBlack, false);
     CHECK_EQ(w, 18);
 }
 
@@ -63,13 +63,13 @@ TEST(font_draw_text_writes_pixels) {
     // at least one white pixel in the 5x7 area.
     std::vector<uint8_t> fb(128 * 128 * 2, 0);
     drawText(fb.data(), 128, 128, 0, 0, "8",
-             COLOR_WHITE, COLOR_BLACK, false);
+             kColorWhite, kColorBlack, false);
     bool foundWhite = false;
     for (int y = 0; y < 7 && !foundWhite; ++y) {
         for (int x = 0; x < 5 && !foundWhite; ++x) {
             size_t idx = (y * 128 + x) * 2;
             uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-            if (px == COLOR_WHITE) foundWhite = true;
+            if (px == kColorWhite) foundWhite = true;
         }
     }
     CHECK(foundWhite);
@@ -79,14 +79,14 @@ TEST(font_draw_text_transparent_no_bg) {
     // With transparent=true, background pixels should not be overwritten.
     // Fill fb with a known color, draw text transparently, check that
     // non-glyph pixels retain the original color.
-    uint16_t bg = COLOR_GRAY;
+    uint16_t bg = kColorGray;
     std::vector<uint8_t> fb(128 * 128 * 2);
     for (size_t i = 0; i < 128 * 128; ++i) {
         fb[i * 2]     = bg >> 8;
         fb[i * 2 + 1] = bg & 0xFF;
     }
     drawText(fb.data(), 128, 128, 0, 0, "1",
-             COLOR_WHITE, COLOR_BLACK, true);
+             kColorWhite, kColorBlack, true);
     // Pixel at (0,0) — row 0 of "1" is 0x04 (only row 2 is set), so (0,0) is bg
     size_t idx = 0;
     uint16_t px = (fb[idx] << 8) | fb[idx + 1];
@@ -100,11 +100,11 @@ TEST(font_draw_battery_icon_outline) {
     // Top-left corner of outline
     size_t idx = (0 * 128 + 0) * 2;
     uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_WHITE);
+    CHECK_EQ(px, kColorWhite);
     // Bottom-left corner
     idx = (8 * 128 + 0) * 2;
     px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_WHITE);
+    CHECK_EQ(px, kColorWhite);
 }
 
 TEST(font_draw_battery_icon_fill_color) {
@@ -114,7 +114,7 @@ TEST(font_draw_battery_icon_fill_color) {
     // Interior pixel at (1,4) should be yellow (fill area)
     size_t idx = (4 * 128 + 1) * 2;
     uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_YELLOW);
+    CHECK_EQ(px, kColorYellow);
 }
 
 TEST(font_draw_battery_icon_fill_proportional) {
@@ -124,14 +124,14 @@ TEST(font_draw_battery_icon_fill_proportional) {
     // Last interior column (x=13) should be green
     size_t idx = (4 * 128 + 13) * 2;
     uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_GREEN);
+    CHECK_EQ(px, kColorGreen);
 
     // 0% → no fill (all interior black)
     std::fill(fb.begin(), fb.end(), 0);
     drawBatteryIcon(fb.data(), 128, 128, 0, 0, 0);
     idx = (4 * 128 + 1) * 2;
     px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_BLACK);
+    CHECK_EQ(px, kColorBlack);
 }
 
 TEST(font_draw_battery_icon_clamps) {
@@ -140,21 +140,21 @@ TEST(font_draw_battery_icon_clamps) {
     drawBatteryIcon(fb.data(), 128, 128, 0, 0, 150);
     size_t idx = (4 * 128 + 13) * 2;
     uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_GREEN);
+    CHECK_EQ(px, kColorGreen);
 
     // Percent < 0 should clamp to 0 (no fill)
     std::fill(fb.begin(), fb.end(), 0);
     drawBatteryIcon(fb.data(), 128, 128, 0, 0, -10);
     idx = (4 * 128 + 1) * 2;
     px = (fb[idx] << 8) | fb[idx + 1];
-    CHECK_EQ(px, COLOR_BLACK);
+    CHECK_EQ(px, kColorBlack);
 }
 
 TEST(font_rgb565_color_encoding) {
     // Verify color constants are correct RGB565
-    CHECK_EQ(COLOR_WHITE, 0xFFFF);
-    CHECK_EQ(COLOR_BLACK, 0x0000);
+    CHECK_EQ(kColorWhite, 0xFFFF);
+    CHECK_EQ(kColorBlack, 0x0000);
     // Green: R=0, G=200, B=0 → RGB565 = (0<<11)|(200>>2<<5)|(0)
     // G=200 → 200>>2 = 50 → 50<<5 = 0x0640
-    CHECK_EQ(COLOR_GREEN, 0x0640);
+    CHECK_EQ(kColorGreen, 0x0640);
 }

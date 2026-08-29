@@ -15,7 +15,7 @@ namespace picamera {
 // Points are (voltage, percent). Voltage is open-circuit rest voltage;
 // under load the voltage sags, so readings are approximate (±5-10%).
 struct VoltagePoint { double v; int pct; };
-static const VoltagePoint lipoCurve[] = {
+static const VoltagePoint kLipoCurve[] = {
     {4.20, 100},
     {4.10,  90},
     {4.00,  80},
@@ -28,17 +28,17 @@ static const VoltagePoint lipoCurve[] = {
     {3.30,   5},
     {3.00,   0},
 };
-static const int lipoCurveLen = sizeof(lipoCurve) / sizeof(lipoCurve[0]);
+static const int kLipoCurveLen = sizeof(kLipoCurve) / sizeof(kLipoCurve[0]);
 
 int lipoVoltageToPercent(double voltage) {
     // Clamp to curve range
-    if (voltage >= lipoCurve[0].v) return 100;
-    if (voltage <= lipoCurve[lipoCurveLen - 1].v) return 0;
+    if (voltage >= kLipoCurve[0].v) return 100;
+    if (voltage <= kLipoCurve[kLipoCurveLen - 1].v) return 0;
 
     // Find the segment containing this voltage and interpolate
-    for (int i = 0; i < lipoCurveLen - 1; ++i) {
-        const auto &hi = lipoCurve[i];
-        const auto &lo = lipoCurve[i + 1];
+    for (int i = 0; i < kLipoCurveLen - 1; ++i) {
+        const auto &hi = kLipoCurve[i];
+        const auto &lo = kLipoCurve[i + 1];
         if (voltage <= hi.v && voltage >= lo.v) {
             double t = (voltage - lo.v) / (hi.v - lo.v);
             return static_cast<int>(std::round(lo.pct + t * (hi.pct - lo.pct)));

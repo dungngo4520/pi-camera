@@ -35,7 +35,7 @@ struct AwbEntry {
     const char *name;
     controls::AwbModeEnum mode;
 };
-constexpr AwbEntry awbTable[] = {
+constexpr AwbEntry kAwbTable[] = {
     {"auto",         controls::AwbAuto},
     {"incandescent", controls::AwbIncandescent},
     {"tungsten",     controls::AwbTungsten},
@@ -46,7 +46,7 @@ constexpr AwbEntry awbTable[] = {
 };
 
 std::optional<controls::AwbModeEnum> lookupAwb(std::string_view name) {
-    for (const auto &e : awbTable) {
+    for (const auto &e : kAwbTable) {
         if (name == e.name) return e.mode;
     }
     return std::nullopt;

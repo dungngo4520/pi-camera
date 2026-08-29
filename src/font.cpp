@@ -18,7 +18,7 @@ struct Glyph {
     uint8_t cols[5];
 };
 
-static const Glyph glyphTable[] = {
+static const Glyph kGlyphTable[] = {
     {' ', {0x00, 0x00, 0x00, 0x00, 0x00}},
     {'+', {0x00, 0x04, 0x0E, 0x04, 0x00}},
     {'-', {0x00, 0x00, 0x0E, 0x00, 0x00}},
@@ -62,18 +62,18 @@ static const Glyph glyphTable[] = {
     {'Z', {0x1F, 0x01, 0x06, 0x08, 0x1F}},
 };
 
-static const int glyphTableLen = sizeof(glyphTable) / sizeof(glyphTable[0]);
+static const int kGlyphTableLen = sizeof(kGlyphTable) / sizeof(kGlyphTable[0]);
 
 namespace {
 
 const uint8_t *findGlyph(char ch) {
     // Convert lowercase to uppercase
     if (ch >= 'a' && ch <= 'z') ch -= 32;
-    for (int i = 0; i < glyphTableLen; ++i) {
-        if (glyphTable[i].ch == ch) return glyphTable[i].cols;
+    for (int i = 0; i < kGlyphTableLen; ++i) {
+        if (kGlyphTable[i].ch == ch) return kGlyphTable[i].cols;
     }
     // Unknown char: return space
-    return glyphTable[0].cols;
+    return kGlyphTable[0].cols;
 }
 
 // Write a single RGB565 pixel (big-endian, for SPI display) at (x, y)
@@ -126,24 +126,24 @@ void drawBatteryIcon(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
     // Fill color based on charge level
     uint16_t fillColor;
-    if (percent > 50) fillColor = COLOR_GREEN;
-    else if (percent > 20) fillColor = COLOR_YELLOW;
-    else fillColor = COLOR_RED;
+    if (percent > 50) fillColor = kColorGreen;
+    else if (percent > 20) fillColor = kColorYellow;
+    else fillColor = kColorRed;
 
     // Draw outline (1px border)
     for (int dx = 0; dx < 16; ++dx) {
-        setPixel(rgb565, fbW, fbH, x + dx, y, COLOR_WHITE);
-        setPixel(rgb565, fbW, fbH, x + dx, y + 8, COLOR_WHITE);
+        setPixel(rgb565, fbW, fbH, x + dx, y, kColorWhite);
+        setPixel(rgb565, fbW, fbH, x + dx, y + 8, kColorWhite);
     }
     for (int dy = 0; dy < 9; ++dy) {
-        setPixel(rgb565, fbW, fbH, x, y + dy, COLOR_WHITE);
-        setPixel(rgb565, fbW, fbH, x + 15, y + dy, COLOR_WHITE);
+        setPixel(rgb565, fbW, fbH, x, y + dy, kColorWhite);
+        setPixel(rgb565, fbW, fbH, x + 15, y + dy, kColorWhite);
     }
 
     // Draw terminal nub
     for (int dy = 2; dy <= 6; ++dy) {
-        setPixel(rgb565, fbW, fbH, x + 16, y + dy, COLOR_WHITE);
-        setPixel(rgb565, fbW, fbH, x + 17, y + dy, COLOR_WHITE);
+        setPixel(rgb565, fbW, fbH, x + 16, y + dy, kColorWhite);
+        setPixel(rgb565, fbW, fbH, x + 17, y + dy, kColorWhite);
     }
 
     // Draw fill bar (inside the outline: x+1 to x+14, y+1 to y+7)
@@ -158,7 +158,7 @@ void drawBatteryIcon(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
     // Clear unfilled portion to black
     for (int dx = fillW; dx < 13; ++dx) {
         for (int dy = 1; dy <= 7; ++dy) {
-            setPixel(rgb565, fbW, fbH, x + 1 + dx, y + dy, COLOR_BLACK);
+            setPixel(rgb565, fbW, fbH, x + 1 + dx, y + dy, kColorBlack);
         }
     }
 }

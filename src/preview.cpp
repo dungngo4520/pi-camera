@@ -129,7 +129,7 @@ bool runPreview(const PreviewConfig &pcfg) {
                 std::string pctStr = std::to_string(lastBattery.percent) + "%";
                 drawText(rgb565.data(), display.width(), display.height(),
                          iconX - 2, iconY + 11, pctStr,
-                         COLOR_WHITE, COLOR_BLACK, false);
+                         kColorWhite, kColorBlack, false);
             }
         }
 
