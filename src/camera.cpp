@@ -1,5 +1,6 @@
 #include "camera.h"
 #include "output_writer.h"
+#include "stop_flag.h"
 #include "timelapse.h"
 
 #include <iostream>
@@ -27,19 +28,7 @@ using namespace std::chrono_literals;
 
 namespace picamera {
 
-// SIGINT/SIGTERM flag for graceful timelapse interruption.
 namespace {
-std::atomic<bool> g_stopRequested{false};
-void stopSignalHandler(int) { g_stopRequested.store(true); }
-void installStopHandler() {
-    g_stopRequested.store(false);
-    std::signal(SIGINT, stopSignalHandler);
-    std::signal(SIGTERM, stopSignalHandler);
-}
-void restoreStopHandler() {
-    std::signal(SIGINT, SIG_DFL);
-    std::signal(SIGTERM, SIG_DFL);
-}
 
 // AWB mode name -> enum. A plain array of pairs avoids the heap allocation
 // (and potential throwing) of a std::map with static storage duration; linear
@@ -357,10 +346,11 @@ bool CameraApp::captureBracket(const std::string &baseFilename) {
 bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern) {
     bool infinite = (count == 0);
 
-    installStopHandler();
+    StopFlag stop;
+    stop.install();
 
     for (int i = 0; infinite || i < count; ++i) {
-        if (g_stopRequested.load()) {
+        if (stop.stopRequested()) {
             std::cerr << "\nTimelapse interrupted by signal after " << i
                       << " shots\n";
             break;
@@ -371,7 +361,6 @@ bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern
             filename = formatTimelapseName(pattern, i);
         } catch (const std::exception &e) {
             std::cerr << "Bad --output pattern: " << e.what() << "\n";
-            restoreStopHandler();
             return false;
         }
         std::cout << "[" << (i + 1) << (infinite ? "/inf" : "/" + std::to_string(count))
@@ -379,21 +368,19 @@ bool CameraApp::timelapse(int intervalSec, int count, const std::string &pattern
 
         if (!capture(filename)) {
             std::cerr << "Capture failed at shot " << i << "\n";
-            restoreStopHandler();
             return false;
         }
 
-        if ((infinite || i < count - 1) && !g_stopRequested.load()) {
+        if ((infinite || i < count - 1) && !stop.stopRequested()) {
             // Sleep in small increments so a signal is noticed promptly.
             auto end = std::chrono::steady_clock::now() + std::chrono::seconds(intervalSec);
             while (std::chrono::steady_clock::now() < end) {
-                if (g_stopRequested.load()) break;
+                if (stop.stopRequested()) break;
                 std::this_thread::sleep_for(200ms);
             }
         }
     }
 
-    restoreStopHandler();
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "preview.h"
 #include "camera.h"
 #include "image.h"
+#include "stop_flag.h"
 #include "stream.h"
 
 #ifdef HAVE_GPIOD
@@ -11,8 +12,6 @@
 
 #include <iostream>
 #include <cstring>
-#include <csignal>
-#include <atomic>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -22,11 +21,6 @@
 namespace picamera {
 
 namespace {
-std::atomic<bool> g_previewStop{false};
-
-void previewSignalHandler(int) {
-    g_previewStop.store(true);
-}
 
 // Generate a timestamped filename: prefix_YYYYMMDD-HHMMSS.ext
 std::string makeCaptureFilename(const std::string &dir,
@@ -84,9 +78,8 @@ bool runPreview(const PreviewConfig &pcfg) {
     const auto batteryReadInterval = std::chrono::seconds(3);
 
     // Install signal handler for clean shutdown
-    g_previewStop.store(false);
-    auto oldInt = std::signal(SIGINT, previewSignalHandler);
-    auto oldTerm = std::signal(SIGTERM, previewSignalHandler);
+    StopFlag stop;
+    stop.install();
 
     // Allocate RGB565 framebuffer for the display
     size_t dispPixels = static_cast<size_t>(display.width()) * display.height();
@@ -102,13 +95,13 @@ bool runPreview(const PreviewConfig &pcfg) {
               << " (max " << pcfg.maxFps << " fps)\n";
     std::cout << "Preview: press joystick to capture, Ctrl+C to exit\n";
 
-    while (!g_previewStop.load()) {
+    while (!stop.stopRequested()) {
         auto frameStart = std::chrono::steady_clock::now();
 
         // Grab a frame from the camera stream
         auto frame = stream.grabFrame(2000);
         if (!frame.y) {
-            if (g_previewStop.load()) break;
+            if (stop.stopRequested()) break;
             std::cerr << "Preview: frame timeout\n";
             continue;
         }
@@ -210,10 +203,7 @@ bool runPreview(const PreviewConfig &pcfg) {
         }
     }
 
-    // Restore signal handlers
-    std::signal(SIGINT, oldInt);
-    std::signal(SIGTERM, oldTerm);
-
+    // StopFlag restores the signal handlers in its destructor.
     stream.shutdown();
     buttons.shutdown();
     display.shutdown();
