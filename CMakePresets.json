@@ -1,0 +1,58 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "native",
+      "displayName": "Native x86-64 release build",
+      "description": "Default native build with compile_commands.json for IDE/clang-tidy.",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Native x86-64 debug + ASan/UBSan",
+      "description": "Debug build with address + undefined-behavior sanitizers for the test binary.",
+      "binaryDir": "${sourceDir}/build-san",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "PICAMERA_ENABLE_SANITIZERS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "native",
+      "configurePreset": "native"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "targets": ["picamera_tests"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error",
+        "environment": {
+          "ASAN_OPTIONS": "detect_leaks=1,abort_on_error=1",
+          "UBSAN_OPTIONS": "print_stacktrace=1"
+        }
+      }
+    }
+  ]
+}
