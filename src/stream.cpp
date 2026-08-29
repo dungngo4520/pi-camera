@@ -18,39 +18,14 @@ CameraStream::CameraStream() = default;
 CameraStream::~CameraStream() { shutdown(); }
 
 bool CameraStream::init() {
-    cm_ = std::make_shared<CameraManager>();
-    if (cm_->start()) {
-        std::cerr << "Stream: CameraManager::start() failed\n";
-        cm_.reset();
-        return false;
-    }
-
-    auto cameras = cm_->cameras();
-    if (cameras.empty()) {
-        std::cerr << "Stream: No cameras found\n";
-        cm_->stop();
-        cm_.reset();
-        return false;
-    }
-
-    cam_ = cameras[0];
-    if (cam_->acquire()) {
-        std::cerr << "Stream: Failed to acquire camera\n";
-        cam_.reset();
-        cm_->stop();
-        cm_.reset();
-        return false;
-    }
-
-    std::cout << "Stream: camera " << cam_->id() << " acquired\n";
-    return true;
+    return handle_.init("Stream");
 }
 
 bool CameraStream::start(uint32_t width, uint32_t height) {
-    if (!cam_) return false;
+    if (!handle_.camera()) return false;
 
     // Configure with Viewfinder role for continuous streaming
-    auto cfg = cam_->generateConfiguration({StreamRole::Viewfinder});
+    auto cfg = handle_.camera()->generateConfiguration({StreamRole::Viewfinder});
     if (!cfg) {
         std::cerr << "Stream: generateConfiguration failed\n";
         return false;
@@ -68,7 +43,7 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
         return false;
     }
 
-    if (cam_->configure(cfg.get())) {
+    if (handle_.camera()->configure(cfg.get())) {
         std::cerr << "Stream: cam->configure() failed\n";
         return false;
     }
@@ -78,7 +53,7 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
     height_ = sc.size.height;
     stride_ = sc.stride;
 
-    allocator_ = std::make_unique<FrameBufferAllocator>(cam_);
+    allocator_ = std::make_unique<FrameBufferAllocator>(handle_.camera());
     if (allocator_->allocate(stream_) < 0) {
         std::cerr << "Stream: buffer allocation failed\n";
         allocator_.reset();
@@ -90,7 +65,7 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
               << " stride:" << stride_ << "\n";
 
     // Start camera and queue all buffers
-    if (cam_->start()) {
+    if (handle_.camera()->start()) {
         std::cerr << "Stream: cam->start() failed\n";
         allocator_.reset();
         stream_ = nullptr;
@@ -99,10 +74,10 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
     started_ = true;
 
     // Install request completion callback
-    cam_->requestCompleted.connect(this, [this](Request *r) {
+    handle_.camera()->requestCompleted.connect(this, [this](Request *r) {
         if (r->status() != Request::RequestComplete) {
             r->reuse(Request::ReuseBuffers);
-            cam_->queueRequest(r);
+            handle_.camera()->queueRequest(r);
             return;
         }
 
@@ -110,7 +85,7 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
         const auto &buffers = r->buffers();
         if (buffers.empty()) {
             r->reuse(Request::ReuseBuffers);
-            cam_->queueRequest(r);
+            handle_.camera()->queueRequest(r);
             return;
         }
 
@@ -149,7 +124,7 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
 
         // Re-queue the buffer for continuous capture
         r->reuse(Request::ReuseBuffers);
-        cam_->queueRequest(r);
+        handle_.camera()->queueRequest(r);
 
         // Notify waiting thread
         {
@@ -163,13 +138,13 @@ bool CameraStream::start(uint32_t width, uint32_t height) {
     const auto &buffers = allocator_->buffers(stream_);
     requests_.reserve(buffers.size());
     for (size_t i = 0; i < buffers.size(); ++i) {
-        auto req = cam_->createRequest();
+        auto req = handle_.camera()->createRequest();
         if (!req) {
             std::cerr << "Stream: createRequest failed\n";
             break;
         }
         req->addBuffer(stream_, buffers[i].get());
-        if (cam_->queueRequest(req.get())) {
+        if (handle_.camera()->queueRequest(req.get())) {
             std::cerr << "Stream: queueRequest failed\n";
             break;
         }
@@ -199,12 +174,12 @@ StreamFrame CameraStream::grabFrame(int timeoutMs) {
 }
 
 void CameraStream::stop() {
-    if (!started_ || !cam_) return;
+    if (!started_ || !handle_.camera()) return;
 
-    cam_->requestCompleted.disconnect();
+    handle_.camera()->requestCompleted.disconnect();
 
     // Stop camera (this waits for all queued requests to complete/cancel)
-    cam_->stop();
+    handle_.camera()->stop();
     started_ = false;
 
     requests_.clear();
@@ -212,15 +187,8 @@ void CameraStream::stop() {
 
 void CameraStream::shutdown() {
     stop();
-    if (cam_) {
-        allocator_.reset();
-        cam_->release();
-        cam_.reset();
-    }
-    if (cm_) {
-        cm_->stop();
-        cm_.reset();
-    }
+    allocator_.reset();
+    handle_.shutdown();
     stream_ = nullptr;
 }
 

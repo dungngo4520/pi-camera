@@ -72,6 +72,7 @@ endif()
 add_executable(picamera
     src/main.cpp
     src/camera.cpp
+    src/camera_handle.cpp
     src/preview.cpp
     src/stream.cpp
     src/timelapse_runner.cpp

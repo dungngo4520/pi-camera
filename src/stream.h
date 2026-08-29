@@ -1,5 +1,7 @@
 #pragma once
 
+#include "camera_handle.h"
+
 #include <libcamera/libcamera.h>
 #include <cstdint>
 #include <memory>
@@ -21,8 +23,8 @@ struct StreamFrame {
 
 // Camera streaming via libcamera Viewfinder role.
 // Continuously captures frames at low resolution for live preview.
-// Owns its own CameraManager/Camera lifecycle — release() must be called
-// before any other CameraApp can acquire the camera.
+// Owns its own CameraManager/Camera lifecycle via CameraHandle — shutdown()
+// must be called before any other CameraApp can acquire the camera.
 class CameraStream {
 public:
     CameraStream();
@@ -42,8 +44,7 @@ public:
     uint32_t stride() const { return stride_; }
 
 private:
-    std::shared_ptr<libcamera::CameraManager> cm_;
-    std::shared_ptr<libcamera::Camera> cam_;
+    CameraHandle handle_;
     std::unique_ptr<libcamera::FrameBufferAllocator> allocator_;
     libcamera::Stream *stream_ = nullptr;
     std::vector<std::unique_ptr<libcamera::Request>> requests_;

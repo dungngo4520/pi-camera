@@ -57,27 +57,7 @@ CameraApp::CameraApp() = default;
 CameraApp::~CameraApp() { shutdown(); }
 
 bool CameraApp::init() {
-    cm_ = std::make_shared<CameraManager>();
-    if (cm_->start()) {
-        std::cerr << "CameraManager::start() failed\n";
-        return false;
-    }
-
-    auto cameras = cm_->cameras();
-    if (cameras.empty()) {
-        std::cerr << "No cameras found\n";
-        return false;
-    }
-
-    cam_ = cameras[0];
-    std::cout << "Camera: " << cam_->id() << "\n";
-
-    if (cam_->acquire()) {
-        std::cerr << "Failed to acquire camera\n";
-        return false;
-    }
-
-    return true;
+    return handle_.init("Camera");
 }
 
 bool CameraApp::configure(const CameraConfig &cfg) {
@@ -87,7 +67,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     auto roles = (cfg.format == OutputFormat::DNG)
                  ? std::vector<StreamRole>{StreamRole::Raw}
                  : std::vector<StreamRole>{StreamRole::StillCapture};
-    auto camCfg = cam_->generateConfiguration(roles);
+    auto camCfg = handle_.camera()->generateConfiguration(roles);
     if (!camCfg) {
         std::cerr << "generateConfiguration failed\n";
         return false;
@@ -139,7 +119,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
         swJpegEncode_ = true;
     }
 
-    if (cam_->configure(camCfg.get())) {
+    if (handle_.camera()->configure(camCfg.get())) {
         std::cerr << "cam->configure() failed\n";
         return false;
     }
@@ -158,7 +138,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
             if (cfg.width * cfg.height > 2000000)
                 sc.bufferCount = 1;
             camCfg->validate();
-            if (cam_->configure(camCfg.get())) {
+            if (handle_.camera()->configure(camCfg.get())) {
                 std::cerr << "cam->configure() failed (NV12 fallback)\n";
                 return false;
             }
@@ -166,7 +146,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
         }
     }
 
-    allocator_ = std::make_unique<FrameBufferAllocator>(cam_);
+    allocator_ = std::make_unique<FrameBufferAllocator>(handle_.camera());
     if (allocator_->allocate(stream_) < 0) {
         std::cerr << "Buffer allocation failed\n";
         allocator_.reset();
@@ -180,7 +160,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
 }
 
 bool CameraApp::capture(const std::string &filename) {
-    if (!cam_ || !allocator_) {
+    if (!handle_.camera() || !allocator_) {
         std::cerr << "Camera not initialized\n";
         return false;
     }
@@ -188,7 +168,7 @@ bool CameraApp::capture(const std::string &filename) {
     const auto &buffers = allocator_->buffers(stream_);
     if (buffers.empty()) return false;
 
-    if (cam_->start()) {
+    if (handle_.camera()->start()) {
         std::cerr << "Failed to start camera\n";
         return false;
     }
@@ -206,12 +186,12 @@ bool CameraApp::capture(const std::string &filename) {
     std::mutex mtx;
     std::condition_variable cv;
 
-    cam_->requestCompleted.connect(this, [&](Request *r) {
+    handle_.camera()->requestCompleted.connect(this, [&](Request *r) {
         if (r->status() != Request::RequestComplete) {
             std::cerr << "Request status: " << r->status() << "\n";
             r->reuse(Request::ReuseBuffers);
             applyControls(r, config_);
-            cam_->queueRequest(r);
+            handle_.camera()->queueRequest(r);
             return;
         }
         ++completed;
@@ -219,7 +199,7 @@ bool CameraApp::capture(const std::string &filename) {
             // Warmup frame — discard and re-queue so AE/AWB keeps converging.
             r->reuse(Request::ReuseBuffers);
             applyControls(r, config_);
-            cam_->queueRequest(r);
+            handle_.camera()->queueRequest(r);
             return;
         }
         // Converged frame — save it.
@@ -235,18 +215,18 @@ bool CameraApp::capture(const std::string &filename) {
     std::vector<std::unique_ptr<Request>> reqs;
     reqs.reserve(buffers.size());
     for (size_t i = 0; i < buffers.size(); ++i) {
-        auto req = cam_->createRequest();
+        auto req = handle_.camera()->createRequest();
         if (!req) {
             std::cerr << "Failed to create Request\n";
-            cam_->requestCompleted.disconnect();
+            handle_.camera()->requestCompleted.disconnect();
             stopCamera();
             return false;
         }
         req->addBuffer(stream_, buffers[i].get());
         applyControls(req.get(), config_);
-        if (cam_->queueRequest(req.get())) {
+        if (handle_.camera()->queueRequest(req.get())) {
             std::cerr << "Failed to queue Request\n";
-            cam_->requestCompleted.disconnect();
+            handle_.camera()->requestCompleted.disconnect();
             stopCamera();
             return false;
         }
@@ -259,13 +239,13 @@ bool CameraApp::capture(const std::string &filename) {
         if (!cv.wait_until(lk, deadline, [&] { return done; })) {
             std::cerr << "Capture timed out (completed " << completed
                       << "/" << (warmup + 1) << " frames)\n";
-            cam_->requestCompleted.disconnect();
+            handle_.camera()->requestCompleted.disconnect();
             stopCamera();
             return false;
         }
     }
 
-    cam_->requestCompleted.disconnect();
+    handle_.camera()->requestCompleted.disconnect();
     stopCamera();
 
     if (!saved) std::cerr << "Failed to save frame\n";
@@ -342,15 +322,15 @@ bool CameraApp::captureBracket(const std::string &baseFilename) {
 }
 
 void CameraApp::listControls() {
-    if (!cam_) return;
+    if (!handle_.camera()) return;
 
-    const auto &controls = cam_->controls();
+    const auto &controls = handle_.camera()->controls();
     std::cout << "=== Controls ===\n";
     for (const auto &[id, info] : controls) {
         std::cout << "  " << id->name() << ": " << info.toString() << "\n";
     }
 
-    const auto &props = cam_->properties();
+    const auto &props = handle_.camera()->properties();
     std::cout << "\n=== Properties ===\n";
     const auto *propIdMap = props.idMap();
     for (const auto &[id, val] : props) {
@@ -365,20 +345,16 @@ void CameraApp::listControls() {
 }
 
 void CameraApp::stopCamera() {
-    if (started_ && cam_) {
-        cam_->stop();
+    if (started_ && handle_.camera()) {
+        handle_.camera()->stop();
         started_ = false;
     }
 }
 
 void CameraApp::shutdown() {
     stopCamera();
-    if (cam_) {
-        allocator_.reset();
-        cam_->release();
-        cam_.reset();
-    }
-    cm_.reset();
+    allocator_.reset();
+    handle_.shutdown();
 }
 
 void CameraApp::applyControls(Request *req, const CameraConfig &cfg) {
