@@ -87,8 +87,8 @@ ButtonEvent ButtonInput::poll(int timeoutMs) {
     ButtonEvent evt;
     if (!gpioReq_) return evt;
 
-    auto *req = static_cast<struct gpiod_line_request *>(gpioReq_);
-    auto *buf = static_cast<struct gpiod_edge_event_buffer *>(eventBuf_);
+    auto *req = gpioReq_;
+    auto *buf = eventBuf_;
 
     // Wait for edge events (timeout in nanoseconds)
     int64_t timeoutNs = static_cast<int64_t>(timeoutMs) * 1000000LL;
@@ -132,13 +132,11 @@ ButtonId ButtonInput::waitForPress(int timeoutMs) {
 
 void ButtonInput::shutdown() {
     if (eventBuf_) {
-        gpiod_edge_event_buffer_free(
-            static_cast<struct gpiod_edge_event_buffer *>(eventBuf_));
+        gpiod_edge_event_buffer_free(eventBuf_);
         eventBuf_ = nullptr;
     }
     if (gpioReq_) {
-        gpiod_line_request_release(
-            static_cast<struct gpiod_line_request *>(gpioReq_));
+        gpiod_line_request_release(gpioReq_);
         gpioReq_ = nullptr;
     }
 }

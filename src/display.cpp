@@ -41,13 +41,6 @@ enum St7735Cmd : uint8_t {
     GMCTRN1 = 0xE1,
 };
 
-// Helper: set a single GPIO line value via gpiod v2
-inline void gpioSet(void *req, int pin, int val) {
-    gpiod_line_request_set_value(
-        static_cast<struct gpiod_line_request *>(req),
-        pin, val ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
-}
-
 } // namespace
 
 bool St7735Display::init(const DisplayConfig &cfg) {
@@ -166,7 +159,7 @@ bool St7735Display::init(const DisplayConfig &cfg) {
 }
 
 void St7735Display::reset() {
-    auto *req = static_cast<struct gpiod_line_request *>(gpioReq_);
+    auto *req = gpioReq_;
     // RST low → high → wait
     gpiod_line_request_set_value(req, cfg_.resetPin, GPIOD_LINE_VALUE_INACTIVE);
     usleep(10000); // 10ms
@@ -175,7 +168,7 @@ void St7735Display::reset() {
 }
 
 void St7735Display::sendCommand(uint8_t cmd) {
-    auto *req = static_cast<struct gpiod_line_request *>(gpioReq_);
+    auto *req = gpioReq_;
     // DC=0 for command
     gpiod_line_request_set_value(req, cfg_.dcPin, GPIOD_LINE_VALUE_INACTIVE);
 
@@ -189,7 +182,7 @@ void St7735Display::sendCommand(uint8_t cmd) {
 }
 
 void St7735Display::sendData(const uint8_t *data, size_t len) {
-    auto *req = static_cast<struct gpiod_line_request *>(gpioReq_);
+    auto *req = gpioReq_;
     // DC=1 for data
     gpiod_line_request_set_value(req, cfg_.dcPin, GPIOD_LINE_VALUE_ACTIVE);
 
@@ -252,7 +245,7 @@ void St7735Display::flash() {
 }
 
 void St7735Display::setBacklight(bool on) {
-    auto *req = static_cast<struct gpiod_line_request *>(gpioReq_);
+    auto *req = gpioReq_;
     gpiod_line_request_set_value(req, cfg_.backlightPin,
         on ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
 }
@@ -265,12 +258,11 @@ void St7735Display::shutdown() {
         spiFd_ = -1;
     }
     if (gpioReq_) {
-        gpiod_line_request_release(
-            static_cast<struct gpiod_line_request *>(gpioReq_));
+        gpiod_line_request_release(gpioReq_);
         gpioReq_ = nullptr;
     }
     if (gpioChip_) {
-        gpiod_chip_close(static_cast<struct gpiod_chip *>(gpioChip_));
+        gpiod_chip_close(gpioChip_);
         gpioChip_ = nullptr;
     }
 }

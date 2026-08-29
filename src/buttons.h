@@ -2,6 +2,12 @@
 
 #include <cstdint>
 
+// Forward declarations of the libgpiod C structs so the header doesn't need
+// to pull in <gpiod.h> (kept optional via HAVE_GPIOD). The full definitions
+// are only needed in buttons.cpp, which includes <gpiod.h> directly.
+struct gpiod_line_request;
+struct gpiod_edge_event_buffer;
+
 namespace picamera {
 
 enum class ButtonId {
@@ -37,8 +43,8 @@ public:
     ButtonId waitForPress(int timeoutMs);
 
 private:
-    void *gpioReq_ = nullptr;   // gpiod_line_request*
-    void *eventBuf_ = nullptr;  // gpiod_edge_event_buffer*
+    gpiod_line_request *gpioReq_ = nullptr;
+    gpiod_edge_event_buffer *eventBuf_ = nullptr;
 };
 
 } // namespace picamera

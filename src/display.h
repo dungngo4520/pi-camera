@@ -3,6 +3,12 @@
 #include <cstdint>
 #include <string>
 
+// Forward declarations of the libgpiod C structs so the header doesn't need
+// to pull in <gpiod.h> (kept optional via HAVE_GPIOD). The full definitions
+// are only needed in display.cpp, which includes <gpiod.h> directly.
+struct gpiod_line_request;
+struct gpiod_chip;
+
 namespace picamera {
 
 struct DisplayConfig {
@@ -46,8 +52,8 @@ private:
 
     DisplayConfig cfg_;
     int spiFd_ = -1;
-    void *gpioReq_ = nullptr;  // gpiod_line_request*
-    void *gpioChip_ = nullptr; // gpiod_chip*
+    gpiod_line_request *gpioReq_ = nullptr;
+    gpiod_chip *gpioChip_ = nullptr;
 };
 
 } // namespace picamera
