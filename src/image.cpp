@@ -288,7 +288,10 @@ void nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv,
     float srcAspect = static_cast<float>(srcW) / srcH;
     float dispAspect = static_cast<float>(dispW) / dispH;
 
-    uint32_t cropW, cropH, cropX, cropY;
+    uint32_t cropW;
+    uint32_t cropH;
+    uint32_t cropX;
+    uint32_t cropY;
     if (srcAspect > dispAspect) {
         // Source is wider — crop horizontally
         cropH = srcH;
@@ -302,8 +305,8 @@ void nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv,
         cropX = 0;
         cropY = (srcH - cropH) / 2;
     }
-    if (cropH > srcH) cropH = srcH;
-    if (cropW > srcW) cropW = srcW;
+    cropH = std::min(cropH, srcH);
+    cropW = std::min(cropW, srcW);
 
     for (uint32_t dy = 0; dy < dispH; ++dy) {
         // Map display row to source row (nearest-neighbor)

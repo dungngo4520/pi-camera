@@ -145,6 +145,7 @@ bool St7735Display::init(const DisplayConfig &cfg) {
         case 90:  madctl |= 0x60; break; // MV | MX
         case 180: madctl |= 0xC0; break; // MX | MY
         case 270: madctl |= 0xA0; break; // MV | MY
+        default:  madctl |= 0x00; break; // unknown -> normal
     }
     sendData(&madctl, 1);
 
