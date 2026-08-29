@@ -1,14 +1,41 @@
 #include "test_runner.h"
 #include "cli.h"
+#include "camera_config.h"
 
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace picamera;
 
 namespace {
+
+// --- parseOutputFormat / extensionFor helpers ---
+
+TEST(parse_output_format_known) {
+    CHECK(parseOutputFormat("ppm")  == OutputFormat::PPM);
+    CHECK(parseOutputFormat("raw")  == OutputFormat::RAW_NV12);
+    CHECK(parseOutputFormat("png")  == OutputFormat::PNG);
+    CHECK(parseOutputFormat("jpeg") == OutputFormat::JPEG);
+    CHECK(parseOutputFormat("jpg")  == OutputFormat::JPEG); // alias
+    CHECK(parseOutputFormat("dng")  == OutputFormat::DNG);
+}
+
+TEST(parse_output_format_unknown_is_nullopt) {
+    CHECK(!parseOutputFormat("tiff"));
+    CHECK(!parseOutputFormat(""));
+    CHECK(!parseOutputFormat("JPEG")); // case-sensitive
+}
+
+TEST(extension_for_each_format) {
+    CHECK(extensionFor(OutputFormat::PPM)      == std::string_view("ppm"));
+    CHECK(extensionFor(OutputFormat::RAW_NV12) == std::string_view("raw"));
+    CHECK(extensionFor(OutputFormat::PNG)      == std::string_view("png"));
+    CHECK(extensionFor(OutputFormat::JPEG)     == std::string_view("jpg"));
+    CHECK(extensionFor(OutputFormat::DNG)      == std::string_view("dng"));
+}
 
 // Helper: build a (char**) argv from a vector of strings, run parseArgs.
 // Returns false if parseArgs rejected it.

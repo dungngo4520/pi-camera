@@ -31,15 +31,12 @@ void previewSignalHandler(int) {
 // Generate a timestamped filename: prefix_YYYYMMDD-HHMMSS.ext
 std::string makeCaptureFilename(const std::string &dir,
                                 const std::string &prefix,
-                                const std::string &fmt) {
+                                OutputFormat fmt) {
     auto now = std::time(nullptr);
     auto *tm = std::localtime(&now);
     char buf[64];
     std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M%S", tm);
-    std::string ext = (fmt == "jpeg" || fmt == "jpg") ? "jpg" :
-                      (fmt == "png") ? "png" :
-                      (fmt == "dng") ? "dng" : "ppm";
-    return dir + "/" + prefix + "_" + buf + "." + ext;
+    return dir + "/" + prefix + "_" + buf + "." + std::string(extensionFor(fmt));
 }
 
 } // namespace
@@ -179,19 +176,14 @@ bool runPreview(const PreviewConfig &pcfg) {
                     cfg.aeEnable = true;
                     cfg.awbEnable = true;
 
-                    if (pcfg.captureFormat == "jpeg" || pcfg.captureFormat == "jpg") {
-                        cfg.format = OutputFormat::JPEG;
-                    } else if (pcfg.captureFormat == "png") {
-                        cfg.format = OutputFormat::PNG;
-                    } else if (pcfg.captureFormat == "dng") {
-                        cfg.format = OutputFormat::DNG;
-                    } else {
-                        cfg.format = OutputFormat::PPM;
-                    }
+                    // Parse the capture-format string once; default to JPEG
+                    // (the documented default) if the user passed garbage.
+                    auto parsed = parseOutputFormat(pcfg.captureFormat);
+                    cfg.format = parsed.value_or(OutputFormat::JPEG);
 
                     if (app.configure(cfg)) {
                         std::string filename = makeCaptureFilename(
-                            pcfg.captureDir, pcfg.capturePrefix, pcfg.captureFormat);
+                            pcfg.captureDir, pcfg.capturePrefix, cfg.format);
                         if (app.capture(filename)) {
                             std::cout << "Preview: saved " << filename << "\n";
                         } else {

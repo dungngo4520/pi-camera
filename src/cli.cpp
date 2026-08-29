@@ -123,16 +123,12 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         } else if (arg == "--format") {
             if (i + 1 < argc) {
                 std::string fmt = argv[++i];
-                if (fmt == "ppm")       cfg.format = OutputFormat::PPM;
-                else if (fmt == "raw")  cfg.format = OutputFormat::RAW_NV12;
-                else if (fmt == "png")  cfg.format = OutputFormat::PNG;
-                else if (fmt == "jpeg" || fmt == "jpg")
-                                            cfg.format = OutputFormat::JPEG;
-                else if (fmt == "dng")  cfg.format = OutputFormat::DNG;
-                else {
+                auto parsed = parseOutputFormat(fmt);
+                if (!parsed) {
                     std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg, dng)\n";
                     return false;
                 }
+                cfg.format = *parsed;
             }
         } else if (arg == "--png-level") {
             if (!parseIntArg(argc, argv, i, "--png-level",
