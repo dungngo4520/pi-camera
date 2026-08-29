@@ -1,5 +1,6 @@
 #include "buttons.h"
 
+#include <chrono>
 #include <iostream>
 #include <cstring>
 #include <gpiod.h>
@@ -117,15 +118,20 @@ ButtonEvent ButtonInput::poll(int timeoutMs) {
 }
 
 ButtonId ButtonInput::waitForPress(int timeoutMs) {
-    auto deadline = timeoutMs;
-    while (deadline > 0) {
-        ButtonEvent evt = poll(deadline);
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        int remaining = timeoutMs - static_cast<int>(elapsed.count());
+        if (remaining <= 0) break;
+
+        ButtonEvent evt = poll(remaining);
         if (evt.id != ButtonId::None && evt.pressed)
             return evt.id;
         if (evt.id == ButtonId::None)
-            break; // timeout
-        // Got a release event, keep waiting
-        deadline -= 1; // approx — poll returned quickly
+            break; // poll timed out
+        // Got a release event (or non-None without press) — keep waiting
+        // with whatever time remains.
     }
     return ButtonId::None;
 }
