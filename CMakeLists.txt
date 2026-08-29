@@ -74,6 +74,7 @@ add_executable(picamera
     src/camera.cpp
     src/preview.cpp
     src/stream.cpp
+    src/timelapse_runner.cpp
 )
 target_link_libraries(picamera PRIVATE picamera_core dl)
 if(LIBGPIOD_FOUND)

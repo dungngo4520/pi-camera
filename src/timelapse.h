@@ -4,6 +4,8 @@
 
 namespace picamera {
 
+class CameraApp;
+
 // Build a timelapse filename from a user-supplied pattern.
 //
 // If the pattern contains a printf-style integer conversion (e.g. "%04d"),
@@ -20,5 +22,14 @@ namespace picamera {
 // Throws std::invalid_argument on a bad pattern, std::runtime_error on
 // snprintf failure.
 std::string formatTimelapseName(const std::string &pattern, int i);
+
+// Run a timelapse capture loop: `count` shots at `intervalSec` apart (0 = infinite),
+// saving each to a filename derived from `pattern` via formatTimelapseName().
+// The camera must already be init()'d and configure()'d by the caller.
+// SIGINT/SIGTERM stops gracefully after the current shot completes.
+// Returns true if all shots succeeded (or the loop was interrupted cleanly),
+// false on a capture or pattern error.
+bool runTimelapse(CameraApp &app, int intervalSec, int count,
+                  const std::string &pattern);
 
 } // namespace picamera

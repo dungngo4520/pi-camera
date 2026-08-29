@@ -1,6 +1,7 @@
 #include "camera.h"
 #include "cli.h"
 #include "preview.h"
+#include "timelapse.h"
 
 int main(int argc, char **argv) {
     using namespace picamera;
@@ -58,7 +59,7 @@ int main(int argc, char **argv) {
             ok = app.capture(opts.captureFile.empty() ? "capture.ppm" : opts.captureFile);
         }
     } else if (opts.mode == "timelapse") {
-        ok = app.timelapse(opts.timelapseInterval, opts.timelapseCount, opts.outputPattern);
+        ok = runTimelapse(app, opts.timelapseInterval, opts.timelapseCount, opts.outputPattern);
     }
 
     app.shutdown();

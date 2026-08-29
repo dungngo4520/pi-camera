@@ -17,7 +17,6 @@ public:
     bool configure(const CameraConfig &cfg);
     bool capture(const std::string &filename);
     bool captureBracket(const std::string &baseFilename);
-    bool timelapse(int intervalSec, int count, const std::string &pattern);
     void listControls();
     void shutdown();
 
