@@ -1,5 +1,6 @@
 #include "preview.h"
 #include "camera.h"
+#include "cli.h"
 #include "image.h"
 #include "stop_flag.h"
 #include "stream.h"
@@ -218,6 +219,26 @@ bool runPreview(const PreviewConfig &pcfg) {
               << "Rebuild on the Pi with libgpiod-dev installed.\n";
     return false;
 #endif
+}
+
+PreviewConfig makePreviewConfig(const CliOptions &opts) {
+    PreviewConfig pcfg;
+    pcfg.displayCfg.spiDevice = opts.spiDevice;
+    pcfg.displayCfg.rotation = opts.displayRotation;
+    pcfg.previewWidth = opts.previewWidth;
+    pcfg.previewHeight = opts.previewHeight;
+    pcfg.maxFps = opts.previewFps;
+    pcfg.captureWidth = opts.captureWidth;
+    pcfg.captureHeight = opts.captureHeight;
+    pcfg.captureFormat = opts.captureFormat;
+    pcfg.captureDir = opts.captureDir;
+    pcfg.capturePrefix = opts.capturePrefix;
+    pcfg.enableBattery = opts.enableBattery;
+    pcfg.batteryCfg.i2cDevice = opts.batteryI2cDevice;
+    pcfg.batteryCfg.i2cAddress = opts.batteryI2cAddress;
+    // Use ±6.144V PGA for direct LiPo measurement (3.0-4.2V)
+    pcfg.batteryCfg.pgaGain = 0x0000;
+    return pcfg;
 }
 
 } // namespace picamera

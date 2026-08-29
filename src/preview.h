@@ -7,6 +7,8 @@
 
 namespace picamera {
 
+struct CliOptions; // forward declaration — defined in cli.h
+
 struct PreviewConfig {
     // Display
     DisplayConfig displayCfg;
@@ -30,5 +32,10 @@ struct PreviewConfig {
 // and capture full-res images when the shutter button is pressed.
 // Blocks until SIGINT/SIGTERM. Returns true on clean shutdown.
 bool runPreview(const PreviewConfig &pcfg);
+
+// Build a PreviewConfig from parsed CLI options. Centralizes the field
+// mapping so main.cpp doesn't hand-copy ~12 fields (and a new PreviewConfig
+// field can't be silently left un-initialized).
+PreviewConfig makePreviewConfig(const CliOptions &opts);
 
 } // namespace picamera
