@@ -1,11 +1,8 @@
 #include "camera.h"
-#include "image.h"
-#include "output.h"
+#include "output_writer.h"
 #include "timelapse.h"
-#include "dng.h"
 
 #include <iostream>
-#include <fstream>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -482,178 +479,59 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename) {
     }
 
     const auto &sc = stream_->configuration();
-    uint32_t w = sc.size.width;
-    uint32_t h = sc.size.height;
 
-    // --- DNG path: raw Bayer data, unpack to 16-bit, write DNG container. ---
-    if (config_.format == OutputFormat::DNG) {
-        const auto &plane = planes[0];
-        void *base = mmap(nullptr, plane.offset + plane.length, PROT_READ,
-                          MAP_SHARED, plane.fd.get(), 0);
-        if (base == MAP_FAILED) {
-            std::cerr << "mmap raw failed: " << strerror(errno) << "\n";
-            return false;
-        }
-        auto *rawData = static_cast<uint8_t *>(base) + plane.offset;
-
-        // SRGGB10_CSI2P packs 4 10-bit pixels into 5 bytes (MIPI CSI-2
-        // packed format). Unpack to 16-bit samples for the DNG writer.
-        // Each 5-byte group: [b0 b1 b2 b3 | b4]
-        //   pixel0 = b0 | ((b4 & 0x03) << 8)
-        //   pixel1 = b1 | ((b4 & 0x0C) << 6)
-        //   pixel2 = b2 | ((b4 & 0x30) << 4)
-        //   pixel3 = b3 | ((b4 & 0xC0) << 2)
-        size_t numPixels = static_cast<size_t>(w) * h;
-        std::vector<uint8_t> unpacked(numPixels * 2);
-        size_t packedSize = (numPixels / 4) * 5;
-        for (size_t i = 0, p = 0; p < packedSize; i += 4, p += 5) {
-            uint16_t p0 = rawData[p]     | ((rawData[p + 4] & 0x03) << 8);
-            uint16_t p1 = rawData[p + 1] | ((rawData[p + 4] & 0x0C) << 6);
-            uint16_t p2 = rawData[p + 2] | ((rawData[p + 4] & 0x30) << 4);
-            uint16_t p3 = rawData[p + 3] | ((rawData[p + 4] & 0xC0) << 2);
-            unpacked[i * 2]     = p0 & 0xFF;
-            unpacked[i * 2 + 1] = (p0 >> 8) & 0xFF;
-            unpacked[(i+1) * 2]     = p1 & 0xFF;
-            unpacked[(i+1) * 2 + 1] = (p1 >> 8) & 0xFF;
-            unpacked[(i+2) * 2]     = p2 & 0xFF;
-            unpacked[(i+2) * 2 + 1] = (p2 >> 8) & 0xFF;
-            unpacked[(i+3) * 2]     = p3 & 0xFF;
-            unpacked[(i+3) * 2 + 1] = (p3 >> 8) & 0xFF;
-        }
-
-        DngMetadata dngMeta;
-        dngMeta.width = w;
-        dngMeta.height = h;
-        dngMeta.bitsPerPixel = 10;
-        dngMeta.blackLevel = 64;    // typical IMX477 black level
-        dngMeta.whiteLevel = 1023;  // 10-bit max
-        dngMeta.activeTop = 0;
-        dngMeta.activeLeft = 0;
-        dngMeta.activeBottom = h;
-        dngMeta.activeRight = w;
-        dngMeta.exposureTimeUs = config_.exposureTime;
-        dngMeta.analogueGain = config_.analogueGain;
-        dngMeta.timestampSec = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
-
-        bool ok = writeDng(filename.c_str(), unpacked.data(), unpacked.size(),
-                           dngMeta);
-        munmap(base, plane.offset + plane.length);
-        if (ok) {
-            std::cout << "Saved DNG: " << filename << " (" << w << "x" << h
-                      << ") " << unpacked.size() << " bytes\n";
-        } else {
-            std::cerr << "Failed to write DNG: " << filename << "\n";
-        }
-        return ok;
-    }
-
-    // --- JPEG path: single-plane MJPEG bitstream, write directly. ---
-    // The Pi ISP hardware-encodes the JPEG; the buffer is a complete JPEG
-    // file. No NV12->RGB conversion, no software encode — just mmap + write.
-    if (config_.format == OutputFormat::JPEG && !swJpegEncode_) {
-        const auto &plane = planes[0];
-        void *base = mmap(nullptr, plane.offset + plane.length, PROT_READ,
-                          MAP_SHARED, plane.fd.get(), 0);
-        if (base == MAP_FAILED) {
-            std::cerr << "mmap JPEG failed: " << strerror(errno) << "\n";
-            return false;
-        }
-        auto *data = static_cast<uint8_t *>(base) + plane.offset;
-        // MJPEG buffers may be padded; use the JPEG end marker (FFD9) to
-        // find the real end if the plane length exceeds it.
-        size_t writeLen = plane.length;
-        for (size_t i = 0; i + 1 < plane.length; ++i) {
-            if (data[i] == 0xFF && data[i + 1] == 0xD9) {
-                writeLen = i + 2;
-                break;
-            }
-        }
-        bool ok = writeJpeg(data, writeLen, filename);
-        munmap(base, plane.offset + plane.length);
-        if (ok) {
-            std::cout << "Saved JPEG: " << filename << " (" << w << "x" << h
-                      << ") " << writeLen << " bytes\n";
-        } else {
-            std::cerr << "Failed to write JPEG: " << filename << "\n";
-        }
-        return ok;
-    }
-
-    // --- NV12 path: 2 planes, convert to RGB then encode. ---
-    if (planes.size() < 2) {
-        std::cerr << "Expected >=2 planes (NV12), got " << planes.size() << "\n";
+    auto writer = makeOutputWriter(config_.format, config_, swJpegEncode_);
+    if (!writer) {
+        std::cerr << "No output writer for format\n";
         return false;
     }
 
-    const auto &yPlane = planes[0];
-    const auto &uvPlane = planes[1];
-    uint32_t stride = sc.stride;
-
     // Map each plane through its own dmabuf fd. libcamera backends may put
     // the two NV12 planes in the same dmabuf (Pi VC4) or in separate ones;
-    // mapping per-fd is correct in both cases.
+    // mapping per-fd is correct in both cases. Single-plane formats (DNG
+    // raw, HW MJPEG) only map planes[0].
+    struct MappedPlane {
+        const uint8_t *data = nullptr;
+        void *base = nullptr;
+        size_t mapLen = 0;
+    };
     auto mapPlane = [](const libcamera::FrameBuffer::Plane &pl, const char *what)
-        -> std::pair<uint8_t *, void *> {
+        -> MappedPlane {
         void *base = mmap(nullptr, pl.offset + pl.length, PROT_READ,
                           MAP_SHARED, pl.fd.get(), 0);
         if (base == MAP_FAILED) {
             std::cerr << "mmap " << what << " failed: " << strerror(errno) << "\n";
-            return {nullptr, nullptr};
+            return {nullptr, nullptr, 0};
         }
-        return {static_cast<uint8_t *>(base) + pl.offset, base};
+        return {static_cast<const uint8_t *>(base) + pl.offset, base,
+                static_cast<size_t>(pl.offset + pl.length)};
     };
 
-    auto [yMap, yBase] = mapPlane(yPlane, "Y");
-    if (!yMap) return false;
-    auto [uvMap, uvBase] = mapPlane(uvPlane, "UV");
-    if (!uvMap) {
-        munmap(yBase, yPlane.offset + yPlane.length);
-        return false;
-    }
+    MappedPlane p0 = mapPlane(planes[0], "plane0");
+    if (!p0.data) return false;
 
-    bool ok = true;
-    if (config_.format == OutputFormat::RAW_NV12) {
-        size_t ySize = static_cast<size_t>(stride) * h;
-        size_t uvSize = static_cast<size_t>(stride) * (h / 2);
-        ok = writeRaw(yMap, ySize, uvMap, uvSize, filename);
-        if (ok) {
-            std::cout << "Saved RAW: " << filename
-                      << " (" << w << "x" << h << ")\n";
-        }
-    } else {
-        auto rgb = nv12ToRgb(yMap, uvMap, w, h, stride);
-        if (rgb.empty()) {
-            ok = false;
-        } else if (config_.format == OutputFormat::PNG) {
-            ok = writePng(filename.c_str(), rgb.data(), w, h, config_.pngLevel);
-            if (ok)
-                std::cout << "Saved PNG: " << filename
-                          << " (" << w << "x" << h << ")\n";
-            else
-                std::cerr << "Failed to write PNG: " << filename << "\n";
-        } else if (config_.format == OutputFormat::JPEG && swJpegEncode_) {
-            // Software JPEG encode via libjpeg-turbo (HW MJPEG unavailable)
-            ok = writeJpegRgb(rgb.data(), w, h, filename, 90);
-            if (ok)
-                std::cout << "Saved JPEG: " << filename
-                          << " (" << w << "x" << h << ") [sw encode]\n";
-            else
-                std::cerr << "Failed to write JPEG: " << filename << "\n";
-        } else {
-            ok = writePpm(rgb.data(), rgb.size(), w, h, filename);
-            if (ok)
-                std::cout << "Saved PPM: " << filename
-                          << " (" << w << "x" << h << ")"
-                          << " " << rgb.size() << " bytes\n";
-            else
-                std::cerr << "Failed to write PPM: " << filename << "\n";
+    MappedPlane p1;
+    if (planes.size() >= 2) {
+        p1 = mapPlane(planes[1], "plane1");
+        if (!p1.data) {
+            munmap(p0.base, p0.mapLen);
+            return false;
         }
     }
 
-    munmap(uvBase, uvPlane.offset + uvPlane.length);
-    munmap(yBase, yPlane.offset + yPlane.length);
+    FrameView frame;
+    frame.width = sc.size.width;
+    frame.height = sc.size.height;
+    frame.stride = sc.stride;
+    frame.plane0 = p0.data;
+    frame.plane0Size = planes[0].length;
+    frame.plane1 = p1.data;
+    frame.plane1Size = planes.size() >= 2 ? planes[1].length : 0;
+
+    bool ok = writer->write(frame, filename);
+
+    if (p1.data) munmap(p1.base, p1.mapLen);
+    munmap(p0.base, p0.mapLen);
     return ok;
 }
 

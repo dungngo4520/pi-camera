@@ -24,6 +24,7 @@ set(picamera_sources
     src/cli.cpp
     src/image.cpp
     src/output.cpp
+    src/output_writer.cpp
     src/timelapse.cpp
     src/dng.cpp
     src/preview.cpp
@@ -83,12 +84,14 @@ if(PICAMERA_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_image.cpp
         tests/test_output.cpp
+        tests/test_output_writer.cpp
         tests/test_cli.cpp
         tests/test_timelapse.cpp
         tests/test_dng.cpp
         tests/test_battery.cpp
         src/image.cpp
         src/output.cpp
+        src/output_writer.cpp
         src/cli.cpp
         src/timelapse.cpp
         src/dng.cpp
