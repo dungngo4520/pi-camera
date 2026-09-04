@@ -2,6 +2,7 @@
 
 #include <libcamera/libcamera.h>
 #include <memory>
+#include <mutex>
 #include <string_view>
 
 namespace picamera {
@@ -12,14 +13,20 @@ namespace picamera {
 // releases the camera and stops the manager, so callers don't need to call
 // shutdown() explicitly (but can, for early release or to reset state).
 //
-// Both CameraApp (still capture) and CameraStream (viewfinder) share this
-// lifecycle; they differ only in what they do with the camera once acquired
-// (configure for StillCapture vs Viewfinder, allocate buffers, run loops).
-// CameraHandle centralizes the acquire/release ordering and error messages.
+// Both CameraApp (still capture) and DualStream (viewfinder + still) share
+// this lifecycle; they differ only in what they do with the camera once
+// acquired (configure for StillCapture vs Viewfinder, allocate buffers,
+// run loops). CameraHandle centralizes the acquire/release ordering and
+// error messages.
+//
+// cam_ and cm_ are guarded by mtx_ because camera() is called from
+// libcamera's request-completion callback thread while shutdown() may
+// be called from the main thread. Without synchronization, concurrent
+// shared_ptr copy and reset is a data race (CWE-362).
 class CameraHandle {
 public:
     CameraHandle() = default;
-    ~CameraHandle() { shutdown(); }
+    ~CameraHandle() noexcept { shutdown(); }
     CameraHandle(const CameraHandle &) = delete;
     CameraHandle &operator=(const CameraHandle &) = delete;
 
@@ -29,12 +36,19 @@ public:
     bool init(std::string_view logPrefix = "Camera");
 
     // Release the camera and stop the CameraManager. Idempotent.
-    void shutdown();
+    // noexcept: wraps libcamera calls in try/catch to prevent
+    // std::terminate if called from the destructor.
+    void shutdown() noexcept;
 
     // The acquired camera. nullptr if not initialized or after shutdown().
-    std::shared_ptr<libcamera::Camera> camera() const { return cam_; }
+    // Returns a snapshot under the mutex for thread-safe access.
+    std::shared_ptr<libcamera::Camera> camera() const {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return cam_;
+    }
 
 private:
+    mutable std::mutex mtx_;
     std::shared_ptr<libcamera::CameraManager> cm_;
     std::shared_ptr<libcamera::Camera> cam_;
 };
