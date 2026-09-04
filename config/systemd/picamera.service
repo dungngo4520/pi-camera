@@ -1,0 +1,94 @@
+[Unit]
+Description=picamera — mirrorless camera mode (live preview + joystick capture)
+After=systemd-modules-load.service systemd-udevd.service
+Wants=systemd-modules-load.service
+# Limit restart bursts to prevent crash loops from thrashing the SD card.
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Run as the pi user, not root. The pi user must be in the gpio, i2c,
+# spi, and video groups (default on Raspberry Pi OS).
+User=pi
+Group=pi
+ExecStart=/usr/local/bin/picamera
+Restart=on-failure
+RestartSec=3
+# Captures go to /home/pi/captures by default (set in defaultPreviewConfig).
+# The directory is created and chowned by `make install-service`. This guard
+# fails fast with a clear error if it's missing, rather than letting the
+# camera start and silently fail to save every capture.
+ExecStartPre=/bin/sh -c 'test -d /home/pi/captures'
+WorkingDirectory=/home/pi/captures
+# Restrict device access to only what the camera needs. DevicePolicy=closed
+# makes the DeviceAllow lines actually enforce access control — without it
+# they are silently ignored and the process can open any device.
+#
+# The camera path needs the V4L2/media nodes that libcamera opens to drive
+# the IMX477 Unicam pipeline. Their exact numbers vary across Pi revisions
+# and kernel versions, so allow them by device-class glob (char-video4linux,
+# char-media) rather than hardcoding /dev/video0, /dev/media0, etc.
+# Note: systemd DeviceAllow does NOT support globs in /dev/ paths — only in
+# char-*/block-* device group specifiers (see systemd.resource-control(5)).
+DevicePolicy=closed
+DeviceAllow=/dev/spidev0.0 rw
+DeviceAllow=/dev/i2c-1 rw
+DeviceAllow=/dev/i2c-10 rw
+DeviceAllow=/dev/gpiochip0 rw
+DeviceAllow=/dev/dma_heap/linux,cma rw
+DeviceAllow=/dev/dma_heap/system rw
+DeviceAllow=/dev/dma_heap/default_cma_region rw
+DeviceAllow=char-video4linux rw
+DeviceAllow=char-media rw
+# Wait for the SPI and GPIO device nodes to exist before starting.
+# The kernel creates them when the corresponding overlays/modules load;
+# without this guard the service may start before they're ready and fail
+# on open(). (Camera V4L2/media nodes are not checked here because their
+# names are dynamic — libcamera handles their absence with a clear error.)
+# I2C (/dev/i2c-1) is only needed for --battery and is optional, so it is
+# not a hard start dependency.
+ExecStartPre=/bin/sh -c 'for d in /dev/spidev0.0 /dev/gpiochip0; do [ -e "$d" ] || exit 1; done'
+# --- Hardening ---
+# No new privileges, private /tmp, protect system binaries from writes.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# /home is read-only except for the captures directory — a compromised
+# process cannot modify the pi user's other files (SSH keys, etc.).
+ProtectHome=read-only
+ReadWritePaths=/home/pi/captures
+# No network access needed — camera is a local appliance.
+RestrictAddressFamilies=AF_UNIX
+# Drop all capabilities (we run as pi, not root, but belt-and-suspenders).
+CapabilityBoundingSet=
+# Restrict syscalls to the common system-service set.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Prevent loading kernel modules or changing kernel tunables.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+# No SUID/SGID execution, no realtime scheduling, no new namespaces.
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+# No writable+executable memory (prevents code injection).
+MemoryDenyWriteExecute=true
+LockPersonality=true
+# Files are created with 0600 (owner-only) by default.
+UMask=0077
+RemoveIPC=true
+# Resource limits for the Pi Zero 2 W (512MB RAM).
+LimitFSIZE=2G
+LimitNOFILE=128
+# Centralized logging.
+SyslogIdentifier=picamera
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
