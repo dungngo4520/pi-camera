@@ -2,13 +2,19 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace picamera {
 
-// Minimal 5x7 monospace bitmap font for RGB565 display overlays.
-// Supports digits 0-9, '%', 'V', '.', '-', '+', space, and 'A'-'Z' (uppercase).
-// Each glyph is 5 columns wide, 7 rows tall. Columns are packed into bytes
-// (one byte per column, LSB = top row).
+// Monospace font rendering for RGB565 display overlays.
+//
+// When built with FreeType (HAVE_FREETYPE defined, via CMake pkg_check_modules
+// for freetype2), uses DejaVu Sans Mono (or Liberation Mono / Noto Sans Mono
+// as fallback) rendered at 8px pixel size with anti-aliasing. Glyphs are
+// cached on first use. Supports full ASCII.
+//
+// Without FreeType, falls back to a hand-crafted 5x7 bitmap font supporting
+// digits 0-9, '%', 'V', '.', '-', '+', space, and 'A'-'Z' (uppercase).
 
 // Draw a single character at (x, y) on an RGB565 framebuffer.
 // fg = foreground color (RGB565), bg = background color (RGB565, or pass
@@ -18,9 +24,16 @@ void drawChar(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
               int x, int y, char ch, uint16_t fg, uint16_t bg,
               bool transparent = false);
 
+// Draw a single character at (x, y) with integer scale factor.
+// Each font pixel becomes a `scale`x`scale` block. Used for large
+// countdown numbers and other prominent text.
+void drawCharScaled(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                    int x, int y, char ch, int scale,
+                    uint16_t fg, uint16_t bg, bool transparent = false);
+
 // Draw a string at (x, y). Returns the width in pixels consumed.
 int drawText(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
-             int x, int y, const std::string &text, uint16_t fg, uint16_t bg,
+             int x, int y, std::string_view text, uint16_t fg, uint16_t bg,
              bool transparent = false);
 
 // Draw a battery icon at (x, y) with the given fill percentage (0-100).
