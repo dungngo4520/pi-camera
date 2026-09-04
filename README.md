@@ -1,6 +1,8 @@
 # pi-camera
 
-A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, DNG, or raw NV12. A live `--preview` mode streams the viewfinder to a Waveshare 1.44" SPI LCD HAT and captures full-res stills on joystick press — headless one-button capture with no daemon required.
+A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, DNG, or raw NV12. A live `--preview` mode streams the viewfinder to a Waveshare 1.44" SPI LCD HAT and captures full-res stills on joystick press.
+
+**Appliance mode**: run with no arguments (or install as a systemd service) and the Pi becomes a mirrorless-style camera — power on, the viewfinder is live, joystick press captures a JPEG, battery overlay shows charge level. No CLI interaction needed.
 
 ## Performance
 
@@ -36,6 +38,7 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 ```
 
 The preview loop:
+
 1. Captures NV12 frames at the configured preview resolution (default 320x240) via a `CameraStream` (libcamera Viewfinder role, 4 buffers, continuous re-queue).
 2. Converts to RGB565 with center-crop + nearest-neighbor scaling (BT.601 limited-range).
 3. Optionally draws a battery icon + percentage overlay (read from an ADS1115 ADC every 3 s).
@@ -50,7 +53,7 @@ Frame rate is capped at `--preview-fps` (default 20) to avoid burning CPU on the
 ## Hardware
 
 | Part | Notes |
-|---|---|
+| --- | --- |
 | Raspberry Pi Zero 2 W | aarch64, Raspberry Pi OS Lite (Debian 13 trixie) |
 | Raspberry Pi HQ Camera (IMX477) | 12.3 MP, 4056x3040 native, 7.9 mm C-mount |
 | C-mount lens | any CS/C-mount lens via the HQ Camera's C-CS adapter |
@@ -116,6 +119,7 @@ Or directly:
 ```
 
 Requirements on the host:
+
 - `docker` (or `podman`)
 - `qemu-user-static` + binfmt_misc registered for aarch64
   - Arch: `pacman -S qemu-user-static && sudo systemctl restart systemd-binfmt`
@@ -156,7 +160,7 @@ picamera --timelapse <sec> [options]   Timelapse mode
 Options:
 
 | Flag | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `--format <type>` | `ppm` | Output format: `ppm`, `raw`, `png`, `jpeg`, `dng` |
 | `--png-level <0-9>` | `6` | PNG compression level (0=none, 1=fast, 6=default, 9=best) |
 | `--bracket <n,ev...>` | — | HDR bracketing: `N,ev1,ev2,...` (e.g. `3,-2,0,+2`) |
@@ -225,7 +229,7 @@ Press `Ctrl-C` (SIGINT/SIGTERM) during a timelapse to stop gracefully after the 
 ### Output formats
 
 | Format | Extension | Size at 4056x3040 | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | PPM | `.ppm` | ~37 MB | Uncompressed RGB, no encoder dependency. Fastest to write. |
 | PNG | `.png` | ~5-15 MB | Lossless, libpng. CPU-heavy on the Pi Zero (~40 s for 12 MP). |
 | JPEG | `.jpg` | ~2-6 MB | ISP hardware MJPEG (Pi only), ~10x faster than PNG. Falls back to software libjpeg encode if the VC4 pipeline rejects HW MJPEG at full res. |
@@ -239,6 +243,7 @@ libcamera's auto-exposure (AE) and auto-white-balance (AWB) algorithms need **se
 This was a real bug in earlier versions of this project: a 12 MP PNG came out at 36 KB because every pixel was `(0,0,0)` — PNG compresses uniform regions to almost nothing. The fix queues all available buffers, discards the first `--warmup` frames (re-queuing their buffers with `Request::ReuseBuffers`), and saves only the converged frame. Default is 8; bump to 15+ in low light.
 
 Reference: a real 12 MP photo is typically:
+
 - 2-6 MB as JPEG (lossy)
 - 10-25 MB as PNG (lossless)
 - ~37 MB as uncompressed RGB
@@ -258,8 +263,43 @@ the stream restarts automatically. Captures are saved as
 ./picamera --preview --capture-format jpeg --capture-dir ~/photos
 ```
 
-No systemd unit is needed — just run `--preview` (e.g. from a tty or an
-autostart script). Ctrl+C exits cleanly and releases the camera.
+## Appliance mode (power-on = camera works)
+
+Run `picamera` with no arguments and it launches preview mode with sensible
+defaults: 320x240 viewfinder on the SPI LCD, 4056x3040 JPEG capture on joystick
+press, battery overlay enabled. This is the "mirrorless camera" experience —
+no CLI, no SSH, just power on and shoot.
+
+```bash
+./picamera    # no args = appliance mode
+```
+
+### Auto-start on boot (systemd)
+
+Install as a systemd service so the camera starts automatically on boot:
+
+```bash
+# On the Pi: build as your normal user first, then install as root.
+make build
+sudo make install-service
+sudo systemctl start picamera
+
+# Check status / logs:
+systemctl status picamera
+journalctl -u picamera -f
+```
+
+This installs the binary to `/usr/local/bin/picamera`, the systemd unit to
+`/lib/systemd/system/picamera.service`, enables auto-start on boot, and creates
+`/home/pi/captures` (owned by the `pi` user) for captured images. The service
+runs as the `pi` user (not root) with restricted device access — the `pi` user
+must be in the `gpio`, `i2c`, `spi`, and `video` groups (default on Raspberry
+Pi OS). The unit uses `DevicePolicy=closed` with an allowlist covering the SPI
+display, I2C battery ADC, GPIO chip, DMA heap, and the V4L2/media/subdev nodes
+libcamera opens to drive the IMX477 pipeline. System binaries are protected
+read-only (`ProtectSystem=full`); `/home` stays writable for captures. The
+service auto-restarts on failure (3-second delay). Ctrl+C (or
+`systemctl stop picamera`) exits cleanly.
 
 ## Flashing the Pi (first-time setup)
 
@@ -289,7 +329,9 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
 ├── .clang-tidy            clang-tidy checks (correctness-focused, style noise disabled)
 ├── .github/workflows/ci.yml  CI: build+test+sanitize+tidy (x86-64) + cross-build (aarch64)
 ├── config/
-│   └── wpa_supplicant.conf.example   WiFi config template (copy + edit before flashing)
+│   ├── wpa_supplicant.conf.example   WiFi config template (copy + edit before flashing)
+│   └── systemd/
+│       └── picamera.service          systemd unit for appliance-mode auto-start on boot
 ├── scripts/
 │   └── cross-build.sh     Docker + qemu-user-static aarch64 cross-build
 ├── tests/
@@ -303,21 +345,25 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
 │   ├── test_dng.cpp       DNG/TIFF writer tests
 │   └── test_battery.cpp   LiPo SOC curve + font renderer tests
 └── src/
-    ├── main.cpp           Entry point: parse args, init camera, dispatch mode
-    ├── camera_config.h    OutputFormat enum + CameraConfig struct
-    ├── camera.{h,cpp}     CameraApp: init/configure/capture/bracket/timelapse/listControls
-    ├── cli.{h,cpp}        Arg parsing with typed, exception-safe numeric conversion
-    ├── image.{h,cpp}      NV12 -> RGB24 / RGB565 conversion (NEON SIMD + multi-threaded, BT.601)
-    ├── encoders.{h,cpp}    Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
+    ├── main.cpp               Entry point: appliance mode (no args) or CLI dispatch
+    ├── camera_config.h        OutputFormat enum + CameraConfig struct + format helpers
+    ├── camera.{h,cpp}         CameraApp: init/configure/capture/bracket/listControls
+    ├── camera_handle.{h,cpp}  RAII wrapper for libcamera CameraManager + Camera lifecycle
+    ├── stop_flag.h            RAII SIGINT/SIGTERM handler for graceful shutdown
+    ├── cli.{h,cpp}            Arg parsing with typed, exception-safe numeric conversion
+    ├── image.{h,cpp}          NV12 -> RGB24 / RGB565 conversion (NEON SIMD + multi-threaded, BT.601)
+    ├── encoders.{h,cpp}       Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
     ├── output_writer.{h,cpp}  OutputWriter Strategy + factory (per-format writers)
-    ├── timelapse.{h,cpp}  Filename pattern formatting + validation
-    ├── dng.{h,cpp}        DNG/TIFF raw Bayer writer with EXIF metadata
-    ├── preview.{h,cpp}    Live SPI LCD preview loop (ST7735S viewfinder + joystick capture)
-    ├── stream.{h,cpp}     CameraStream: continuous Viewfinder-role NV12 streaming
-    ├── display.{h,cpp}    ST7735S SPI display driver (spidev + libgpiod)
-    ├── buttons.{h,cpp}    GPIO button/joystick input (libgpiod v2 edge events)
-    ├── battery.{h,cpp}    ADS1115 I2C ADC battery monitor + LiPo SOC curve
-    └── font.{h,cpp}       5x7 bitmap font + battery icon renderer for RGB565 overlays
+    ├── mapped_plane.h         RAII wrapper for mmap'd dmabuf planes (used by camera + stream)
+    ├── timelapse.{h,cpp}      Filename pattern formatting + validation
+    ├── timelapse_runner.cpp   Timelapse capture loop (signal-aware, extracted from CameraApp)
+    ├── dng.{h,cpp}            DNG/TIFF raw Bayer writer with EXIF metadata
+    ├── preview.{h,cpp}        Live SPI LCD preview loop (ST7735S viewfinder + joystick capture)
+    ├── stream.{h,cpp}         CameraStream: continuous Viewfinder-role NV12 streaming
+    ├── display.{h,cpp}        ST7735S SPI display driver (spidev + libgpiod)
+    ├── buttons.{h,cpp}        GPIO button/joystick input (libgpiod v2 edge events)
+    ├── battery.{h,cpp}        ADS1115 I2C ADC battery monitor + LiPo SOC curve
+    └── font.{h,cpp}           5x7 bitmap font + battery icon renderer for RGB565 overlays
 ```
 
 ## Troubleshooting
