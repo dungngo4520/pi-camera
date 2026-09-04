@@ -26,7 +26,15 @@ TEST(parse_output_format_known) {
 TEST(parse_output_format_unknown_is_nullopt) {
     CHECK(!parseOutputFormat("tiff"));
     CHECK(!parseOutputFormat(""));
-    CHECK(!parseOutputFormat("JPEG")); // case-sensitive
+    CHECK(!parseOutputFormat("xyz"));
+}
+
+TEST(parse_output_format_case_insensitive) {
+    CHECK(parseOutputFormat("JPEG") == OutputFormat::JPEG);
+    CHECK(parseOutputFormat("Png")  == OutputFormat::PNG);
+    CHECK(parseOutputFormat("DNG")  == OutputFormat::DNG);
+    CHECK(parseOutputFormat("RAW")  == OutputFormat::RAW_NV12);
+    CHECK(parseOutputFormat("PpM")  == OutputFormat::PPM);
 }
 
 TEST(extension_for_each_format) {
@@ -119,6 +127,28 @@ TEST(cli_png_level_validated) {
     // Out of range.
     CHECK(!runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "10"}, opts, cfg));
     CHECK(!runParse({"picamera", "--capture", "x", "--format", "png", "--png-level", "-1"}, opts, cfg));
+}
+
+TEST(cli_jpeg_quality_validated) {
+    CliOptions opts;
+    CameraConfig cfg;
+    // Valid quality 1-100.
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "jpeg", "--jpeg-quality", "50"}, opts, cfg));
+    CHECK_EQ(cfg.jpegQuality, 50);
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "jpeg", "--jpeg-quality", "100"}, opts, cfg));
+    CHECK_EQ(cfg.jpegQuality, 100);
+    CHECK(runParse({"picamera", "--capture", "x", "--format", "jpeg", "--jpeg-quality", "1"}, opts, cfg));
+    CHECK_EQ(cfg.jpegQuality, 1);
+    // Out of range.
+    CHECK(!runParse({"picamera", "--capture", "x", "--format", "jpeg", "--jpeg-quality", "0"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--capture", "x", "--format", "jpeg", "--jpeg-quality", "101"}, opts, cfg));
+    // Default is 90 when not specified (fresh cfg to avoid stale value).
+    {
+        CliOptions opts2;
+        CameraConfig cfg2;
+        CHECK(runParse({"picamera", "--capture", "x", "--format", "jpeg"}, opts2, cfg2));
+        CHECK_EQ(cfg2.jpegQuality, 90);
+    }
 }
 
 TEST(cli_unknown_flag_rejected) {
@@ -257,6 +287,175 @@ TEST(cli_preview_options_parsed) {
     CHECK_EQ(opts.captureFormat, std::string("png"));
     CHECK_EQ(opts.captureDir, std::string("/tmp/captures"));
     CHECK_EQ(opts.capturePrefix, std::string("shot"));
+}
+
+TEST(cli_preview_fps_zero_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--preview", "--preview-fps", "0"}, opts, cfg));
+}
+
+TEST(cli_preview_fps_over_max_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--preview", "--preview-fps", "121"}, opts, cfg));
+}
+
+TEST(cli_width_wraparound_rejected) {
+    // 4294967297 = 2^32 + 1, which would wrap to 1 via static_cast<uint32_t>
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x.ppm",
+                     "--width", "4294967297"}, opts, cfg));
+}
+
+TEST(cli_battery_addr_wraparound_rejected) {
+    // 0x101 would wrap to 0x01 via static_cast<uint8_t>, bypassing range check
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--preview", "--battery",
+                     "--battery-addr", "0x101"}, opts, cfg));
+}
+
+TEST(cli_battery_addr_accepts_0x_prefix) {
+    // 0x48 should parse the same as 48 (hex 0x48 = decimal 72)
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--battery",
+                     "--battery-addr", "0x48"}, opts, cfg));
+    CHECK_EQ(opts.batteryI2cAddress, static_cast<uint8_t>(0x48));
+}
+
+TEST(cli_battery_addr_accepts_no_prefix) {
+    // Without 0x prefix, still works (hex 48 = decimal 72)
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--battery",
+                     "--battery-addr", "48"}, opts, cfg));
+    CHECK_EQ(opts.batteryI2cAddress, static_cast<uint8_t>(0x48));
+}
+
+TEST(cli_capture_traversal_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "../etc/passwd"}, opts, cfg));
+}
+
+TEST(cli_capture_absolute_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "/tmp/x.ppm"}, opts, cfg));
+}
+
+TEST(cli_output_traversal_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--timelapse", "60",
+                     "--output", "../evil_%04d.ppm"}, opts, cfg));
+}
+
+TEST(cli_capture_dir_traversal_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--preview", "--capture-dir", "../evil"}, opts, cfg));
+}
+
+TEST(cli_numeric_trailing_garbage_rejected) {
+    // std::stoull/stoi/stof silently stop at the first invalid char,
+    // accepting "4056abc" as 4056. Verify our parsers reject this.
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--width", "4056abc"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--height", "3040xyz"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--iso", "100foo"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--shutter", "30000xyz"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--timelapse", "60abc"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--count", "10xyz"}, opts, cfg));
+    CHECK(!runParse({"picamera", "--preview-fps", "30abc"}, opts, cfg));
+}
+
+TEST(cli_numeric_valid_still_accepted) {
+    // Ensure normal valid values still parse correctly after the
+    // trailing-garbage check was added.
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--preview-w", "320", "--preview-h", "240"},
+                   opts, cfg));
+    CHECK_EQ(opts.previewWidth, 320u);
+    CHECK_EQ(opts.previewHeight, 240u);
+}
+
+TEST(cli_awb_unknown_mode_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--awb", "bogus"}, opts, cfg));
+}
+
+TEST(cli_awb_all_modes_accepted) {
+    // All documented AWB modes should be accepted.
+    for (const char *mode : {"auto", "daylight", "cloudy", "incandescent",
+                             "tungsten", "fluorescent", "indoor"}) {
+        CliOptions opts;
+        CameraConfig cfg;
+        CHECK(runParse({"picamera", "--capture", "x", "--awb", mode}, opts, cfg));
+        CHECK_EQ(cfg.awbMode, std::string(mode));
+    }
+}
+
+TEST(cli_iso_inf_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--iso", "inf"}, opts, cfg));
+}
+
+TEST(cli_iso_nan_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--iso", "nan"}, opts, cfg));
+}
+
+TEST(cli_digital_gain_inf_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--digital-gain", "infinity"}, opts, cfg));
+}
+
+TEST(cli_help_long_flag_rejected) {
+    // --help prints usage and returns false (no mode to run).
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--help"}, opts, cfg));
+}
+
+TEST(cli_help_short_flag_rejected) {
+    // -h prints usage and returns false (no mode to run).
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "-h"}, opts, cfg));
+}
+
+TEST(cli_output_in_capture_mode_rejected) {
+    // --output is a timelapse-only flag; accepting it in --capture mode
+    // would silently ignore the user-supplied pattern.
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--capture", "x", "--output", "photo_%04d.jpg"},
+                    opts, cfg));
+}
+
+TEST(cli_output_in_preview_mode_rejected) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(!runParse({"picamera", "--preview", "--output", "photo_%04d.jpg"},
+                    opts, cfg));
+}
+
+TEST(cli_output_in_timelapse_accepted) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--timelapse", "60", "--count", "5",
+                    "--output", "shot_%04d.png"}, opts, cfg));
+    CHECK_EQ(opts.outputPattern, std::string("shot_%04d.png"));
 }
 
 } // namespace

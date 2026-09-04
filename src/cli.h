@@ -1,6 +1,6 @@
 #pragma once
 
-#include "camera.h"
+#include "camera_config.h"
 #include <string>
 
 namespace picamera {
@@ -8,7 +8,7 @@ namespace picamera {
 struct CliOptions {
     std::string mode;
     std::string captureFile;
-    std::string outputPattern = "capture_%04d.ppm";
+    std::string outputPattern;  // default derived from --format in parseArgs
     int timelapseInterval = 0;
     int timelapseCount = 1;
     // Preview mode
@@ -23,7 +23,7 @@ struct CliOptions {
     std::string capturePrefix = "capture";
     // Display
     std::string spiDevice = "/dev/spidev0.0";
-    int displayRotation = 180;
+    int displayRotation = 90;  // Waveshare 1.44" HAT panel is mounted rotated 90°
     // Battery monitor (preview mode)
     bool enableBattery = false;
     std::string batteryI2cDevice = "/dev/i2c-1";
