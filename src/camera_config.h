@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -8,27 +10,62 @@
 
 namespace picamera {
 
+constexpr uint32_t kMaxSensorWidth = 4056;
+constexpr uint32_t kMaxSensorHeight = 3040;
+
+constexpr int kJpegQualityMin = 1;
+constexpr int kJpegQualityMax = 100;
+
+enum class MeteringMode {
+    Centre = 0,
+    Spot = 1,
+    Matrix = 2,
+};
+
+enum class AeExposureMode {
+    Normal = 0,
+    Short = 1,
+    Long = 2,
+};
+
+enum class AeConstraintMode {
+    Normal = 0,
+    Highlight = 1,
+    Shadows = 2,
+};
+
+enum class NoiseReductionMode {
+    Off = 0,
+    Fast = 1,
+    HighQuality = 2,
+    Minimal = 3,
+};
+
 enum class OutputFormat {
     PPM,
     RAW_NV12,
     PNG,
-    JPEG,  // ISP hardware-encoded MJPEG (Pi only); buffer is a complete JPEG
-    DNG,   // Raw Bayer DNG (requires raw stream from libcamera)
+    JPEG,
+    DNG,
 };
 
-// Parse a CLI/output format name ("ppm", "raw", "png", "jpeg"/"jpg", "dng")
-// into an OutputFormat. Returns std::nullopt for an unknown name so callers
-// can produce their own error message. Case-sensitive, matches --format.
 inline std::optional<OutputFormat> parseOutputFormat(std::string_view name) {
-    if (name == "ppm") return OutputFormat::PPM;
-    if (name == "raw") return OutputFormat::RAW_NV12;
-    if (name == "png") return OutputFormat::PNG;
-    if (name == "jpeg" || name == "jpg") return OutputFormat::JPEG;
-    if (name == "dng") return OutputFormat::DNG;
+    auto ieq = [](std::string_view a, std::string_view b) {
+        return a.size() == b.size() &&
+               std::equal(a.begin(), a.end(), b.begin(),
+                          [](char x, char y) {
+                              return std::tolower(static_cast<unsigned char>(x)) ==
+                                     std::tolower(static_cast<unsigned char>(y));
+                          });
+    };
+    if (ieq(name, "ppm")) return OutputFormat::PPM;
+    if (ieq(name, "raw")) return OutputFormat::RAW_NV12;
+    if (ieq(name, "png")) return OutputFormat::PNG;
+    if (ieq(name, "jpeg") || ieq(name, "jpg")) return OutputFormat::JPEG;
+    if (ieq(name, "dng")) return OutputFormat::DNG;
     return std::nullopt;
 }
 
-// Canonical file extension (without the dot) for an OutputFormat.
 inline std::string_view extensionFor(OutputFormat fmt) {
     switch (fmt) {
         case OutputFormat::PPM:      return "ppm";
@@ -37,12 +74,22 @@ inline std::string_view extensionFor(OutputFormat fmt) {
         case OutputFormat::JPEG:     return "jpg";
         case OutputFormat::DNG:      return "dng";
     }
-    return "ppm";
+    return "bin";
+}
+
+inline constexpr std::string_view kAwbModes[] = {
+    "auto", "incandescent", "tungsten", "fluorescent",
+    "indoor", "daylight", "cloudy",
+};
+
+inline bool isValidAwbMode(std::string_view name) {
+    return std::any_of(std::begin(kAwbModes), std::end(kAwbModes),
+                       [&](std::string_view m) { return name == m; });
 }
 
 struct CameraConfig {
-    uint32_t width = 4056;
-    uint32_t height = 3040;
+    uint32_t width = kMaxSensorWidth;
+    uint32_t height = kMaxSensorHeight;
     uint64_t exposureTime = 0;
     float analogueGain = 0;
     float digitalGain = 0;
@@ -50,12 +97,24 @@ struct CameraConfig {
     bool aeEnable = true;
     bool awbEnable = true;
     OutputFormat format = OutputFormat::PPM;
-    uint32_t warmupFrames = 8;  // frames to let AE/AWB converge before saving
-    int pngLevel = 6;  // zlib compression level for PNG (0=none, 1=fast, 6=default, 9=best)
-    // HDR bracketing: capture N frames at EV offsets relative to metered exposure.
-    // e.g. --bracket 3,-2,0,+2 captures 3 frames at -2EV, 0EV, +2EV.
-    // Empty = no bracketing (single shot).
-    std::vector<float> bracketEv;  // EV offsets in stops
+    int pngLevel = 6;
+    int jpegQuality = 90;
+    uint32_t warmupFrames = 8;
+    std::vector<float> bracketEv;
+
+    float exposureValue = 0;
+    MeteringMode meteringMode = MeteringMode::Matrix;
+    AeExposureMode aeExposureMode = AeExposureMode::Normal;
+    AeConstraintMode aeConstraintMode = AeConstraintMode::Normal;
+    float brightness = 0;
+    float contrast = 1.0;
+    float saturation = 1.0;
+    float sharpness = 1.0;
+    bool antiFlicker = false;
+    int flickerPeriodUs = 0;
+    float wbRedGain = 1.0;
+    float wbBlueGain = 1.0;
+    NoiseReductionMode noiseReductionMode = NoiseReductionMode::Fast;
 };
 
 } // namespace picamera
