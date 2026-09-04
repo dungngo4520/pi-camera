@@ -1,6 +1,39 @@
 # clang-tidy config for picamera.
 # Focused on correctness and modern C++20 — not style pedantry.
 # Noisy style checks are disabled; enable them file-by-file when refactoring.
+#
+# clang-tidy requires `Checks` to be a single string, so a YAML folded
+# scalar (`>`) is used. Comments cannot be embedded inside a folded scalar
+# (a `#` there becomes part of the string and breaks parsing), so the
+# per-check rationale is documented in the block immediately below, with
+# one entry per disabled check in the same order as the Checks list.
+#
+# Per-check rationale for each disabled check (same order as Checks below):
+#   -bugprone-easily-swappable-parameters    too noisy for libcamera/C API interop (int params common)
+#   -bugprone-narrowing-conversions          narrowing is intentional in some image-processing casts; case-by-case
+#   -bugprone-reserved-identifier            libcamera headers use reserved identifiers; cannot change them
+#   -cert-err33-c                            flags unchecked C return values; we handle the ones that matter
+#   -cert-err52-cpp                          setjmp-in-destructor; N/A, no setjmp in dtors
+#   -cert-err58-cpp                          static init order; no cross-TU static dependencies
+#   -cert-oop54-cpp                          copy constructor not overriding; reviewed case-by-case
+#   -misc-const-correctness                  too aggressive for hardware-buffer interop code
+#   -misc-include-cleaner                    false positives with libcamera forwarding headers
+#   -misc-no-recursion                       flags intentional recursive descent (e.g. menu traversal)
+#   -misc-non-private-member-variables-in-classes  data structs (StreamFrame) have public members by design
+#   -misc-use-internal-linkage               flags anonymous-namespace functions (redundant with anon ns)
+#   -performance-enum-size                   wants underlying type; our enums are small and intentional
+#   -performance-no-int-to-ptr-cast          needed for mmap/dmabuf pointer returns
+#   -readability-avoid-nested-conditional-operator  nested ternary used sparingly for compact pixel-conversion logic
+#   -readability-braces-around-statements    style preference; project uses compact single-liners
+#   -readability-function-cognitive-complexity  flags large HW-setup functions that can't be easily split
+#   -readability-identifier-length           flags short loop/coord names (i, j, x, y) — acceptable here
+#   -readability-implicit-bool-conversion    idiomatic for pointer/null checks
+#   -readability-inconsistent-ifelse-braces  mixed brace style is intentional for single-liners
+#   -readability-magic-numbers               flags hardware register values and pixel offsets — documented inline
+#   -readability-math-missing-parentheses    flags precedence in simple arithmetic — reviewed manually
+#   -readability-named-parameter             flags unused params in overridden interfaces — unavoidable
+#   -readability-simplify-boolean-expr       flags intentional explicit early-return guards
+#   -readability-uppercase-literal-suffix    flags mixed-case hex suffixes — cosmetic only
 Checks: >
   -*,
   bugprone-*,
@@ -19,6 +52,7 @@ Checks: >
   -misc-const-correctness,
   -misc-include-cleaner,
   -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
   -misc-use-internal-linkage,
   -performance-enum-size,
   -performance-no-int-to-ptr-cast,
@@ -36,6 +70,4 @@ Checks: >
 
 WarningsAsErrors: ''
 HeaderFilterRegex: 'src/.*'
-FormatStyle: file
-
-
+FormatStyle: LLVM

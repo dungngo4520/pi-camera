@@ -9,10 +9,12 @@
 // runner, so destructors run normally (unlike assert()).
 #pragma once
 
+#include <atomic>
 #include <exception>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace picamera::test {
 
@@ -97,5 +99,24 @@ inline std::string toStr(unsigned long v)   { return std::to_string(v); }
 inline std::string toStr(unsigned long long v) { return std::to_string(v); }
 inline std::string toStr(const char *v)     { return std::string(v ? v : "<null>"); }
 inline std::string toStr(const std::string &v) { return "\"" + v + "\""; }
+inline std::string toStr(std::string_view v) { return "\"" + std::string(v) + "\""; }
 inline std::string toStr(bool v)            { return v ? "true" : "false"; }
+
+// Create a unique temporary file path with the given suffix.
+// The file is NOT created — only the path is returned. The caller owns
+// cleanup (typically via unlink after use).
+inline std::string tmpPath(const char *suffix) {
+    char tmpl[] = "/tmp/picamera_test_XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0) {
+        // Fallback: use PID + a static counter for uniqueness if mkstemp fails.
+        static std::atomic<unsigned> counter{0};
+        return std::string("/tmp/picamera_test_") +
+               std::to_string(getpid()) + "_" +
+               std::to_string(counter.fetch_add(1)) + suffix;
+    }
+    close(fd);
+    unlink(tmpl);  // we want the path, not the file
+    return std::string(tmpl) + suffix;
+}
 } // namespace picamera::test
