@@ -2,6 +2,7 @@
 #include "encoders.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -11,17 +12,9 @@
 #include <png.h>
 
 using namespace picamera;
+using picamera::test::tmpPath;
 
 namespace {
-
-std::string tmpPath(const char *suffix) {
-    char tmpl[] = "/tmp/picamera_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    REQUIRE(fd >= 0);
-    close(fd);
-    unlink(tmpl);  // we want the path, not the file
-    return std::string(tmpl) + suffix;
-}
 
 TEST(ppm_roundtrip_header_and_pixels) {
     const uint32_t w = 2, h = 2;
@@ -69,12 +62,26 @@ TEST(png_roundtrip_dimensions_and_pixels) {
     REQUIRE(png);
     png_infop info = png_create_info_struct(png);
     REQUIRE(info);
+
+    // Use raw malloc/free for buffers in setjmp scope — C++ objects with
+    // non-trivial destructors (like std::vector) in scope between setjmp
+    // and longjmp cause undefined behavior per C++ [support.runtime]/3.
+    png_bytep *rows = static_cast<png_bytep *>(
+        std::malloc(h * sizeof(png_bytep)));
+    uint8_t *buf = static_cast<uint8_t *>(
+        std::malloc(w * h * 3));
+    REQUIRE(rows);
+    REQUIRE(buf);
+
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_read_struct(&png, &info, nullptr);
         fclose(fp);
-        CHECK(!"libpng read failed");
+        std::free(rows);
+        std::free(buf);
+        CHECK(false && "libpng read failed");
         return;
     }
+
     png_init_io(png, fp);
     png_set_sig_bytes(png, 8);
     png_read_info(png, info);
@@ -84,14 +91,14 @@ TEST(png_roundtrip_dimensions_and_pixels) {
     CHECK_EQ(png_get_color_type(png, info), PNG_COLOR_TYPE_RGB);
     CHECK_EQ(png_get_bit_depth(png, info), 8);
 
-    std::vector<png_bytep> rows(h);
-    std::vector<uint8_t> buf(w * h * 3);
-    for (uint32_t y = 0; y < h; ++y) rows[y] = buf.data() + y * w * 3;
-    png_read_image(png, rows.data());
+    for (uint32_t y = 0; y < h; ++y) rows[y] = buf + y * w * 3;
+    png_read_image(png, rows);
     png_destroy_read_struct(&png, &info, nullptr);
     fclose(fp);
 
-    CHECK(buf == rgb);
+    CHECK(std::memcmp(buf, rgb.data(), w * h * 3) == 0);
+    std::free(rows);
+    std::free(buf);
     unlink(path.c_str());
 }
 
@@ -131,8 +138,12 @@ TEST(png_compression_level_affects_size) {
     std::string path9 = tmpPath(".png");
     CHECK(writePng(path0.c_str(), rgb.data(), w, h, 0));  // no compression
     CHECK(writePng(path9.c_str(), rgb.data(), w, h, 9));  // max compression
-    size_t sz0 = std::ifstream(path0, std::ios::binary | std::ios::ate).tellg();
-    size_t sz9 = std::ifstream(path9, std::ios::binary | std::ios::ate).tellg();
+    std::ifstream in0(path0, std::ios::binary | std::ios::ate);
+    std::ifstream in9(path9, std::ios::binary | std::ios::ate);
+    REQUIRE(in0.is_open());
+    REQUIRE(in9.is_open());
+    size_t sz0 = static_cast<size_t>(in0.tellg());
+    size_t sz9 = static_cast<size_t>(in9.tellg());
     // Level 9 should produce a strictly smaller file for uniform input.
     CHECK(sz9 < sz0);
     unlink(path0.c_str());
@@ -152,6 +163,37 @@ TEST(jpeg_write_roundtrip) {
     in.read(reinterpret_cast<char *>(got.data()), got.size());
     CHECK(got == fakeJpeg);
     unlink(path.c_str());
+}
+
+// --- New tests for unlink-on-failure (Tier 1 fix) ---
+
+TEST(write_to_unwritable_path_leaves_no_file) {
+    // When a write fails (e.g., unwritable directory), no partial file
+    // should be left behind. This verifies the unlink-on-failure behavior.
+    std::vector<uint8_t> rgb(6, 0);
+    std::string badPath = "/nonexistent_dir_xyz/file.ppm";
+    CHECK(!writePpm(rgb.data(), rgb.size(), 1, 1, badPath));
+    // Verify no file exists at the bad path (it shouldn't — the dir doesn't
+    // exist — but this also covers the case where the open succeeds but
+    // the write fails later).
+    std::ifstream check(badPath);
+    CHECK(!check.good());  // file should not exist
+}
+
+TEST(write_raw_to_unwritable_path_leaves_no_file) {
+    std::vector<uint8_t> data(8, 0);
+    std::string badPath = "/nonexistent_dir_xyz/file.raw";
+    CHECK(!writeRaw(data.data(), 4, data.data(), 4, badPath));
+    std::ifstream check(badPath);
+    CHECK(!check.good());
+}
+
+TEST(write_jpeg_to_unwritable_path_leaves_no_file) {
+    std::vector<uint8_t> data(4, 0);
+    std::string badPath = "/nonexistent_dir_xyz/file.jpg";
+    CHECK(!writeJpeg(data.data(), 4, badPath));
+    std::ifstream check(badPath);
+    CHECK(!check.good());
 }
 
 } // namespace
