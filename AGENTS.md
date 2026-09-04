@@ -2,6 +2,17 @@
 
 C++20 libcamera front-end for the Raspberry Pi HQ Camera (IMX477) on Pi Zero 2 W.
 
+## Appliance mode
+
+Running `picamera` with no arguments launches preview mode with sensible
+defaults (320x240 viewfinder, 4056x3040 JPEG capture, battery overlay). This
+is the "mirrorless camera" experience — power on and shoot, no CLI needed.
+
+Install as a systemd service for auto-start on boot:
+```bash
+sudo make install-service   # on the Pi, after building
+```
+
 ## Build
 
 ```bash
@@ -18,10 +29,27 @@ make remote-deploy      # rsync source to Pi + build on Pi (PI_HOST=, PI_USER= o
 ## Test & verify
 
 ```bash
-make test               # build + run unit tests via ctest (37 tests, pure-logic, no camera)
+make test               # build + run unit tests via ctest (pure-logic, no camera)
 make test-sanitize      # build + run under ASan + UBSan with leak detection
 make tidy               # clang-tidy on src/ (zero warnings expected; system-header noise filtered)
 ```
+
+### Hardware verification (requires Pi connected via SSH)
+
+When a Pi Zero 2 W + IMX477 + Waveshare LCD HAT is connected:
+
+```bash
+make hw-test PI_PASS=<pi_password>    # deploy + build + unit tests + JPEG/DNG capture + service restart
+make hw-deploy PI_PASS=<pi_password>  # deploy + build only (no tests)
+make hw-restart PI_PASS=<pi_password> # restart the picamera service
+make hw-status PI_PASS=<pi_password>  # show service status
+make hw-logs PI_PASS=<pi_password>    # show recent journal logs
+```
+
+Set `PI_HOST` and `PI_USER` if your Pi isn't at `raspberrypi.local` as `pi`.
+`hw-test` stops the service before standalone capture tests (frees the camera),
+then restarts it. All tests must pass: unit tests + JPEG capture + DNG capture +
+service running.
 
 CMake options:
 - `-DPICAMERA_BUILD_TESTS=OFF` — skip the test target
@@ -38,26 +66,68 @@ CMake options:
 
 - C++20, `-Wall -Wextra -Wpedantic` baseline (set in CMakeLists).
 - clang-tidy config in `.clang-tidy` — correctness checks enabled, style noise disabled.
+  The `make tidy` target and CI filter only fail on warnings in `src/*.cpp` files;
+  header warnings (`.clang-tidy` `HeaderFilterRegex: 'src/.*'`) are emitted but not
+  enforced, to keep the gate focused on TU-local diagnostics.
 - No external test framework; `tests/test_runner.h` is a minimal TEST/CHECK/REQUIRE runner.
-- Pure-logic code (image, output, cli, timelapse) is unit-tested; camera.cpp requires hardware.
+- Pure-logic code (image, output, cli, timelapse, safe_path) is unit-tested; camera.cpp requires hardware.
 - `formatTimelapseName` validates `--output` patterns to prevent format-string vulns (see test_timelapse.cpp).
+
+## Security hardening
+
+- **Path safety** (`safe_path.{h,cpp}`): all capture filenames built via
+  `safeCapturePath()` — rejects `..`, control chars, absolute paths, overlong
+  paths. CLI validates `--capture-prefix`, `--spi-device`, `--battery-i2c`,
+  `--battery-addr`, `--display-rotate`, and all width/height args.
+  Unit-tested in `tests/test_safe_path.cpp`.
+- **File creation**: encoders and DNG writer use `O_CREAT|O_EXCL|O_NOFOLLOW`
+  with 0640 perms to prevent symlink attacks and accidental overwrites.
+- **Integer overflow**: `checkedMul`/`checkedAdd` helpers used in image
+  processing, DNG unpack, mmap length, and buffer-size calculations.
+- **libjpeg error handling**: `writeJpegRgb` installs a setjmp/longjmp error
+  handler so a corrupted buffer returns false instead of calling `exit()`.
+- **Systemd unit**: runs as `pi` user (not root), `DevicePolicy=closed` with
+  allowlist, `ProtectSystem=full`, `ProtectHome=read-only`, `MemoryDenyWriteExecute`,
+  `SystemCallFilter=@system-service`, `NoNewPrivileges`, `UMask=0077`.
 
 ## Preview mode (live LCD streaming)
 
 `--preview` streams the camera to a Waveshare 1.44" LCD HAT (ST7735S, 128x128, SPI)
-and captures full-res JPEGs on joystick press.
+and captures full-res JPEGs on joystick press — mirrorless-camera style.
 
 - **Display driver**: userspace ST7735S via `spidev` + `libgpiod` (no kernel overlay needed).
   - SPI: `/dev/spidev0.0` at 16 MHz, mode 0
   - GPIO: DC=BCM25, RST=BCM27, BL=BCM24
-  - SPI data is sent in 256-byte chunks (large single transfers fail on spidev)
-  - Default rotation: 180 (MX|MY|BGR), adjustable with `--display-rotate`
-- **Camera stream**: `CameraStream` class uses libcamera Viewfinder role with NV12
-  at 320x240, 4 buffers, continuous re-queue. Frame data is mmap'd and copied.
-- **Button input**: `ButtonInput` class polls libgpiod lines. Joystick press (BCM13)
-  triggers full-res capture via `CameraApp`.
-- **Capture**: stream is stopped + shut down, 500ms delay for V4L2 buffer release,
-  then `CameraApp` captures 4056x3040 JPEG. Stream is restarted after.
+  - SPI data is sent in 4096-byte chunks (optimized for throughput)
+  - Default rotation: 90 — panel is physically mounted rotated 90° CCW on the PCB.
+    Rotation is done entirely in software (90° CW pre-rotation of the framebuffer).
+    No MV bit is used (MADCTL=0x08, BGR only) because MV changes the controller's
+    auto-increment direction, which transposes pixel data and breaks text rendering.
+    Adjustable with `--display-rotate`
+  - Font: FreeType + DejaVu Sans Mono (8px, anti-aliased) when libfreetype6-dev
+    is installed; falls back to 5x7 bitmap font otherwise. Glyphs are cached
+    on first use. Install on Pi: `sudo apt install libfreetype6-dev`.
+  - `blitRegion()` for partial updates (overlay-only refresh without full redraw)
+- **DualStream** (`dual_stream.{h,cpp}`): runs Viewfinder + StillCapture streams
+  simultaneously on one camera. The Pi ISP drives both from the same sensor,
+  sharing AE/AWB. Still capture is a one-shot request queued on the still stream;
+  the viewfinder keeps streaming — no stop/restart, no 1s+ blackout.
+  - Viewfinder: NV12 at 320x240, 4 buffers, continuous re-queue
+  - Still: full-res (4056x3040), 1 buffer, queued on shutter press
+  - HW MJPEG fallback detection preserved (NV12 + libjpeg if MJPEG rejected)
+- **Mode state machine** (`camera_mode.{h,cpp}`): Viewfinder / Review / Playback /
+  Settings / Splash modes, navigated via buttons.
+  - Splash screen on boot (1.5s)
+  - Review: shows saved filename for 2s after capture
+  - Playback: browse captured images (Key1), joystick navigates
+  - Settings: JPEG quality, grid, brightness, self-timer (Key2)
+- **Button input**: `ButtonInput` class polls libgpiod edge events.
+  - Shutter (joystick press, BCM13): quick tap (<500ms) = capture;
+    long hold (>=500ms) = AE/AWB metering lock (half-press emulation)
+  - Key1 (BCM21): playback mode / exit playback
+  - Key2 (BCM20): settings mode / exit settings
+  - Key3 (BCM16): power toggle — enters sleep mode (display off, low power); any button press wakes the camera back up
+  - `ButtonEvent.pressDurationMs` tracks press duration for half-press logic
 - **libgpiod dependency**: optional at build time (CMake `pkg_check_modules QUIET`).
   Without it, `--preview` prints an error. Install `libgpiod-dev` on the Pi.
 - **Pi Zero 2 W memory**: 512MB RAM. Build with `-j1` to avoid OOM.
@@ -176,10 +246,11 @@ in conflict. Keep them concise — see the Devin docs on
   this repo that means, at minimum:
   ```bash
   make build          # must compile clean (C++20, -Wall -Wextra -Wpedantic)
-  make test           # ctest must pass (37 pure-logic tests)
+  make test           # ctest must pass (269 pure-logic tests)
   make tidy           # clang-tidy: zero warnings on src/
   ```
   Run `make test-sanitize` for any change touching memory/buffer/CLI parsing.
+  If a Pi is connected, run `make hw-test PI_PASS=...` to verify on hardware.
 - **For hardware-only code** (camera.cpp, preview.cpp, display, battery I2C),
   note in the PR that it's untested on x86 and why, and ensure pure-logic
   helpers stay unit-tested.
