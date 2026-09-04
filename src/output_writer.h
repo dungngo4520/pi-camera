@@ -2,6 +2,7 @@
 
 #include "camera_config.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -29,13 +30,17 @@ class OutputWriter {
 public:
     virtual ~OutputWriter() = default;
     // Encode the frame and write to `filename`. Returns true on success.
-    virtual bool write(const FrameView &frame, const std::string &filename) = 0;
+    // On success, if `actualPath` is non-null it is set to the path actually
+    // written to (may differ from `filename` if a uniqueness suffix was needed).
+    [[nodiscard]] virtual bool write(const FrameView &frame, const std::string &filename,
+                       std::string *actualPath = nullptr) = 0;
 };
 
 // Factory: pick the writer for the configured format.
 // swJpegEncode disambiguates JPEG (HW MJPEG buffer vs software libjpeg encode
 // from RGB); it is determined at camera-configure time by CameraApp.
-std::unique_ptr<OutputWriter> makeOutputWriter(OutputFormat fmt,
+// Returns nullptr for an unknown/invalid format — callers must check.
+[[nodiscard]] std::unique_ptr<OutputWriter> makeOutputWriter(OutputFormat fmt,
                                                const CameraConfig &cfg,
                                                bool swJpegEncode = false);
 

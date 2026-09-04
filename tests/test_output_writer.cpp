@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -12,17 +13,9 @@
 #include <png.h>
 
 using namespace picamera;
+using picamera::test::tmpPath;
 
 namespace {
-
-std::string tmpPath(const char *suffix) {
-    char tmpl[] = "/tmp/picamera_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    REQUIRE(fd >= 0);
-    close(fd);
-    unlink(tmpl);  // we want the path, not the file
-    return std::string(tmpl) + suffix;
-}
 
 // Build a synthetic NV12 frame (w x h, stride == w) with a neutral grey:
 // Y = 149 (maps to ~149 in full range; limited-range 149 -> ~195 RGB),
@@ -53,8 +46,14 @@ FrameView makeNv12Frame(const std::vector<uint8_t> &y,
 
 TEST(factory_returns_writer_for_each_format) {
     CameraConfig cfg;
-    for (int i = 0; i <= 4; ++i) {
-        cfg.format = static_cast<OutputFormat>(i);
+    // Iterate over all known OutputFormat values. If a new format is added,
+    // it must be included here and in makeOutputWriter.
+    constexpr OutputFormat kAllFormats[] = {
+        OutputFormat::PPM, OutputFormat::RAW_NV12, OutputFormat::PNG,
+        OutputFormat::JPEG, OutputFormat::DNG
+    };
+    for (OutputFormat fmt : kAllFormats) {
+        cfg.format = fmt;
         auto w = makeOutputWriter(cfg.format, cfg);
         CHECK(w != nullptr);
     }
@@ -191,6 +190,7 @@ TEST(dng_writer_produces_valid_tiff_header) {
     FrameView f;
     f.width = 4;
     f.height = 2;
+    f.stride = 5;  // contiguous (no padding)
     f.plane0 = rawBayer.data();
     f.plane0Size = rawBayer.size();
 
@@ -213,6 +213,76 @@ TEST(dng_writer_produces_valid_tiff_header) {
     unlink(path.c_str());
 }
 
+TEST(dng_writer_handles_padded_stride) {
+    // 4x2 pixels, MIPI-packed 10-bit. Row packed size = 5 bytes.
+    // Use stride=8 (3 bytes padding per row) to simulate DMA alignment.
+    // Total source = 8 * 2 = 16 bytes.
+    std::vector<uint8_t> rawBayer(16, 0xAA);  // fill with padding marker
+    // Row 0: pixels 100, 200, 300, 400
+    // p0=100=0x064: b0=0x64, b4[1:0]=0
+    // p1=200=0x0C8: b1=0xC8, b4[3:2]=0
+    // p2=300=0x12C: b2=0x2C, b4[5:4]=1 (0x10)
+    // p3=400=0x190: b3=0x90, b4[7:6]=1 (0x40)
+    rawBayer[0] = 0x64; rawBayer[1] = 0xC8; rawBayer[2] = 0x2C; rawBayer[3] = 0x90;
+    rawBayer[4] = 0x50;  // b4: p2 bits 9-8 = 1, p3 bits 9-8 = 1
+    // Row 1 (at offset 8): pixels 10, 20, 30, 40
+    rawBayer[8] = 10; rawBayer[9] = 20; rawBayer[10] = 30; rawBayer[11] = 40;
+    rawBayer[12] = 0x00;
+
+    FrameView f;
+    f.width = 4;
+    f.height = 2;
+    f.stride = 8;  // padded stride
+    f.plane0 = rawBayer.data();
+    f.plane0Size = rawBayer.size();
+
+    CameraConfig cfg;
+    cfg.format = OutputFormat::DNG;
+    auto writer = makeOutputWriter(OutputFormat::DNG, cfg);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".dng");
+    CHECK(writer->write(f, path));
+
+    // Read back and verify the unpacked data is correct.
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+
+    // Find StripOffsets (273) and StripByteCounts (279).
+    auto readU16 = [](const uint8_t *p) -> uint16_t {
+        return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+    };
+    auto readU32 = [](const uint8_t *p) -> uint32_t {
+        return static_cast<uint32_t>(p[0]) |
+               (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) |
+               (static_cast<uint32_t>(p[3]) << 24);
+    };
+    uint16_t tagCount = readU16(&buf[8]);
+    uint32_t stripOffset = 0;
+    for (uint16_t i = 0; i < tagCount; ++i) {
+        size_t entryOff = 8 + 2 + i * 12;
+        if (readU16(&buf[entryOff]) == 273) {
+            stripOffset = readU32(&buf[entryOff + 8]);
+            break;
+        }
+    }
+    REQUIRE(stripOffset + 16 <= buf.size());  // 8 pixels * 2 bytes = 16
+
+    // Row 0: 100, 200, 300, 400
+    CHECK_EQ(readU16(&buf[stripOffset + 0]), 100u);
+    CHECK_EQ(readU16(&buf[stripOffset + 2]), 200u);
+    CHECK_EQ(readU16(&buf[stripOffset + 4]), 300u);
+    CHECK_EQ(readU16(&buf[stripOffset + 6]), 400u);
+    // Row 1: 10, 20, 30, 40
+    CHECK_EQ(readU16(&buf[stripOffset + 8]), 10u);
+    CHECK_EQ(readU16(&buf[stripOffset + 10]), 20u);
+    CHECK_EQ(readU16(&buf[stripOffset + 12]), 30u);
+    CHECK_EQ(readU16(&buf[stripOffset + 14]), 40u);
+
+    unlink(path.c_str());
+}
+
 TEST(writer_to_unwritable_path_fails) {
     const uint32_t w = 2, h = 2;
     auto y = makeNv12Y(w, h);
@@ -225,4 +295,132 @@ TEST(writer_to_unwritable_path_fails) {
     CHECK(!ppm->write(frame, "/nonexistent_dir_xyz/file.ppm"));
     CHECK(!png->write(frame, "/nonexistent_dir_xyz/file.png"));
     CHECK(!raw->write(frame, "/nonexistent_dir_xyz/file.raw"));
+}
+
+// --- actualPath propagation tests ---
+// When the requested filename is free, actualPath should equal the input.
+// When it collides, the writer should report the suffixed path it used.
+
+TEST(ppm_writer_reports_actual_path_when_free) {
+    const uint32_t w = 2, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    auto writer = makeOutputWriter(OutputFormat::PPM, {});
+    std::string path = tmpPath(".ppm");
+    std::string actual;
+    CHECK(writer->write(frame, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+
+TEST(ppm_writer_reports_suffixed_path_on_collision) {
+    const uint32_t w = 2, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    // Pre-create the target file so the writer must use a _2 suffix.
+    std::string path = tmpPath(".ppm");
+    int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+    REQUIRE(fd >= 0);
+    close(fd);
+
+    auto writer = makeOutputWriter(OutputFormat::PPM, {});
+    std::string actual;
+    CHECK(writer->write(frame, path, &actual));
+    CHECK(!actual.empty());
+    CHECK(actual != path);
+    // The suffixed path should exist and the original should be untouched.
+    std::ifstream suffixed(actual);
+    CHECK(suffixed.good());
+
+    auto dot = path.rfind('.');
+    std::string expected = path.substr(0, dot) + "_2" + path.substr(dot);
+    CHECK_EQ(actual, expected);
+
+    unlink(path.c_str());
+    unlink(actual.c_str());
+}
+
+TEST(png_writer_reports_actual_path_when_free) {
+    const uint32_t w = 2, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    auto writer = makeOutputWriter(OutputFormat::PNG, {});
+    std::string path = tmpPath(".png");
+    std::string actual;
+    CHECK(writer->write(frame, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+
+TEST(dng_writer_reports_actual_path_when_free) {
+    std::vector<uint8_t> rawBayer = {
+        0x10, 0x20, 0x30, 0x40, 0x00,
+        0x50, 0x60, 0x70, 0x80, 0x00
+    };
+    FrameView f;
+    f.width = 4;
+    f.height = 2;
+    f.plane0 = rawBayer.data();
+    f.plane0Size = rawBayer.size();
+
+    CameraConfig cfg;
+    cfg.format = OutputFormat::DNG;
+    auto writer = makeOutputWriter(OutputFormat::DNG, cfg);
+    std::string path = tmpPath(".dng");
+    std::string actual;
+    CHECK(writer->write(f, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+
+#ifdef HAVE_JPEG
+TEST(swjpeg_writer_reports_actual_path_when_free) {
+    const uint32_t w = 2, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    auto writer = makeOutputWriter(OutputFormat::JPEG, {}, true);
+    std::string path = tmpPath(".jpg");
+    std::string actual;
+    CHECK(writer->write(frame, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+#endif
+
+TEST(hwjpeg_writer_reports_actual_path_when_free) {
+    std::vector<uint8_t> fakeJpeg = {0xFF, 0xD8, 0xFF, 0xD9};
+    FrameView f;
+    f.width = 2;
+    f.height = 2;
+    f.plane0 = fakeJpeg.data();
+    f.plane0Size = fakeJpeg.size();
+
+    auto writer = makeOutputWriter(OutputFormat::JPEG, {}, false);
+    std::string path = tmpPath(".jpg");
+    std::string actual;
+    CHECK(writer->write(f, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+
+TEST(raw_writer_reports_actual_path_when_free) {
+    const uint32_t w = 4, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    auto writer = makeOutputWriter(OutputFormat::RAW_NV12, {});
+    std::string path = tmpPath(".raw");
+    std::string actual;
+    CHECK(writer->write(frame, path, &actual));
+    CHECK_EQ(actual, path);
+    unlink(path.c_str());
 }
