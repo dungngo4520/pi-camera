@@ -9,11 +9,10 @@ struct BatteryConfig {
     std::string i2cDevice = "/dev/i2c-1";
     uint8_t i2cAddress = 0x48;       // ADS1115 default (ADDR -> GND)
     uint8_t channel = 0;             // A0 (single-ended)
-    uint16_t pgaGain = 0x0001;       // PGA config: ±4.096V full scale
-    // With ±4.096V range and 16-bit, LSB = 125µV.
-    // LiPo max 4.2V slightly exceeds 4.096V, so we use ±6.144V (gain 0x0002,
-    // LSB=187.5µV) for headroom. Set pgaGain=0x0002 for direct battery read.
-    // Alternatively use ±4.096V with a voltage divider for better resolution.
+    uint16_t pgaGain = 0x0000;       // PGA config: ±6.144V full scale (direct LiPo)
+    // With ±6.144V range and 16-bit, LSB = 187.5µV.
+    // LiPo range 3.0-4.2V fits within ±6.144V, so no voltage divider needed.
+    // For better resolution use ±4.096V (0x0001, LSB=125µV) with a divider.
 };
 
 struct BatteryReading {
@@ -30,6 +29,7 @@ class BatteryMonitor {
 public:
     bool init(const BatteryConfig &cfg = {});
     void shutdown();
+    ~BatteryMonitor() { shutdown(); }
 
     // Read current battery voltage and estimate SOC.
     // Returns valid=false if the I2C read fails.

@@ -51,28 +51,31 @@ TEST(lipo_interpolation_midpoint) {
 // --- Font rendering tests ---
 
 TEST(font_draw_text_returns_width) {
-    // "85%" = 3 chars × 6px (5+1 spacing) = 18px
+    // "85%" = 3 chars × advance. With bitmap font advance=6 → 18px.
+    // With FreeType at 8px, advance is the font's monospace width (~5px).
     std::vector<uint8_t> fb(128 * 128 * 2, 0);
     int w = drawText(fb.data(), 128, 128, 0, 0, "85%",
                      kColorWhite, kColorBlack, false);
-    CHECK_EQ(w, 18);
+    CHECK(w > 0);
+    CHECK(w == 3 * (w / 3)); // divisible by 3 (monospace)
 }
 
 TEST(font_draw_text_writes_pixels) {
     // Drawing "8" at (0,0) with white fg on black bg should produce
-    // at least one white pixel in the 5x7 area.
+    // at least one non-black pixel in the glyph area.
     std::vector<uint8_t> fb(128 * 128 * 2, 0);
     drawText(fb.data(), 128, 128, 0, 0, "8",
              kColorWhite, kColorBlack, false);
-    bool foundWhite = false;
-    for (int y = 0; y < 7 && !foundWhite; ++y) {
-        for (int x = 0; x < 5 && !foundWhite; ++x) {
+    bool foundNonBlack = false;
+    // Scan a 12x12 area to accommodate FreeType bearing offsets.
+    // With FreeType anti-aliasing, pixels may be blended (not pure white).
+    for (int y = 0; y < 12 && !foundNonBlack; ++y) {
+        for (int x = 0; x < 12 && !foundNonBlack; ++x) {
             size_t idx = (y * 128 + x) * 2;
-            uint16_t px = (fb[idx] << 8) | fb[idx + 1];
-            if (px == kColorWhite) foundWhite = true;
+            if (fb[idx] != 0 || fb[idx + 1] != 0) foundNonBlack = true;
         }
     }
-    CHECK(foundWhite);
+    CHECK(foundNonBlack);
 }
 
 TEST(font_draw_text_transparent_no_bg) {
