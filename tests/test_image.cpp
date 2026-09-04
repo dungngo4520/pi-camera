@@ -20,7 +20,7 @@ TEST(nv12_grey_is_neutral) {
     // Y plane: all 128 (mid-grey limited-range). UV: 128,128 (neutral chroma).
     std::vector<uint8_t> y(stride * h, 128);
     std::vector<uint8_t> uv(stride * (h / 2), 128);
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
     // With neutral chroma, R == G == B for every pixel.
     for (uint32_t p = 0; p < w * h; ++p) {
@@ -34,7 +34,7 @@ TEST(nv12_y_monotonic) {
     const uint32_t w = 2, h = 2, stride = 2;
     std::vector<uint8_t> y = {16, 235,  16, 235};   // left col dark, right col bright
     std::vector<uint8_t> uv(stride * (h / 2), 128);
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     // pixel (0,0) dark, pixel (1,0) bright — R must increase.
     CHECK(rgb[3] > rgb[0]);   // R of pixel 1 > R of pixel 0
     CHECK(rgb[4] > rgb[1]);   // G
@@ -49,7 +49,7 @@ TEST(nv12_extreme_values_no_garbage) {
     const uint32_t w = 2, h = 2, stride = 2;
     std::vector<uint8_t> y(stride * h, 255);
     std::vector<uint8_t> uv = {255, 255, 255, 255};
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     CHECK(rgb[0] == 255);   // R saturated
     CHECK(rgb[1] < rgb[0]); // G < R (negative chroma offset)
 }
@@ -60,11 +60,28 @@ TEST(nv12_odd_dimensions_handled) {
     const uint32_t w = 3, h = 3, stride = 4;  // stride > w is realistic
     std::vector<uint8_t> y(stride * h, 64);
     std::vector<uint8_t> uv(stride * ((h + 1) / 2), 128);
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
     // No out-of-bounds read happened (would crash under ASan). Uniform input
     // -> uniform output: last pixel equals first.
     CHECK(rgb[rgb.size() - 1] == rgb[0]);
+}
+
+TEST(nv12_odd_width_stride_equals_width) {
+    // 5x2 with stride == w — the exact case where uvRow[x+1] reads past
+    // the UV row on the last iteration (x=4, x+1=5 which is out of bounds
+    // when the UV row is only w bytes wide). Under ASan this would crash
+    // without the bounds guard.
+    const uint32_t w = 5, h = 2, stride = 5;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);  // exactly w bytes per UV row
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+    // With neutral chroma (U=V=128), R==G==B for every pixel.
+    for (size_t p = 0; p < static_cast<size_t>(w) * h; ++p) {
+        CHECK_EQ(rgb[p * 3 + 0], rgb[p * 3 + 1]);
+        CHECK_EQ(rgb[p * 3 + 1], rgb[p * 3 + 2]);
+    }
 }
 
 TEST(nv12_red_bias_with_positive_v) {
@@ -72,8 +89,32 @@ TEST(nv12_red_bias_with_positive_v) {
     const uint32_t w = 2, h = 2, stride = 2;
     std::vector<uint8_t> y(stride * h, 128);
     std::vector<uint8_t> uv = {128, 200, 128, 200};  // U=128, V=200
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     CHECK(rgb[0] > rgb[2]);   // R > B at pixel (0,0)
+}
+
+TEST(nv12_odd_width_stride_gt_width_uses_last_uv_pair) {
+    // 5x2 with stride=6 (stride > w). The last luma pixel (x=4) has its
+    // UV pair at positions 4,5 — within the stride. The guard should
+    // allow reading this pair, not fall back to the previous one.
+    // Set the last UV pair to a distinctive V value (200) and the
+    // previous pair to neutral (128). If the guard works correctly,
+    // the last pixel's R > B (red bias from V=200). If it falls back
+    // to the previous pair (V=128), R == B (neutral).
+    const uint32_t w = 5, h = 2, stride = 6;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);  // neutral by default
+    // Last UV pair at positions 4,5: U=128, V=200
+    uv[4] = 128;
+    uv[5] = 200;
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
+    REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
+    // Pixel at x=4, y=0: should have red bias from V=200
+    size_t lastPixel = 4 * 3;
+    CHECK(rgb[lastPixel] > rgb[lastPixel + 2]);  // R > B
+    // Pixel at x=3, y=0: uses UV pair at positions 2,3 (neutral) — R == B
+    size_t prevPixel = 3 * 3;
+    CHECK_EQ(rgb[prevPixel], rgb[prevPixel + 2]);  // R == B
 }
 
 TEST(nv12_large_image_multithreaded) {
@@ -88,7 +129,7 @@ TEST(nv12_large_image_multithreaded) {
         for (uint32_t c = 0; c < w; ++c)
             y[r * stride + c] = static_cast<uint8_t>(16 + (r * w + c) % 220);
     std::vector<uint8_t> uv(stride * (h / 2), 128);  // neutral chroma
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
 
     // With neutral chroma, R==G==B for every pixel. Verify this holds across
@@ -112,7 +153,7 @@ TEST(nv12_large_image_odd_dimensions) {
     const uint32_t w = 65, h = 33, stride = 66;  // stride > w
     std::vector<uint8_t> y(stride * h, 128);
     std::vector<uint8_t> uv(stride * ((h + 1) / 2), 128);
-    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
     REQUIRE(rgb.size() == static_cast<size_t>(w) * h * 3);
     // Uniform grey input -> uniform output. Check first, last, and a
     // boundary row.
@@ -131,7 +172,7 @@ TEST(nv12_to_rgb565_grey_neutral) {
     std::vector<uint8_t> y(stride * h, 128);
     std::vector<uint8_t> uv(stride * (h / 2), 128);
     std::vector<uint8_t> out(2 * 2 * 2); // 2x2 RGB565
-    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 2, 2);
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), out.data(), 2, 2, out.size());
     // Each pixel: high byte = RRRRRGGG, low byte = GGGBBBBB
     // With neutral chroma and Y=128: R≈130, G≈130, B≈128 (BT.601 limited).
     // R5 = 130>>3 = 16, G6 = 130>>2 = 32, B5 = 128>>3 = 16
@@ -156,7 +197,7 @@ TEST(nv12_to_rgb565_y_monotonic) {
     std::vector<uint8_t> y = {16, 16, 235, 235,  16, 16, 235, 235};
     std::vector<uint8_t> uv(stride, 128);
     std::vector<uint8_t> out(4 * 2 * 2); // 4x2 RGB565
-    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 4, 2);
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), out.data(), 4, 2, out.size());
     // Pixel (0,0) dark, pixel (2,0) bright — pixel value should increase.
     uint16_t dark = (out[0] << 8) | out[1];
     uint16_t bright = (out[4] << 8) | out[5];
@@ -171,11 +212,118 @@ TEST(nv12_to_rgb565_center_crop) {
     std::vector<uint8_t> y(stride * h, 100);
     std::vector<uint8_t> uv(stride, 128);
     std::vector<uint8_t> out(2 * 2 * 2);
-    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, out.data(), 2, 2);
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), out.data(), 2, 2, out.size());
     // Just verify it doesn't crash and produces valid pixels.
     for (size_t i = 0; i < out.size(); ++i) {
         CHECK(out[i] <= 0xFF); // trivially true but exercises the write
     }
+}
+
+// --- New tests for stride/input validation (Tier 1 security fix) ---
+
+TEST(nv12_to_rgb_rejects_null_input) {
+    auto rgb = nv12ToRgb(nullptr, nullptr, 4, 2, 4, 0, 0);
+    CHECK(rgb.empty());
+}
+
+TEST(nv12_to_rgb_rejects_zero_dimensions) {
+    std::vector<uint8_t> y(8, 128);
+    std::vector<uint8_t> uv(4, 128);
+    CHECK(nv12ToRgb(y.data(), uv.data(), 0, 2, 4, y.size(), uv.size()).empty());
+    CHECK(nv12ToRgb(y.data(), uv.data(), 4, 0, 4, y.size(), uv.size()).empty());
+}
+
+TEST(nv12_to_rgb_rejects_stride_less_than_width) {
+    // stride < w would cause out-of-bounds reads — must be rejected.
+    const uint32_t w = 4, h = 2, stride = 2;  // stride < w
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), uv.size());
+    CHECK(rgb.empty());
+}
+
+TEST(nv12_to_rgb565_rejects_null_input) {
+    std::vector<uint8_t> out(8, 0);
+    nv12ToRgb565Scaled(nullptr, nullptr, 4, 2, 4, 0, 0, out.data(), 2, 2, out.size());
+    // Should be a no-op (out unchanged)
+    CHECK(out[0] == 0);
+}
+
+TEST(nv12_to_rgb565_rejects_stride_less_than_width) {
+    const uint32_t w = 4, h = 2, stride = 2;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(2 * 2 * 2, 0xAA);
+    nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), out.data(), 2, 2, out.size());
+    // Should be a no-op (out unchanged)
+    CHECK(out[0] == 0xAA);
+}
+
+TEST(nv12_to_rgb565_rejects_small_out_buffer) {
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    // Out buffer too small for 2x2 RGB565 (needs 8 bytes, provide 4)
+    std::vector<uint8_t> out(4, 0xAA);
+    bool ok = nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride,
+                                  y.size(), uv.size(),
+                                  out.data(), 2, 2, out.size());
+    CHECK(!ok);
+    // Should be a no-op (out unchanged)
+    CHECK(out[0] == 0xAA);
+}
+
+TEST(nv12_to_rgb_rejects_overflow_dimensions) {
+    // Dimensions that would overflow size_t when multiplied — should return empty.
+    // w * h * 3 must overflow. On 64-bit, use very large values.
+    std::vector<uint8_t> y(4, 128);
+    std::vector<uint8_t> uv(2, 128);
+    auto rgb = nv12ToRgb(y.data(), uv.data(), 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, y.size(), uv.size());
+    CHECK(rgb.empty());
+}
+
+TEST(nv12_to_rgb_rejects_small_y_plane) {
+    // ySize too small for stride * h — must be rejected to prevent OOB read.
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    // Pass a ySize that's too small (1 byte instead of 8)
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, 1, uv.size());
+    CHECK(rgb.empty());
+}
+
+TEST(nv12_to_rgb_rejects_small_uv_plane) {
+    // uvSize too small for stride * ceil(h/2) — must be rejected.
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    // Pass a uvSize that's too small (1 byte instead of 4)
+    auto rgb = nv12ToRgb(y.data(), uv.data(), w, h, stride, y.size(), 1);
+    CHECK(rgb.empty());
+}
+
+TEST(nv12_to_rgb565_rejects_small_y_plane) {
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(2 * 2 * 2, 0xAA);
+    bool ok = nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride,
+                                  1, uv.size(),  // ySize too small
+                                  out.data(), 2, 2, out.size());
+    CHECK(!ok);
+    CHECK(out[0] == 0xAA);
+}
+
+TEST(nv12_to_rgb565_rejects_small_uv_plane) {
+    const uint32_t w = 4, h = 2, stride = 4;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(2 * 2 * 2, 0xAA);
+    bool ok = nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride,
+                                  y.size(), 1,  // uvSize too small
+                                  out.data(), 2, 2, out.size());
+    CHECK(!ok);
+    CHECK(out[0] == 0xAA);
 }
 
 } // namespace
