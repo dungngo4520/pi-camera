@@ -1,6 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
+#include <unordered_map>
+#include <deque>
 
 // Forward declarations of the libgpiod C structs so the header doesn't need
 // to pull in <gpiod.h> (kept optional via HAVE_GPIOD). The full definitions
@@ -25,6 +28,10 @@ enum class ButtonId {
 struct ButtonEvent {
     ButtonId id = ButtonId::None;
     bool pressed = false; // true = pressed (falling edge), false = released
+    // For shutter release events: duration of the press in milliseconds.
+    // Used to emulate half-press (long hold = metering lock) vs full-press
+    // (quick tap = capture). 0 for press events.
+    int pressDurationMs = 0;
 };
 
 // GPIO button input via libgpiod v2 edge events.
@@ -33,6 +40,7 @@ class ButtonInput {
 public:
     bool init();
     void shutdown();
+    ~ButtonInput() noexcept { shutdown(); }
 
     // Poll for a button event with timeout (0 = non-blocking).
     // Returns a ButtonEvent with id=None if no event within timeout.
@@ -45,6 +53,11 @@ public:
 private:
     gpiod_line_request *gpioReq_ = nullptr;
     gpiod_edge_event_buffer *eventBuf_ = nullptr;
+    std::unordered_map<unsigned int,
+        std::chrono::steady_clock::time_point> pressTimes_;
+    // Queue of pending events not yet returned by poll(). This prevents
+    // losing events when multiple edges arrive in a single read.
+    std::deque<ButtonEvent> pendingEvents_;
 };
 
 } // namespace picamera
