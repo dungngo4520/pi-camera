@@ -9,17 +9,9 @@
 #include <vector>
 
 using namespace picamera;
+using picamera::test::tmpPath;
 
 namespace {
-
-std::string tmpPath(const char *suffix) {
-    char tmpl[] = "/tmp/picamera_dng_test_XXXXXX";
-    int fd = mkstemp(tmpl);
-    REQUIRE(fd >= 0);
-    close(fd);
-    unlink(tmpl);
-    return std::string(tmpl) + suffix;
-}
 
 // Read a little-endian uint16 from a byte buffer at a given offset.
 uint16_t readU16(const uint8_t *p) {
@@ -223,6 +215,98 @@ TEST(dng_cfa_pattern_rggb) {
             CHECK_EQ(static_cast<uint8_t>((val >> 24) & 0xFF), 2u);  // B
         }
     }
+
+    unlink(path.c_str());
+}
+
+TEST(dng_rejects_non_canonical_bayer_pattern) {
+    DngMetadata meta;
+    meta.width = 4;
+    meta.height = 4;
+    meta.bitsPerPixel = 12;
+    meta.activeTop = 0; meta.activeLeft = 0;
+    meta.activeBottom = 4; meta.activeRight = 4;
+    // "RRRR" passes per-character validation but is not a valid 2x2 CFA.
+    std::memcpy(meta.bayerPattern, "RRRR", 4);
+
+    std::vector<uint8_t> raw(32, 0);
+    std::string path = tmpPath(".dng");
+    CHECK(!writeDng(path.c_str(), raw.data(), raw.size(), meta));
+    unlink(path.c_str());
+}
+
+TEST(dng_bits_per_sample_matches_metadata) {
+    DngMetadata meta;
+    meta.width = 2;
+    meta.height = 2;
+    meta.bitsPerPixel = 10;
+    meta.blackLevel = 64;
+    meta.whiteLevel = 1023;
+    meta.activeTop = 0; meta.activeLeft = 0;
+    meta.activeBottom = 2; meta.activeRight = 2;
+
+    std::vector<uint8_t> raw(8, 0);
+    std::string path = tmpPath(".dng");
+    CHECK(writeDng(path.c_str(), raw.data(), raw.size(), meta));
+
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+
+    // BitsPerSample is tag 258 (TypeShort, inline).
+    uint16_t tagCount = readU16(&buf[8]);
+    bool found = false;
+    for (uint16_t i = 0; i < tagCount; ++i) {
+        size_t entryOff = 8 + 2 + i * 12;
+        if (readU16(&buf[entryOff]) == 258) {
+            uint32_t val = readU32(&buf[entryOff + 8]);
+            CHECK_EQ(val, 10u);
+            found = true;
+        }
+    }
+    CHECK(found);
+
+    unlink(path.c_str());
+}
+
+TEST(dng_default_crop_origin_valid_rational) {
+    // DefaultCropOrigin (tag 0xC61F = 50719) should be 0/1, 0/1 — not 0/0.
+    DngMetadata meta;
+    meta.width = 2;
+    meta.height = 2;
+    meta.bitsPerPixel = 10;
+    meta.blackLevel = 64;
+    meta.whiteLevel = 1023;
+    meta.activeTop = 0; meta.activeLeft = 0;
+    meta.activeBottom = 2; meta.activeRight = 2;
+
+    std::vector<uint8_t> raw(8, 0);
+    std::string path = tmpPath(".dng");
+    CHECK(writeDng(path.c_str(), raw.data(), raw.size(), meta));
+
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+
+    uint16_t tagCount = readU16(&buf[8]);
+    bool found = false;
+    for (uint16_t i = 0; i < tagCount; ++i) {
+        size_t entryOff = 8 + 2 + i * 12;
+        if (readU16(&buf[entryOff]) == 50719) {  // DefaultCropOrigin
+            uint32_t dataOff = readU32(&buf[entryOff + 8]);
+            // 2 RATIONALs = 16 bytes: num1/den1, num2/den2
+            uint32_t num1 = readU32(&buf[dataOff]);
+            uint32_t den1 = readU32(&buf[dataOff + 4]);
+            uint32_t num2 = readU32(&buf[dataOff + 8]);
+            uint32_t den2 = readU32(&buf[dataOff + 12]);
+            CHECK_EQ(num1, 0u);
+            CHECK_EQ(den1, 1u);  // must be non-zero
+            CHECK_EQ(num2, 0u);
+            CHECK_EQ(den2, 1u);  // must be non-zero
+            found = true;
+        }
+    }
+    CHECK(found);
 
     unlink(path.c_str());
 }
