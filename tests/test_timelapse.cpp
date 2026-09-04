@@ -20,10 +20,16 @@ TEST(timelapse_printf_no_extension) {
 }
 
 TEST(timelapse_literal_percent) {
-    // %% is a literal %, not a conversion — no int conv, so strftime path,
-    // which leaves %% as %. Result should contain a literal %.
-    auto out = formatTimelapseName("100%%_done", 0);
-    CHECK(out.find("100%_done") != std::string::npos);
+    // %% is a literal %, not a conversion — no int conv and no strftime
+    // specifier, so the pattern is rejected (a static pattern would
+    // produce the same filename for every shot, causing EEXIST).
+    bool threw = false;
+    try {
+        (void)formatTimelapseName("100%%_done", 0);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    CHECK(threw);
 }
 
 TEST(timelapse_strftime_path_used_when_no_int_conv) {
@@ -87,7 +93,71 @@ TEST(timelapse_rejects_incomplete_specifier) {
 }
 
 TEST(timelapse_plain_pattern_no_percent) {
-    // No % at all -> strftime path, pattern returned verbatim (strftime of a
-    // string with no specifiers is the string itself).
-    CHECK_EQ(formatTimelapseName("static_name.png", 0), std::string("static_name.png"));
+    // No % at all -> rejected (a static pattern would produce the same
+    // filename for every shot, causing EEXIST on the second shot).
+    bool threw = false;
+    try {
+        (void)formatTimelapseName("static_name.png", 0);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(timelapse_rejects_multiple_int_conversions) {
+    // Two %d specifiers but only one int arg — snprintf would read
+    // garbage from the stack (undefined behavior).
+    bool threw = false;
+    try {
+        (void)formatTimelapseName("img_%d_%d.jpg", 0);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(timelapse_rejects_truncation) {
+    // A pattern that produces a string >= 512 bytes should be rejected,
+    // not silently truncated (which would drop the file extension).
+    bool threw = false;
+    try {
+        // %0510d pads to 510 chars + "a" + "b.ppm" = 518 > 512
+        (void)formatTimelapseName("a%0510db.ppm", 0);
+    } catch (const std::runtime_error &) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST(timelapse_unescapes_double_percent_in_int_path) {
+    // %% in the integer-conversion path should become a single %,
+    // matching printf/strftime semantics.
+    auto out = formatTimelapseName("img_%%_%04d.ppm", 7);
+    CHECK(out.find("img_%_0007.ppm") != std::string::npos);
+    CHECK(out.find("%%") == std::string::npos);
+}
+
+TEST(timelapse_rejects_unsupported_flags) {
+    // '-', '+', ' ', '#' flags are not supported for integer conversion.
+    const char *badPatterns[] = {"%-04d.ppm", "%+04d.ppm", "% 04d.ppm", "%#04d.ppm"};
+    for (const char *p : badPatterns) {
+        bool threw = false;
+        try {
+            (void)formatTimelapseName(p, 0);
+        } catch (const std::invalid_argument &) {
+            threw = true;
+        }
+        CHECK(threw);
+    }
+}
+
+TEST(timelapse_rejects_precision) {
+    // Precision (.N) is not supported for integer conversion.
+    bool threw = false;
+    try {
+        (void)formatTimelapseName("img_%5.3d.ppm", 7);
+    } catch (const std::invalid_argument &) {
+        threw = true;
+    }
+    CHECK(threw);
 }
