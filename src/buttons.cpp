@@ -114,7 +114,7 @@ ButtonEvent ButtonInput::poll(int timeoutMs) {
   // Return a pending event from the queue first (from a previous read
   // that returned multiple events).
   if (!pendingEvents_.empty()) {
-    evt = std::move(pendingEvents_.front());
+    evt = pendingEvents_.front();
     pendingEvents_.pop_front();
     return evt;
   }
@@ -127,8 +127,7 @@ ButtonEvent ButtonInput::poll(int timeoutMs) {
   // Clamp to INT64_MAX/1e6 to prevent overflow when scaling ms → ns.
   int64_t clampedMs = std::max(0, timeoutMs);
   constexpr int64_t kMaxMsBeforeNsOverflow = INT64_MAX / 1000000LL;
-  if (clampedMs > kMaxMsBeforeNsOverflow)
-    clampedMs = kMaxMsBeforeNsOverflow;
+  clampedMs = std::min(clampedMs, kMaxMsBeforeNsOverflow);
   int64_t timeoutNs = clampedMs * 1000000LL;
   int ret = gpiod_line_request_wait_edge_events(req, timeoutNs);
   if (ret <= 0)
@@ -178,7 +177,7 @@ ButtonEvent ButtonInput::poll(int timeoutMs) {
   }
 
   if (!pendingEvents_.empty()) {
-    evt = std::move(pendingEvents_.front());
+    evt = pendingEvents_.front();
     pendingEvents_.pop_front();
   }
   return evt;

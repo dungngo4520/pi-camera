@@ -246,10 +246,12 @@ TEST(nv12_to_rgb565_center_crop) {
   std::vector<uint8_t> out(2 * 2 * 2);
   nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
                      out.data(), 2, 2, out.size());
-  // Just verify it doesn't crash and produces valid pixels.
-  for (size_t i = 0; i < out.size(); ++i) {
-    CHECK(out[i] <= 0xFF); // trivially true but exercises the write
-  }
+  // Just verify it doesn't crash and produces non-zero output (exercises
+  // the write path without a trivially-true uint8_t <= 0xFF comparison).
+  bool anyNonZero = false;
+  for (size_t i = 0; i < out.size(); ++i)
+    anyNonZero = anyNonZero || (out[i] != 0);
+  CHECK(anyNonZero);
 }
 
 // --- New tests for stride/input validation (Tier 1 security fix) ---
