@@ -20,7 +20,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config \
-            libcamera-dev libpng-dev \
+            libcamera-dev libpng-dev libjpeg-dev \
+            libgpiod-dev libgpiod2 \
+            libfreetype-dev libbluetooth-dev \
             clang clang-tidy
 
       - name: Configure (Debug + sanitizers + compile_commands.json)
