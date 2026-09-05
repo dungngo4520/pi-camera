@@ -80,9 +80,15 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
     // The Pi ISP drives both from the same sensor, sharing AE/AWB.
     std::vector<StreamRole> roles;
     if (capFmt == OutputFormat::DNG) {
-        // DNG needs raw — use Raw + Viewfinder.
+        // DNG needs raw Bayer — use Raw + Viewfinder.
         roles = {StreamRole::Viewfinder, StreamRole::Raw};
     } else {
+        // All other formats (JPEG, PNG, PPM, RAW_NV12, RawJpeg, DngJpeg) use
+        // NV12 still capture. RawJpeg saves both JPEG and raw NV12 from the
+        // same NV12 frame (not raw Bayer) so both files are valid.
+        // DngJpeg uses sequential captures: first NV12 (JPEG), then
+        // reconfigures to raw Bayer (DNG) — see captureDngJpegAsync in
+        // preview.cpp. The initial stream is NV12 for the JPEG phase.
         roles = {StreamRole::Viewfinder, StreamRole::StillCapture};
     }
 
@@ -103,11 +109,14 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
     auto &stillSc = cfg->at(1);
     stillSc.size.width = capW;
     stillSc.size.height = capH;
-    if (capFmt == OutputFormat::JPEG) {
+    const bool wantJpeg = (capFmt == OutputFormat::JPEG ||
+                           capFmt == OutputFormat::DngJpeg);
+    if (wantJpeg) {
         stillSc.pixelFormat = formats::MJPEG;
     } else if (capFmt == OutputFormat::DNG) {
         stillSc.pixelFormat = formats::SRGGB10_CSI2P;
     } else {
+        // PNG, PPM, RAW_NV12, RawJpeg all use NV12.
         stillSc.pixelFormat = formats::NV12;
     }
     stillSc.bufferCount = kStillBufferCount;
@@ -119,7 +128,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
     }
 
     // Detect HW MJPEG fallback (Pi VC4 may reject MJPEG at high res).
-    if (capFmt == OutputFormat::JPEG && stillSc.pixelFormat != formats::MJPEG) {
+    if (wantJpeg && stillSc.pixelFormat != formats::MJPEG) {
 #ifndef HAVE_JPEG
         std::cerr << "DualStream: HW MJPEG unavailable (got " << stillSc.pixelFormat
                   << ") and libjpeg was not compiled in — cannot encode JPEG\n";
@@ -129,8 +138,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
                   << "), using software JPEG encode\n";
         stillSc.pixelFormat = formats::NV12;
         swJpegEncode_ = true;
-        auto status2 = cfg->validate();
-        if (status2 == CameraConfiguration::Invalid) {
+        if (cfg->validate() == CameraConfiguration::Invalid) {
             std::cerr << "DualStream: NV12 fallback invalid\n";
             return false;
         }
@@ -143,7 +151,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
     }
 
     // Double-check MJPEG after configure (pipeline handler may change it).
-    if (capFmt == OutputFormat::JPEG && !swJpegEncode_) {
+    if (wantJpeg && !swJpegEncode_) {
         const auto &actualFmt = stillSc.stream()->configuration().pixelFormat;
         if (actualFmt != formats::MJPEG) {
 #ifndef HAVE_JPEG
@@ -155,8 +163,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
             std::cerr << "DualStream: HW MJPEG unavailable post-configure ("
                       << actualFmt << "), reconfiguring with NV12\n";
             stillSc.pixelFormat = formats::NV12;
-            auto status2 = cfg->validate();
-            if (status2 == libcamera::CameraConfiguration::Invalid) {
+            if (cfg->validate() == CameraConfiguration::Invalid) {
                 std::cerr << "DualStream: NV12 validate() failed\n";
                 return false;
             }
@@ -165,13 +172,11 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH,
                 return false;
             }
             // Verify the fallback actually resulted in NV12 — the pipeline
-            // handler could theoretically substitute yet another format.
-            // Check the stream's configured pixel format (not stillSc, which
-            // is the request object and may be stale after configure()).
-            const auto &actualFmt2 = stillSc.stream()->configuration().pixelFormat;
-            if (actualFmt2 != formats::NV12) {
+            // handler could substitute yet another format. Check the stream's
+            // configured pixel format (stillSc may be stale after configure()).
+            if (stillSc.stream()->configuration().pixelFormat != formats::NV12) {
                 std::cerr << "DualStream: NV12 fallback rejected by pipeline (got "
-                          << actualFmt2 << ")\n";
+                          << stillSc.stream()->configuration().pixelFormat << ")\n";
                 return false;
             }
             swJpegEncode_ = true;
@@ -381,12 +386,16 @@ void DualStream::handleStillFrame(Request *r) {
     // captureStill() can't addBuffer(stillBuffer_) while the previous
     // request still owns it.
     stillInProgress_.store(false);
+    // Clear bracketing overrides after the still capture completes.
+    stillEvOverride_.store(0.0f, std::memory_order_release);
+    stillWbRedOverride_.store(0.0f, std::memory_order_release);
+    stillWbBlueOverride_.store(0.0f, std::memory_order_release);
+    stillGainOverride_.store(0.0f, std::memory_order_release);
 }
 
-void DualStream::handleVfError(Request *r, libcamera::Camera *cam) {
-    // VF frame error — re-queue and continue. If applyControls
-    // throws, skip the requeue to avoid streaming with wrong
-    // exposure/AWB settings.
+void DualStream::requeueVf(Request *r) {
+    // If applyControls throws, skip the requeue to avoid streaming with
+    // wrong exposure/AWB settings.
     r->reuse(Request::ReuseBuffers);
     bool controlsOk = true;
     try {
@@ -395,34 +404,38 @@ void DualStream::handleVfError(Request *r, libcamera::Camera *cam) {
         std::cerr << "DualStream: applyControls threw: " << e.what() << "\n";
         controlsOk = false;
     }
-    if (controlsOk) safeRequeue(cam, r);
+    if (controlsOk && !shuttingDown_.load(std::memory_order_acquire)) {
+        // Snapshot the camera to avoid a race if shutdown() resets the
+        // handle between the check and queueRequest.
+        auto cam = handle_.camera();
+        if (cam) safeRequeue(cam.get(), r);
+    }
+}
+
+void DualStream::handleVfError(Request *r, libcamera::Camera *cam) {
+    (void)cam;  // requeueVf snapshots the camera itself
+    requeueVf(r);
 }
 
 void DualStream::handleVfFrame(Request *r) {
-    // Read exposure metadata for the on-screen info display. ExposureTime
-    // is int32 microseconds; AnalogueGain is float (1x = ISO100).
-    // Done before the buffer copy so the UI thread sees consistent values
-    // paired with the frame they describe.
+    // Read exposure metadata before the buffer copy so the UI thread sees
+    // consistent values paired with the frame they describe.
     const auto &md = r->metadata();
     if (auto exp = md.get(controls::ExposureTime)) {
-        // ExposureTime is in microseconds; convert to ms (round up to 1
-        // so sub-millisecond exposures still display as "1/<n>").
+        // ExposureTime is int32 microseconds; convert to ms (round up so
+        // sub-ms exposures display as "1/<n>"). int64_t avoids overflow
+        // when us is near INT32_MAX (~2.1s, us+999 would overflow).
         int32_t us = *exp;
-        // Use int64_t for the division to avoid int32_t overflow when
-        // us is close to INT32_MAX (~2.1s, us+999 would overflow).
-        uint32_t ms = us > 0
-            ? static_cast<uint32_t>((static_cast<int64_t>(us) + 999) / 1000)
-            : 0;
-        lastShutterMs_.store(ms, std::memory_order_release);
+        lastShutterMs_.store(
+            us > 0 ? static_cast<uint32_t>((static_cast<int64_t>(us) + 999) / 1000) : 0,
+            std::memory_order_release);
     }
     if (auto gain = md.get(controls::AnalogueGain)) {
         float g = std::max(0.0f, *gain);
-        // gain*100 -> ISO equivalent (1x = ISO100, 4x = ISO400).
-        // Clamp below UINT32_MAX before llround — float(UINT32_MAX) may
-        // round to 2^32 which wraps to 0 in uint32_t. Saturate after
-        // llround to guarantee a sane value for extreme gains.
-        // Use llround (not lround) because long is 32-bit on some
-        // platforms, and UINT32_MAX-1 exceeds LONG_MAX there.
+        // gain*100 -> ISO (1x=ISO100). Clamp below UINT32_MAX before llround
+        // — float(UINT32_MAX) may round to 2^32 and wrap to 0. llround (not
+        // lround) because long is 32-bit on some platforms (UINT32_MAX-1 >
+        // LONG_MAX there).
         float isoF = std::min(g * 100.0f, static_cast<float>(UINT32_MAX - 1));
         long long iso = std::llround(isoF);
         lastIso_.store(static_cast<uint32_t>(std::min<long long>(iso, UINT32_MAX - 1)),
@@ -441,16 +454,16 @@ void DualStream::handleVfFrame(Request *r) {
 
         size_t ySize = 0;
         size_t uvSize = 0;
-        // NV12 UV plane has ceil(height/2) rows — use (height+1)/2
-        // to avoid truncating the last UV row for odd heights.
+        // NV12 UV plane has ceil(height/2) rows — (height+1)/2 avoids
+        // truncating the last UV row for odd heights.
         if (!checkedMul(static_cast<size_t>(vfStride_), vfHeight_, ySize) ||
             !checkedMul(static_cast<size_t>(vfStride_), (vfHeight_ + 1) / 2, uvSize)) {
             continue;
         }
         if (yPlane.size() < ySize || uvPlane.size() < uvSize) continue;
 
-        // Wrap in try/catch: resize() can throw std::bad_alloc on the
-        // 512MB Pi, which would std::terminate inside this callback.
+        // resize() can throw std::bad_alloc on the 512MB Pi, which would
+        // std::terminate inside this callback.
         try {
             std::lock_guard<std::mutex> lk(vfMtx_);
             vfYData_.resize(ySize);
@@ -460,31 +473,13 @@ void DualStream::handleVfFrame(Request *r) {
             vfFrameReady_ = true;
             vfCv_.notify_one();
         } catch (const std::exception &e) {
-            std::cerr << "DualStream: VF frame copy failed: "
-                      << e.what() << "\n";
+            std::cerr << "DualStream: VF frame copy failed: " << e.what() << "\n";
             break;
         }
         break;
     }
 
-    // Re-queue the VF request for continuous streaming.
-    // Take a shared_ptr snapshot of the camera to avoid a race if
-    // shutdown() resets the handle between the check and queueRequest.
-    // If applyControls throws, skip the requeue to avoid streaming
-    // with wrong exposure/AWB settings.
-    r->reuse(Request::ReuseBuffers);
-    bool controlsOk = true;
-    try {
-        applyControls(r);
-    } catch (const std::exception &e) {
-        std::cerr << "DualStream: applyControls threw: " << e.what() << "\n";
-        controlsOk = false;
-    }
-    if (controlsOk && !shuttingDown_.load(std::memory_order_acquire)) {
-        auto cam = handle_.camera();
-        if (!cam) return;
-        safeRequeue(cam.get(), r);
-    }
+    requeueVf(r);
 }
 
 bool DualStream::saveFrame(Request *req, const std::string &filename) {
@@ -649,6 +644,24 @@ void DualStream::updateStillConfig(const CameraConfig &cfg) {
     stillCfg_.digitalGain = cfg.digitalGain;
     stillCfg_.awbEnable = cfg.awbEnable;
     stillCfg_.awbMode = cfg.awbMode;
+    stillCfg_.wbKelvin = cfg.wbKelvin;
+    stillCfg_.wbRedGain = cfg.wbRedGain;
+    stillCfg_.wbBlueGain = cfg.wbBlueGain;
+    stillCfg_.exposureValue = cfg.exposureValue;
+    stillCfg_.meteringMode = cfg.meteringMode;
+    stillCfg_.aeExposureMode = cfg.aeExposureMode;
+    stillCfg_.aeConstraintMode = cfg.aeConstraintMode;
+    stillCfg_.brightness = cfg.brightness;
+    stillCfg_.contrast = cfg.contrast;
+    stillCfg_.saturation = cfg.saturation;
+    stillCfg_.sharpness = cfg.sharpness;
+    stillCfg_.antiFlicker = cfg.antiFlicker;
+    stillCfg_.flickerPeriodUs = cfg.flickerPeriodUs;
+    stillCfg_.noiseReductionMode = cfg.noiseReductionMode;
+    stillCfg_.imageSize = cfg.imageSize;
+    stillCfg_.aspectRatio = cfg.aspectRatio;
+    stillCfg_.isoMin = cfg.isoMin;
+    stillCfg_.isoMax = cfg.isoMax;
 }
 
 bool DualStream::reconfigureStill(uint32_t vfW, uint32_t vfH,
@@ -671,33 +684,67 @@ void DualStream::setMeteringLock(bool locked) {
     meteringLocked_.store(locked, std::memory_order_release);
 }
 
+void DualStream::setStillEvOverride(float ev) {
+    stillEvOverride_.store(ev, std::memory_order_release);
+}
+
+void DualStream::setStillWbOverride(float redGain, float blueGain) {
+    stillWbRedOverride_.store(redGain, std::memory_order_release);
+    stillWbBlueOverride_.store(blueGain, std::memory_order_release);
+}
+
+void DualStream::setStillGainOverride(float gain) {
+    stillGainOverride_.store(gain, std::memory_order_release);
+}
+
 void DualStream::applyControls(Request *req) const {
     auto &ctrls = req->controls();
-    // Clear any stale controls from a previous request lifecycle.
-    // libcamera may reuse Request objects, and without clearing, settings
+    // Clear stale controls: libcamera reuses Request objects, so settings
     // from a prior frame (e.g. AeEnable=false) could persist unexpectedly.
     ctrls.clear();
-    // Snapshot stillCfg_ under the lock to avoid a data race with
-    // updateStillConfig() which writes from the UI thread.
+    // Bracketing overrides (EV, WB, gain) only apply to still requests.
+    bool isStill = false;
+    if (stillStream_) {
+        for (const auto &[s, b] : req->buffers()) {
+            if (s == stillStream_) { isStill = true; break; }
+        }
+    }
+    // Snapshot stillCfg_ under the lock (updateStillConfig writes from UI thread).
     CameraConfig cfg;
     {
         std::lock_guard<std::mutex> lk(cfgMtx_);
         cfg = stillCfg_;
     }
+    if (isStill) {
+        float evOverride = stillEvOverride_.load(std::memory_order_acquire);
+        if (evOverride != 0.0f) {
+            cfg.exposureValue = cfg.exposureValue + evOverride;
+        }
+        float wbRed = stillWbRedOverride_.load(std::memory_order_acquire);
+        float wbBlue = stillWbBlueOverride_.load(std::memory_order_acquire);
+        if (wbRed > 0.0f) {
+            // WB bracket: force manual WB with the override gains.
+            cfg.awbEnable = false;
+            cfg.wbRedGain = wbRed;
+            cfg.wbBlueGain = wbBlue;
+            cfg.wbKelvin = 0;  // clear kelvin so it doesn't override
+        }
+        float gainOverride = stillGainOverride_.load(std::memory_order_acquire);
+        if (gainOverride > 0.0f) {
+            // ISO bracket: force manual gain (AE off so the ISP doesn't
+            // auto-adjust it back). Shutter stays configured or auto.
+            cfg.analogueGain = gainOverride;
+            cfg.aeEnable = false;
+        }
+    }
     if (meteringLocked_.load(std::memory_order_acquire)) {
-        // Freeze AE/AWB at current values — emulates half-press metering
-        // lock on a mirrorless camera.
-        //   AeEnable=false  -> AE switches to manual, holding the last
-        //                      converged exposure time + analogue gain.
-        //   AwbEnable=true + AwbLocked=true -> AWB keeps running but is
-        //                      told to hold its current white-balance gains
-        //                      (the idiomatic lock; AwbEnable=false would
-        //                      drop to manual mode and ignore AwbLocked).
+        // Half-press metering lock (mirrorless-style):
+        //   AeEnable=false -> AE holds the last converged shutter + gain.
+        //   AwbEnable=true + AwbLocked=true -> AWB runs but holds its current
+        //   gains (AwbEnable=false would drop to manual and ignore AwbLocked).
         ctrls.set(controls::AeEnable, false);
         ctrls.set(controls::AwbEnable, true);
         ctrls.set(controls::AwbLocked, true);
-        // Still honor --digital-gain and --awb mode while locked, matching
-        // CameraApp::applyControls where these are set independently of AE.
         if (cfg.digitalGain > 0.0f) {
             ctrls.set(controls::DigitalGain, cfg.digitalGain);
         }
@@ -706,36 +753,60 @@ void DualStream::applyControls(Request *req) const {
         }
         return;
     }
-    if (cfg.exposureTime > 0 || cfg.analogueGain > 0.0f || !cfg.aeEnable) {
-        // Manual exposure/gain from settings — mirror CameraApp::applyControls.
+    const bool manualShutter = cfg.exposureTime > 0;
+    const bool manualGain = cfg.analogueGain > 0.0f;
+    if (!cfg.aeEnable || manualGain) {
+        // Manual exposure or AE disabled: AE off, set shutter + gain as given.
         ctrls.set(controls::AeEnable, false);
-        if (cfg.exposureTime > 0) {
+        if (manualShutter) {
+            // ExposureTime is int32 µs; INT32_MAX ≈ 35.8 min — well beyond any
+            // practical IMX477 bulb exposure. Clamp handles the theoretical
+            // cfg.exposureTime > INT32_MAX case.
             ctrls.set(controls::ExposureTime,
                       static_cast<int32_t>(std::min<uint64_t>(
                           cfg.exposureTime, INT32_MAX)));
         }
-        if (cfg.analogueGain > 0.0f) {
-            ctrls.set(controls::AnalogueGain, cfg.analogueGain);
+        if (manualGain) {
+            // Clamp to the user's ISO range (ISO = gain*100). libcamera has no
+            // AeAnalogueGainMin/Max, so isoMin/isoMax are enforced here only.
+            ctrls.set(controls::AnalogueGain,
+                      clampGainToIsoRange(cfg.analogueGain, cfg.isoMin, cfg.isoMax));
         }
     } else {
-        // Continuous AE for accurate metering.
+        // AE on (Program/Auto, or shutter priority: manual shutter, auto gain).
         ctrls.set(controls::AeEnable, true);
+        if (manualShutter) {
+            ctrls.set(controls::ExposureTime,
+                      static_cast<int32_t>(std::min<uint64_t>(
+                          cfg.exposureTime, INT32_MAX)));
+        }
+        ctrls.set(controls::AeMeteringMode,
+                  static_cast<int32_t>(cfg.meteringMode));
+        ctrls.set(controls::AeExposureMode,
+                  static_cast<int32_t>(cfg.aeExposureMode));
+        ctrls.set(controls::AeConstraintMode,
+                  static_cast<int32_t>(cfg.aeConstraintMode));
+        if (cfg.exposureValue != 0.0f) {
+            ctrls.set(controls::ExposureValue, cfg.exposureValue);
+        }
+        if (cfg.antiFlicker && cfg.flickerPeriodUs > 0) {
+            ctrls.set(controls::AeFlickerMode, static_cast<int32_t>(1));
+            ctrls.set(controls::AeFlickerPeriod,
+                      static_cast<int32_t>(cfg.flickerPeriodUs));
+        }
     }
-    // Digital gain is a post-processing gain, not an exposure control —
-    // set it independently of AE mode so --digital-gain doesn't disable AE.
+    ctrls.set(controls::Brightness, cfg.brightness);
+    ctrls.set(controls::Contrast, cfg.contrast);
+    ctrls.set(controls::Saturation, cfg.saturation);
+    ctrls.set(controls::Sharpness, cfg.sharpness);
+    ctrls.set(controls::draft::NoiseReductionMode,
+              static_cast<int32_t>(cfg.noiseReductionMode));
+    // Digital gain is post-processing, not exposure — set independently so
+    // --digital-gain doesn't disable AE.
     if (cfg.digitalGain > 0.0f) {
         ctrls.set(controls::DigitalGain, cfg.digitalGain);
     }
-    // AWB handling — mirror CameraApp::applyControls so --awb works in preview.
-    if (!cfg.awbEnable) {
-        ctrls.set(controls::AwbEnable, false);
-    } else {
-        ctrls.set(controls::AwbEnable, true);
-        ctrls.set(controls::AwbLocked, false);
-        if (auto mode = lookupAwb(cfg.awbMode)) {
-            ctrls.set(controls::AwbMode, *mode);
-        }
-    }
+    applyAwbControls(ctrls, cfg);
 }
 
 StreamFrame DualStream::grabFrame(int timeoutMs) {

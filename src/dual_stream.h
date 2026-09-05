@@ -96,6 +96,22 @@ public:
     // mirrorless camera). Unlocking returns to continuous AE/AWB.
     void setMeteringLock(bool locked);
 
+    // Set a temporary EV override for the next still capture. Used by AE
+    // bracketing: each bracket frame sets a different EV offset. The
+    // override is applied in applyControls() for still requests and
+    // cleared after the capture completes. Set to 0.0 to disable.
+    void setStillEvOverride(float ev);
+
+    // Set a temporary WB gain override for the next still capture. Used by
+    // WB bracketing: each bracket frame sets different R/B gains. Set
+    // redGain=0 to disable (use normal AWB).
+    void setStillWbOverride(float redGain, float blueGain);
+
+    // Set a temporary analogue gain override for the next still capture.
+    // Used by ISO bracketing: each bracket frame sets a different gain
+    // (ISO = gain * 100). Set to 0 to disable (use normal gain).
+    void setStillGainOverride(float gain);
+
     // Latest exposure metadata from the viewfinder stream, for the on-screen
     // info display (shutter speed + ISO). Updated on every VF frame completion.
     // Returns 0 if no metadata has been received yet.
@@ -119,6 +135,11 @@ private:
     // re-queue the request after re-applying controls. Called from
     // requestCompleted.
     void handleVfError(libcamera::Request *r, libcamera::Camera *cam);
+
+    // Reuse a VF request's buffers, re-apply controls, and re-queue it.
+    // Shared by handleVfFrame and handleVfError. Skips re-queue if
+    // applyControls throws or shutdown is in progress.
+    void requeueVf(libcamera::Request *r);
 
     // Safely re-queue a request with retry, checking shuttingDown_ before
     // each attempt. Used by handleVfError and the callback dispatcher.
@@ -173,6 +194,15 @@ private:
     // Uses acquire/release ordering so the callback thread sees the latest
     // value promptly (relaxed could delay the lock toggle by a frame).
     std::atomic<bool> meteringLocked_{false};
+
+    // Temporary per-frame overrides for bracketing. Set by the UI thread
+    // before captureStill(), read by applyControls() for still requests,
+    // and cleared after the still completes. WB override: redGain=0 means
+    // disabled (use normal AWB). Gain override: 0 means disabled.
+    std::atomic<float> stillEvOverride_{0.0f};
+    std::atomic<float> stillWbRedOverride_{0.0f};
+    std::atomic<float> stillWbBlueOverride_{0.0f};
+    std::atomic<float> stillGainOverride_{0.0f};
 
     // Latest exposure metadata from the VF stream (read by the UI thread
     // for the on-screen info display). ExposureTime is int32 microseconds;
