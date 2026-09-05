@@ -110,11 +110,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
   // back to YUYV at high resolutions). If so, switch to NV12 and encode
   // JPEG in software via libjpeg.
   if (cfg.format == OutputFormat::JPEG && sc.pixelFormat != formats::MJPEG) {
-#ifndef HAVE_JPEG
-    std::cerr << "Camera: HW MJPEG unavailable (got " << sc.pixelFormat
-              << ") and libjpeg was not compiled in — cannot encode JPEG\n";
-    return false;
-#else
     std::cerr << "Warning: HW MJPEG unavailable (got " << sc.pixelFormat
               << "), falling back to software JPEG encode\n";
     sc.pixelFormat = formats::NV12;
@@ -127,7 +122,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
       return false;
     }
     swJpegEncode_ = true;
-#endif
   }
 
   if (handle_.camera()->configure(camCfg.get())) {
@@ -142,12 +136,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
   if (cfg.format == OutputFormat::JPEG && !swJpegEncode_) {
     const auto &actualFmt = stream_->configuration().pixelFormat;
     if (actualFmt != formats::MJPEG) {
-#ifndef HAVE_JPEG
-      std::cerr << "Camera: HW MJPEG unavailable after configure (got "
-                << actualFmt << ") and libjpeg was not compiled in"
-                << " — cannot encode JPEG\n";
-      return false;
-#else
       std::cerr << "Warning: HW MJPEG unavailable after configure (got "
                 << actualFmt << "), reconfiguring with NV12\n";
       // Reconfigure with NV12
@@ -176,7 +164,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
         return false;
       }
       swJpegEncode_ = true;
-#endif
     }
   }
 
@@ -729,7 +716,10 @@ bool CameraApp::saveFrame(const Request *req, const std::string &filename,
   // without this the DNG writer would omit ExposureTime and default
   // the ISO to 100 instead of recording the real values.
   CameraConfig writerCfg = config_;
-  const auto &md = req->metadata();
+  // libcamera's Request::metadata() is non-const in older releases (the
+  // const overload was added later), so const_cast to read the converged
+  // exposure/gain. We only read — no mutation.
+  const auto &md = const_cast<Request *>(req)->metadata();
   if (auto exp = md.get(controls::ExposureTime)) {
     writerCfg.exposureTime = static_cast<uint64_t>(*exp);
   }
