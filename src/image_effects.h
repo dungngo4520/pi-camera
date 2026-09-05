@@ -68,10 +68,14 @@ std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
 
 // Build an RGB24 buffer from a Y-plane and a UV (NV12 chroma) plane.
 // This is used by HDR merge to reconstruct RGB from a merged Y-plane and
-// the chroma from one of the original frames. Returns empty on failure.
+// the chroma from one of the original frames. `stride` is the Y-plane row
+// stride (>= width); `uvStride` is the UV-plane row stride in bytes (>=
+// width, since each UV row holds width/2 U-V pairs = width bytes). For
+// NV12 from libcamera, uvStride typically equals stride. Returns empty
+// on failure.
 std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
                                 uint32_t width, uint32_t height,
-                                uint32_t stride);
+                                uint32_t stride, uint32_t uvStride);
 
 // Extract a UV (NV12 chroma) plane from an RGB24 buffer using BT.601.
 // U = -38*R -74*G +112*B + 128, V = 112*R -94*G -18*B + 128.

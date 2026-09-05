@@ -163,15 +163,17 @@ std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
 
 std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
                                 uint32_t width, uint32_t height,
-                                uint32_t stride) {
-  if (!y || !uv || width == 0 || height == 0 || stride < width)
+                                uint32_t stride, uint32_t uvStride) {
+  if (!y || !uv || width == 0 || height == 0 || stride < width ||
+      uvStride < width)
     return {};
   std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
   for (uint32_t row = 0; row < height; ++row) {
     for (uint32_t col = 0; col < width; ++col) {
       size_t yIdx = static_cast<size_t>(row) * stride + col;
       int yVal = y[yIdx];
-      size_t uvIdx = (static_cast<size_t>(row / 2) * (width / 2) + col / 2) * 2;
+      size_t uvIdx =
+          static_cast<size_t>(row / 2) * uvStride + static_cast<size_t>(col / 2) * 2;
       int uVal = uv[uvIdx] - 128;
       int vVal = uv[uvIdx + 1] - 128;
       int r = yVal + static_cast<int>(1.402f * vVal);

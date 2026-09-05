@@ -701,19 +701,22 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
       s.customMode = *c;
   if (auto v = jsonNumValue<int>(
           jsonFindValue(json, "videoResolution").value_or("")))
-    s.videoResolution = static_cast<VideoResolution>(*v);
+    if (*v >= 0 && *v <= static_cast<int>(VideoResolution::Res1920x1080))
+      s.videoResolution = static_cast<VideoResolution>(*v);
   if (auto v = jsonNumValue<int>(
           jsonFindValue(json, "videoFps").value_or("")))
     s.videoFps = *v;
   if (auto v =
           jsonNumValue<int>(jsonFindValue(json, "videoCodec").value_or("")))
-    s.videoCodec = static_cast<VideoCodec>(*v);
+    if (*v >= 0 && *v <= static_cast<int>(VideoCodec::YUV))
+      s.videoCodec = static_cast<VideoCodec>(*v);
   if (auto v = jsonNumValue<int>(
           jsonFindValue(json, "videoBitrate").value_or("")))
     s.videoBitrate = *v;
   if (auto v =
           jsonNumValue<int>(jsonFindValue(json, "sensorMode").value_or("")))
-    s.sensorMode = static_cast<SensorMode>(*v);
+    if (*v >= 0 && *v <= static_cast<int>(SensorMode::Mode4056x3040))
+      s.sensorMode = static_cast<SensorMode>(*v);
 }
 
 std::string urlDecode(std::string_view s) {

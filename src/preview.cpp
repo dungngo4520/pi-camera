@@ -557,6 +557,7 @@ struct PreviewState {
 
   // Video recording state (Viewfinder mode, Video drive mode).
   bool videoRecording = false;
+  bool videoReconfigured = false; // stream reconfigured to video res
   std::chrono::steady_clock::time_point videoStartTime;
   std::chrono::steady_clock::time_point videoLastFrameTime;
   std::string videoPath;
@@ -761,7 +762,7 @@ void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
     std::cerr << "Preview: HDR merge — chroma extraction failed\n";
     return;
   }
-  auto mergedRgb = yuvToRgb24(mergedY.data(), midUv.data(), w, h, alignedW);
+  auto mergedRgb = yuvToRgb24(mergedY.data(), midUv.data(), w, h, alignedW, w);
   if (mergedRgb.empty()) {
     std::cerr << "Preview: HDR merge — RGB reconstruction failed\n";
     return;
@@ -837,7 +838,7 @@ void performLenr(PreviewState &s, const std::string &mainPath,
     return;
   }
   auto correctedRgb =
-      yuvToRgb24(correctedY.data(), mainUv.data(), mw, mh, alignedW);
+      yuvToRgb24(correctedY.data(), mainUv.data(), mw, mh, alignedW, mw);
   if (correctedRgb.empty()) {
     std::cerr << "Preview: LENR — RGB reconstruction failed\n";
     return;
@@ -1236,13 +1237,12 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
       uint32_t vh = frame.height;
       uint32_t vStride = frame.stride;
       if (vw > 0 && vh > 0 && frame.y() && frame.uv()) {
-        uint32_t alignedW = (vw + 1) & ~1u;
         std::vector<uint8_t> yCopy(
             frame.y(),
             frame.y() + static_cast<size_t>(vStride) * vh);
         std::vector<uint8_t> uvCopy(
             frame.uv(),
-            frame.uv() + static_cast<size_t>(alignedW) * (vh / 2));
+            frame.uv() + static_cast<size_t>(vStride) * (vh / 2));
         uint32_t targetW = s.videoTargetW;
         uint32_t targetH = s.videoTargetH;
         if (targetW == 0 || targetH == 0) {
@@ -1250,16 +1250,29 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
           targetH = vh;
         }
         if (s.overlay.settings.videoCodec == VideoCodec::YUV) {
-          // Raw NV12: write the Y and UV planes verbatim. The output
-          // resolution is set by the sensor-mode selection at recording
-          // start; bitrate is ignored for raw YUV.
+          // Raw NV12: crop the Y and UV planes to the target resolution
+          // (the stream may be larger due to ISP alignment). Bitrate is
+          // ignored for raw YUV.
+          uint32_t cropW = std::min(targetW, vw);
+          uint32_t cropH = std::min(targetH, vh);
+          std::vector<uint8_t> yOut(static_cast<size_t>(cropW) * cropH);
+          std::vector<uint8_t> uvOut(
+              static_cast<size_t>(cropW) * (cropH / 2));
+          for (uint32_t r = 0; r < cropH; ++r)
+            std::memcpy(yOut.data() + static_cast<size_t>(r) * cropW,
+                        yCopy.data() + static_cast<size_t>(r) * vStride,
+                        cropW);
+          for (uint32_t r = 0; r < cropH / 2; ++r)
+            std::memcpy(uvOut.data() + static_cast<size_t>(r) * cropW,
+                        uvCopy.data() + static_cast<size_t>(r) * vStride,
+                        cropW);
           std::ofstream ofs(s.videoPath,
                             std::ios::binary | std::ios::app);
           if (ofs) {
-            ofs.write(reinterpret_cast<const char *>(yCopy.data()),
-                      static_cast<std::streamsize>(yCopy.size()));
-            ofs.write(reinterpret_cast<const char *>(uvCopy.data()),
-                      static_cast<std::streamsize>(uvCopy.size()));
+            ofs.write(reinterpret_cast<const char *>(yOut.data()),
+                      static_cast<std::streamsize>(yOut.size()));
+            ofs.write(reinterpret_cast<const char *>(uvOut.data()),
+                      static_cast<std::streamsize>(uvOut.size()));
             ++s.videoFrameCount;
           }
         } else if (videoCodecUsesJpeg(s.overlay.settings.videoCodec)) {
@@ -1267,7 +1280,7 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
           // target resolution, then JPEG-encode at the bitrate-mapped
           // quality and append to the .mjpeg container.
           auto rgb = yuvToRgb24(yCopy.data(), uvCopy.data(), vw, vh,
-                                vStride);
+                                vStride, vStride);
           if (!rgb.empty()) {
             if (rgb.size() !=
                 static_cast<size_t>(targetW) * targetH * 3) {
@@ -1445,6 +1458,30 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
       s.persistentError = "REC STOP";
       s.errorExpiry = std::chrono::steady_clock::now() +
                       std::chrono::seconds(2);
+      // Restore the viewfinder stream to the original resolution.
+      if (s.videoReconfigured) {
+        s.videoReconfigured = false;
+        uint32_t capW = pcfg.captureWidth;
+        uint32_t capH = pcfg.captureHeight;
+        auto smDims = sensorModeDims(s.overlay.settings.sensorMode);
+        if (smDims.width > 0 && smDims.height > 0) {
+          capW = smDims.width;
+          capH = smDims.height;
+        }
+        if (s.captureThread.joinable()) {
+          cam.stop();
+          s.captureThread.join();
+        }
+        s.captureActive = false;
+        s.captureDone.store(false, std::memory_order_release);
+        if (!cam.reconfigureStill(pcfg.previewWidth, pcfg.previewHeight,
+                                  capW, capH, s.capFmt)) {
+          std::cerr << "Preview: video restore reconfigure failed\n";
+        }
+      }
+      // Restore the main loop frame rate to the viewfinder default.
+      s.frameDelay = std::chrono::microseconds(
+          pcfg.maxFps > 0 ? 1000000 / pcfg.maxFps : 50000);
     } else {
       // Start recording — create video file in capture directory.
       std::string capDir = ensureDateSubfolder(
@@ -1468,11 +1505,6 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
         vidName = vidName.substr(0, dot) + ext;
       else
         vidName += ext;
-      s.videoPath = vidName;
-      s.videoFrameCount = 0;
-      s.videoRecording = true;
-      s.videoStartTime = std::chrono::steady_clock::now();
-      s.videoLastFrameTime = s.videoStartTime;
       // Resolve the target output resolution and clamp the frame rate to
       // what the closest sensor mode supports.
       auto dims =
@@ -1483,6 +1515,40 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
           s.overlay.settings.videoResolution);
       s.videoEffectiveFps = clampFpsToSensorMode(
           s.overlay.settings.videoFps, sm);
+      // Reconfigure the viewfinder stream to the video target resolution
+      // so source frames come from the sensor at (or close to) the
+      // selected resolution instead of the 320x240 viewfinder. The still
+      // stream config is preserved.
+      uint32_t capW = pcfg.captureWidth;
+      uint32_t capH = pcfg.captureHeight;
+      auto smDims = sensorModeDims(s.overlay.settings.sensorMode);
+      if (smDims.width > 0 && smDims.height > 0) {
+        capW = smDims.width;
+        capH = smDims.height;
+      }
+      if (s.captureThread.joinable()) {
+        cam.stop();
+        s.captureThread.join();
+      }
+      s.captureActive = false;
+      s.captureDone.store(false, std::memory_order_release);
+      if (cam.reconfigureStill(s.videoTargetW, s.videoTargetH, capW, capH,
+                               s.capFmt)) {
+        s.videoReconfigured = true;
+      } else {
+        std::cerr << "Preview: video reconfigure failed — using viewfinder"
+                  << " stream at " << pcfg.previewWidth << "x"
+                  << pcfg.previewHeight << "\n";
+      }
+      // Increase the main loop frame rate to match the video FPS so the
+      // recording loop can capture at the selected rate (the default
+      // viewfinder frameDelay limits the loop to 20fps).
+      s.frameDelay = videoFrameInterval(s.videoEffectiveFps);
+      s.videoPath = vidName;
+      s.videoFrameCount = 0;
+      s.videoRecording = true;
+      s.videoStartTime = std::chrono::steady_clock::now();
+      s.videoLastFrameTime = s.videoStartTime;
       std::cout << "Preview: video recording started (" << s.videoPath
                 << ", " << s.videoTargetW << "x" << s.videoTargetH << "@"
                 << s.videoEffectiveFps << "fps, "

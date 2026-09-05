@@ -19,9 +19,12 @@ using picamera::isSafeFileName;
 using picamera::OutputFormat;
 using picamera::parseHttpRequest;
 using picamera::PictureStyle;
+using picamera::SensorMode;
 using picamera::settingsToJson;
 using picamera::statusToJson;
 using picamera::urlDecode;
+using picamera::VideoCodec;
+using picamera::VideoResolution;
 
 // --- parseHttpRequest ---
 
@@ -397,4 +400,59 @@ TEST(is_safe_file_name_empty_is_safe) {
   // The empty case is rejected earlier by the filename.empty() guard in
   // handleConnection(), so isSafeFileName itself returns true here.
   CHECK(isSafeFileName(""));
+}
+
+// --- enum range validation in applySettingsJson ---
+
+TEST(apply_settings_json_valid_video_resolution) {
+  CameraSettings s;
+  applySettingsJson("{\"videoResolution\":2}", s);
+  CHECK(s.videoResolution == VideoResolution::Res1280x720);
+}
+
+TEST(apply_settings_json_invalid_video_resolution_ignored) {
+  CameraSettings s;
+  s.videoResolution = VideoResolution::Res640x480;
+  applySettingsJson("{\"videoResolution\":99}", s);
+  CHECK(s.videoResolution == VideoResolution::Res640x480);
+}
+
+TEST(apply_settings_json_negative_video_resolution_ignored) {
+  CameraSettings s;
+  s.videoResolution = VideoResolution::Res640x480;
+  applySettingsJson("{\"videoResolution\":-1}", s);
+  CHECK(s.videoResolution == VideoResolution::Res640x480);
+}
+
+TEST(apply_settings_json_valid_video_codec) {
+  CameraSettings s;
+  applySettingsJson("{\"videoCodec\":2}", s);
+  CHECK(s.videoCodec == VideoCodec::YUV);
+}
+
+TEST(apply_settings_json_invalid_video_codec_ignored) {
+  CameraSettings s;
+  s.videoCodec = VideoCodec::MJPEG;
+  applySettingsJson("{\"videoCodec\":99}", s);
+  CHECK(s.videoCodec == VideoCodec::MJPEG);
+}
+
+TEST(apply_settings_json_valid_sensor_mode) {
+  CameraSettings s;
+  applySettingsJson("{\"sensorMode\":3}", s);
+  CHECK(s.sensorMode == SensorMode::Mode2028x1520);
+}
+
+TEST(apply_settings_json_invalid_sensor_mode_ignored) {
+  CameraSettings s;
+  s.sensorMode = SensorMode::Mode2028x1080;
+  applySettingsJson("{\"sensorMode\":99}", s);
+  CHECK(s.sensorMode == SensorMode::Mode2028x1080);
+}
+
+TEST(apply_settings_json_negative_sensor_mode_ignored) {
+  CameraSettings s;
+  s.sensorMode = SensorMode::Mode2028x1080;
+  applySettingsJson("{\"sensorMode\":-1}", s);
+  CHECK(s.sensorMode == SensorMode::Mode2028x1080);
 }

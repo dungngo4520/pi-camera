@@ -293,7 +293,7 @@ TEST(rgb24_to_y_stride_padding) {
 // --- yuvToRgb24 tests ---
 
 TEST(yuv_to_rgb24_null_input_returns_empty) {
-  auto result = yuvToRgb24(nullptr, nullptr, 4, 4, 4);
+  auto result = yuvToRgb24(nullptr, nullptr, 4, 4, 4, 4);
   CHECK(result.empty());
 }
 
@@ -301,7 +301,7 @@ TEST(yuv_to_rgb24_basic_white) {
   // Y=255, U=128, V=128 (neutral chroma) → white (255,255,255).
   std::vector<uint8_t> y = {255};
   std::vector<uint8_t> uv = {128, 128};
-  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1);
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1, 1);
   CHECK(rgb.size() == 3);
   CHECK(rgb[0] == 255);
   CHECK(rgb[1] == 255);
@@ -312,7 +312,7 @@ TEST(yuv_to_rgb24_basic_black) {
   // Y=0, U=128, V=128 → black (0,0,0).
   std::vector<uint8_t> y = {0};
   std::vector<uint8_t> uv = {128, 128};
-  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1);
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1, 1);
   CHECK(rgb.size() == 3);
   CHECK(rgb[0] == 0);
   CHECK(rgb[1] == 0);
@@ -323,10 +323,35 @@ TEST(yuv_to_rgb24_2x2_image) {
   // 2x2 image: all Y=128, neutral chroma → gray.
   std::vector<uint8_t> y = {128, 128, 128, 128};
   std::vector<uint8_t> uv = {128, 128}; // 1 chroma sample for 2x2
-  auto rgb = yuvToRgb24(y.data(), uv.data(), 2, 2, 2);
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 2, 2, 2, 2);
   CHECK(rgb.size() == 12); // 2*2*3
   for (size_t i = 0; i < 12; ++i)
     CHECK(rgb[i] == 128);
+}
+
+TEST(yuv_to_rgb24_uv_stride_padded) {
+  // 4x4 image with Y stride=8 and UV stride=8 (padded). The UV data
+  // has 8 bytes per row (4 valid bytes = 2 chroma pairs + 4 padding).
+  // Without honoring uvStride the function would use width/2 as the UV
+  // row width, causing row 2 (UV row 1) to read padding bytes (offset 4)
+  // instead of the valid second UV row (offset 8).
+  std::vector<uint8_t> y(8 * 4, 100);     // 4 rows, stride 8
+  std::vector<uint8_t> uv(8 * 2, 128);    // 2 UV rows, stride 8
+  // Fill padding (bytes 4-7 of each row) with garbage.
+  std::fill(uv.begin() + 4, uv.begin() + 8, 200);
+  std::fill(uv.begin() + 12, uv.begin() + 16, 200);
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 4, 4, 8, 8);
+  CHECK(rgb.size() == 48); // 4*4*3
+  // With neutral chroma (U=V=128), R=G=B=Y=100.
+  for (size_t i = 0; i < 48; ++i)
+    CHECK(rgb[i] == 100);
+}
+
+TEST(yuv_to_rgb24_uv_stride_less_than_width_returns_empty) {
+  std::vector<uint8_t> y(4, 100);
+  std::vector<uint8_t> uv(4, 128);
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 4, 1, 4, 2);
+  CHECK(rgb.empty());
 }
 
 // --- Copyright character entry tests ---

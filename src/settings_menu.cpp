@@ -252,7 +252,7 @@ const char *zebraLabel(ZebraMode z) {
 const char *aspectLabel(AspectRatio a) {
   switch (a) {
   case AspectRatio::Native:
-    return "3:2";
+    return "NATIVE";
   case AspectRatio::Ratio43:
     return "4:3";
   case AspectRatio::Ratio169:
