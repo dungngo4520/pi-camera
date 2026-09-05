@@ -48,7 +48,7 @@ TEST(hardware_config_defaults_unchanged_on_empty_file) {
     CHECK(cfg.captureDir == "/home/pi/captures");
     CHECK(cfg.previewWidth == 320);
     CHECK(cfg.previewHeight == 240);
-    CHECK(cfg.previewFps == 20);
+    CHECK(cfg.maxFps == 20);
     CHECK(cfg.captureWidth == 4056);
     CHECK(cfg.captureHeight == 3040);
     CHECK(cfg.enableBattery == true);
@@ -128,7 +128,7 @@ TEST(hardware_config_parses_preview_dimensions) {
     loadHardwareConfig(path, cfg);
     CHECK(cfg.previewWidth == 640);
     CHECK(cfg.previewHeight == 480);
-    CHECK(cfg.previewFps == 30);
+    CHECK(cfg.maxFps == 30);
     std::filesystem::remove(path);
 }
 
@@ -164,6 +164,54 @@ TEST(hardware_config_parses_enable_battery_yes_no) {
     HardwareConfig cfg;
     loadHardwareConfig(path, cfg);
     CHECK(cfg.enableBattery == false);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_parses_wifi_enabled_true) {
+    std::string path = writeTempConfig("wifi_enabled = true\n");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.wifiEnabled == true);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_parses_wifi_enabled_false) {
+    std::string path = writeTempConfig("wifi_enabled = false\n");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.wifiEnabled == false);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_wifi_enabled_default_false) {
+    std::string path = writeTempConfig("");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.wifiEnabled == false);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_parses_bt_enabled_true) {
+    std::string path = writeTempConfig("bt_enabled = true\n");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.btEnabled == true);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_parses_bt_enabled_false) {
+    std::string path = writeTempConfig("bt_enabled = false\n");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.btEnabled == false);
+    std::filesystem::remove(path);
+}
+
+TEST(hardware_config_bt_enabled_default_false) {
+    std::string path = writeTempConfig("");
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    CHECK(cfg.btEnabled == false);
     std::filesystem::remove(path);
 }
 
@@ -246,7 +294,7 @@ TEST(hardware_config_multiple_keys) {
     CHECK(cfg.captureDir == "/tmp/captures");
     CHECK(cfg.previewWidth == 640);
     CHECK(cfg.previewHeight == 480);
-    CHECK(cfg.previewFps == 30);
+    CHECK(cfg.maxFps == 30);
     CHECK(cfg.captureWidth == 2028);
     CHECK(cfg.captureHeight == 1520);
     CHECK(cfg.enableBattery == true);

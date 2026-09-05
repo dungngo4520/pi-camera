@@ -335,6 +335,34 @@ TEST(cli_battery_addr_accepts_no_prefix) {
     CHECK_EQ(opts.batteryI2cAddress, static_cast<uint8_t>(0x48));
 }
 
+TEST(cli_wifi_flag_sets_enabled) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--wifi"}, opts, cfg));
+    CHECK(opts.wifiEnabled == true);
+}
+
+TEST(cli_wifi_flag_default_false) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview"}, opts, cfg));
+    CHECK(opts.wifiEnabled == false);
+}
+
+TEST(cli_bt_flag_sets_enabled) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview", "--bt"}, opts, cfg));
+    CHECK(opts.btEnabled == true);
+}
+
+TEST(cli_bt_flag_default_false) {
+    CliOptions opts;
+    CameraConfig cfg;
+    CHECK(runParse({"picamera", "--preview"}, opts, cfg));
+    CHECK(opts.btEnabled == false);
+}
+
 TEST(cli_capture_traversal_rejected) {
     CliOptions opts;
     CameraConfig cfg;

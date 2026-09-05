@@ -50,7 +50,8 @@ TEST(factory_returns_writer_for_each_format) {
     // it must be included here and in makeOutputWriter.
     constexpr OutputFormat kAllFormats[] = {
         OutputFormat::PPM, OutputFormat::RAW_NV12, OutputFormat::PNG,
-        OutputFormat::JPEG, OutputFormat::DNG
+        OutputFormat::JPEG, OutputFormat::DNG, OutputFormat::DngJpeg,
+        OutputFormat::RawJpeg
     };
     for (OutputFormat fmt : kAllFormats) {
         cfg.format = fmt;
@@ -422,5 +423,164 @@ TEST(raw_writer_reports_actual_path_when_free) {
     std::string actual;
     CHECK(writer->write(frame, path, &actual));
     CHECK_EQ(actual, path);
+    unlink(path.c_str());
+}
+
+// --- RawJpegWriter: produces both a .jpg and a .raw file ---
+
+#ifdef HAVE_JPEG
+TEST(rawjpeg_writer_produces_jpg_and_raw) {
+    const uint32_t w = 4, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    auto writer = makeOutputWriter(OutputFormat::RawJpeg, {});
+    REQUIRE(writer != nullptr);
+    std::string jpgPath = tmpPath(".jpg");
+    std::string actual;
+    CHECK(writer->write(frame, jpgPath, &actual));
+
+    // Both files should exist and be non-empty.
+    std::ifstream jpg(jpgPath, std::ios::binary | std::ios::ate);
+    REQUIRE(jpg.good());
+    CHECK(static_cast<size_t>(jpg.tellg()) > 0);
+
+    std::string rawPath = jpgPath.substr(0, jpgPath.rfind('.')) + ".raw";
+    std::ifstream raw(rawPath, std::ios::binary | std::ios::ate);
+    REQUIRE(raw.good());
+    CHECK(static_cast<size_t>(raw.tellg()) > 0);
+
+    unlink(jpgPath.c_str());
+    unlink(rawPath.c_str());
+}
+#endif
+
+// --- DngJpeg: factory returns a JPEG writer (DNG phase handled in preview.cpp) ---
+
+#ifdef HAVE_JPEG
+TEST(dngjpeg_writer_writes_jpeg_from_nv12) {
+    // makeOutputWriter(OutputFormat::DngJpeg) returns a JPEG writer; the DNG
+    // half of a DNG+JPEG capture is handled separately in preview.cpp's
+    // sequential capture path. Here we verify the JPEG writer it returns
+    // actually writes a valid JPEG from an NV12 frame.
+    const uint32_t w = 4, h = 2;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    CameraConfig cfg;
+    cfg.format = OutputFormat::DngJpeg;
+    // swJpegEncode=true selects the software (NV12->RGB->libjpeg) writer,
+    // which is what the DngJpeg path uses when HW MJPEG is unavailable.
+    auto writer = makeOutputWriter(OutputFormat::DngJpeg, cfg, true);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".jpg");
+    CHECK(writer->write(frame, path));
+
+    // The output file should exist and be a non-empty JPEG (SOI marker FFD8).
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.good());
+    unsigned char hdr[2];
+    in.read(reinterpret_cast<char *>(hdr), 2);
+    CHECK_EQ(hdr[0], 0xFF);
+    CHECK_EQ(hdr[1], 0xD8);
+
+    std::ifstream ate(path, std::ios::binary | std::ios::ate);
+    REQUIRE(ate.good());
+    CHECK(static_cast<size_t>(ate.tellg()) > 0);
+
+    unlink(path.c_str());
+}
+#endif
+
+// --- processNv12Frame: ImageSize downscale and AspectRatio crop ---
+
+TEST(raw_writer_image_size_medium_downscales) {
+    // 8x4 NV12 frame; ImageSize::Medium downscales by 2x -> 4x2.
+    const uint32_t w = 8, h = 4;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    CameraConfig cfg;
+    cfg.imageSize = ImageSize::Medium;
+    auto writer = makeOutputWriter(OutputFormat::RAW_NV12, cfg);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".raw");
+    CHECK(writer->write(frame, path));
+
+    // After 2x downscale: 4x2, Y=8 bytes, UV=4 bytes, total=12.
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    REQUIRE(in.good());
+    size_t sz = static_cast<size_t>(in.tellg());
+    CHECK_EQ(sz, 12u);
+    unlink(path.c_str());
+}
+
+TEST(raw_writer_image_size_small_downscales) {
+    // 16x8 NV12 frame; ImageSize::Small downscales by 4x -> 4x2.
+    const uint32_t w = 16, h = 8;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    CameraConfig cfg;
+    cfg.imageSize = ImageSize::Small;
+    auto writer = makeOutputWriter(OutputFormat::RAW_NV12, cfg);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".raw");
+    CHECK(writer->write(frame, path));
+
+    // After 4x downscale: 4x2, Y=8 bytes, UV=4 bytes, total=12.
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    REQUIRE(in.good());
+    size_t sz = static_cast<size_t>(in.tellg());
+    CHECK_EQ(sz, 12u);
+    unlink(path.c_str());
+}
+
+TEST(raw_writer_aspect_ratio_11_crops_width) {
+    // 8x4 NV12 frame; 1:1 aspect crops width to 4x4 (square).
+    const uint32_t w = 8, h = 4;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    CameraConfig cfg;
+    cfg.aspectRatio = AspectRatio::Ratio11;
+    auto writer = makeOutputWriter(OutputFormat::RAW_NV12, cfg);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".raw");
+    CHECK(writer->write(frame, path));
+
+    // After 1:1 crop: 4x4, Y=16 bytes, UV=8 bytes, total=24.
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    REQUIRE(in.good());
+    size_t sz = static_cast<size_t>(in.tellg());
+    CHECK_EQ(sz, 24u);
+    unlink(path.c_str());
+}
+
+TEST(raw_writer_image_size_and_aspect_combined) {
+    // 16x8 NV12; Medium (2x) -> 8x4, then 1:1 crop -> 4x4.
+    const uint32_t w = 16, h = 8;
+    auto y = makeNv12Y(w, h);
+    auto uv = makeNv12UV(w, h);
+    auto frame = makeNv12Frame(y, uv, w, h);
+
+    CameraConfig cfg;
+    cfg.imageSize = ImageSize::Medium;
+    cfg.aspectRatio = AspectRatio::Ratio11;
+    auto writer = makeOutputWriter(OutputFormat::RAW_NV12, cfg);
+    REQUIRE(writer != nullptr);
+    std::string path = tmpPath(".raw");
+    CHECK(writer->write(frame, path));
+
+    // 2x downscale: 8x4, then 1:1 crop: 4x4, Y=16, UV=8, total=24.
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    REQUIRE(in.good());
+    size_t sz = static_cast<size_t>(in.tellg());
+    CHECK_EQ(sz, 24u);
     unlink(path.c_str());
 }
