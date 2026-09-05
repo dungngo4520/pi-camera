@@ -3,7 +3,9 @@
 #include "test_runner.h"
 
 #include <cmath>
+#include <filesystem>
 #include <string>
+#include <unistd.h>
 
 using picamera::AeConstraintMode;
 using picamera::AeExposureMode;
@@ -26,6 +28,8 @@ using picamera::OutputFormat;
 using picamera::PictureStyle;
 using picamera::pictureStyleParams;
 using picamera::saveSettings;
+using picamera::sensorModeDims;
+using picamera::SensorMode;
 using picamera::settingsItemAdjustLeft;
 using picamera::settingsItemAdjustRight;
 using picamera::settingsItemLabel;
@@ -34,12 +38,16 @@ using picamera::settingsNeedsReconfigure;
 using picamera::SettingsTab;
 using picamera::settingsTabItemCount;
 using picamera::settingsToCameraConfig;
+using picamera::VideoCodec;
+using picamera::VideoDimensions;
+using picamera::videoResolutionDims;
+using picamera::VideoResolution;
 using picamera::ZebraMode;
 
 // --- Item count tests ---
 
-TEST(settings_tab_shooting_has_19_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Shooting) == 19);
+TEST(settings_tab_shooting_has_20_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Shooting) == 20);
 }
 
 TEST(settings_tab_image_has_21_items) {
@@ -50,8 +58,8 @@ TEST(settings_tab_display_has_8_items) {
   CHECK(settingsTabItemCount(SettingsTab::Display) == 8);
 }
 
-TEST(settings_tab_system_has_10_items) {
-  CHECK(settingsTabItemCount(SettingsTab::System) == 10);
+TEST(settings_tab_system_has_14_items) {
+  CHECK(settingsTabItemCount(SettingsTab::System) == 14);
 }
 
 // --- Label tests ---
@@ -73,7 +81,7 @@ TEST(settings_label_display_grid) {
 }
 
 TEST(settings_label_system_exit) {
-  CHECK(settingsItemLabel(SettingsTab::System, 9) == "EXIT");
+  CHECK(settingsItemLabel(SettingsTab::System, 13) == "EXIT");
 }
 
 TEST(settings_label_out_of_range_returns_question) {
@@ -1548,4 +1556,192 @@ TEST(settings_value_peak_on) {
   CameraSettings s;
   s.focusPeaking = true;
   CHECK(settingsItemValue(SettingsTab::Display, 3, s) == "ON");
+}
+
+// --- Sensor mode mapping tests ---
+
+TEST(sensor_mode_dims_auto_returns_zero) {
+  auto d = sensorModeDims(SensorMode::Auto);
+  CHECK(d.width == 0);
+  CHECK(d.height == 0);
+}
+
+TEST(sensor_mode_dims_1332x990) {
+  auto d = sensorModeDims(SensorMode::Mode1332x990);
+  CHECK(d.width == 1332);
+  CHECK(d.height == 990);
+}
+
+TEST(sensor_mode_dims_2028x1080) {
+  auto d = sensorModeDims(SensorMode::Mode2028x1080);
+  CHECK(d.width == 2028);
+  CHECK(d.height == 1080);
+}
+
+TEST(sensor_mode_dims_2028x1520) {
+  auto d = sensorModeDims(SensorMode::Mode2028x1520);
+  CHECK(d.width == 2028);
+  CHECK(d.height == 1520);
+}
+
+TEST(sensor_mode_dims_4056x3040) {
+  auto d = sensorModeDims(SensorMode::Mode4056x3040);
+  CHECK(d.width == 4056);
+  CHECK(d.height == 3040);
+}
+
+TEST(sensor_mode_label_shows_resolution) {
+  CHECK(settingsItemValue(SettingsTab::Shooting, 19, CameraSettings{}) ==
+        "AUTO");
+  CameraSettings s;
+  s.sensorMode = SensorMode::Mode2028x1080;
+  CHECK(settingsItemValue(SettingsTab::Shooting, 19, s) == "2028x1080");
+}
+
+TEST(sensor_mode_adjust_cycles) {
+  CameraSettings s;
+  CHECK(s.sensorMode == SensorMode::Auto);
+  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  CHECK(s.sensorMode == SensorMode::Mode1332x990);
+  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  CHECK(s.sensorMode == SensorMode::Mode2028x1080);
+  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  CHECK(s.sensorMode == SensorMode::Mode2028x1520);
+  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  CHECK(s.sensorMode == SensorMode::Mode4056x3040);
+  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  CHECK(s.sensorMode == SensorMode::Auto); // wraps around
+}
+
+TEST(settings_needs_reconfigure_on_sensor_mode_change) {
+  CameraSettings before, after;
+  after.sensorMode = SensorMode::Mode2028x1080;
+  CHECK(settingsNeedsReconfigure(before, after));
+}
+
+// --- Video resolution mapping tests ---
+
+TEST(video_resolution_dims_320x240) {
+  auto d = videoResolutionDims(VideoResolution::Res320x240);
+  CHECK(d.width == 320);
+  CHECK(d.height == 240);
+}
+
+TEST(video_resolution_dims_640x480) {
+  auto d = videoResolutionDims(VideoResolution::Res640x480);
+  CHECK(d.width == 640);
+  CHECK(d.height == 480);
+}
+
+TEST(video_resolution_dims_1280x720) {
+  auto d = videoResolutionDims(VideoResolution::Res1280x720);
+  CHECK(d.width == 1280);
+  CHECK(d.height == 720);
+}
+
+TEST(video_resolution_dims_1920x1080) {
+  auto d = videoResolutionDims(VideoResolution::Res1920x1080);
+  CHECK(d.width == 1920);
+  CHECK(d.height == 1080);
+}
+
+TEST(video_resolution_label) {
+  CameraSettings s;
+  CHECK(settingsItemValue(SettingsTab::System, 9, s) == "320x240");
+  s.videoResolution = VideoResolution::Res1280x720;
+  CHECK(settingsItemValue(SettingsTab::System, 9, s) == "720P");
+}
+
+TEST(video_resolution_adjust_cycles) {
+  CameraSettings s;
+  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  CHECK(s.videoResolution == VideoResolution::Res640x480);
+  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  CHECK(s.videoResolution == VideoResolution::Res1280x720);
+  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  CHECK(s.videoResolution == VideoResolution::Res1920x1080);
+  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  CHECK(s.videoResolution == VideoResolution::Res320x240); // wraps
+}
+
+// --- Video FPS tests ---
+
+TEST(video_fps_label) {
+  CameraSettings s;
+  CHECK(settingsItemValue(SettingsTab::System, 10, s) == "30FPS");
+}
+
+TEST(video_fps_adjust_cycles) {
+  CameraSettings s;
+  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  CHECK(s.videoFps == 50);
+  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  CHECK(s.videoFps == 60);
+  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  CHECK(s.videoFps == 10); // wraps
+  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  CHECK(s.videoFps == 24);
+}
+
+// --- Video codec tests ---
+
+TEST(video_codec_label) {
+  CameraSettings s;
+  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "MJPEG");
+  s.videoCodec = VideoCodec::H264;
+  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "H264");
+  s.videoCodec = VideoCodec::YUV;
+  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "YUV");
+}
+
+TEST(video_codec_adjust_cycles) {
+  CameraSettings s;
+  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  CHECK(s.videoCodec == VideoCodec::H264);
+  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  CHECK(s.videoCodec == VideoCodec::YUV);
+  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  CHECK(s.videoCodec == VideoCodec::MJPEG); // wraps
+}
+
+// --- Video bitrate tests ---
+
+TEST(video_bitrate_label) {
+  CameraSettings s;
+  CHECK(settingsItemValue(SettingsTab::System, 12, s) == "5MB");
+}
+
+TEST(video_bitrate_adjust_cycles) {
+  CameraSettings s;
+  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  CHECK(s.videoBitrate == 10);
+  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  CHECK(s.videoBitrate == 20);
+  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  CHECK(s.videoBitrate == 1); // wraps
+  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  CHECK(s.videoBitrate == 5);
+}
+
+// --- Settings persistence tests for new fields ---
+
+TEST(settings_persistence_video_and_sensor_roundtrip) {
+  CameraSettings s;
+  s.videoResolution = VideoResolution::Res1280x720;
+  s.videoFps = 50;
+  s.videoCodec = VideoCodec::H264;
+  s.videoBitrate = 20;
+  s.sensorMode = SensorMode::Mode2028x1520;
+  std::string path = "/tmp/test_settings_vs_" +
+                     std::to_string(getpid()) + ".conf";
+  CHECK(saveSettings(s, path));
+  CameraSettings loaded;
+  CHECK(loadSettings(loaded, path));
+  CHECK(loaded.videoResolution == VideoResolution::Res1280x720);
+  CHECK(loaded.videoFps == 50);
+  CHECK(loaded.videoCodec == VideoCodec::H264);
+  CHECK(loaded.videoBitrate == 20);
+  CHECK(loaded.sensorMode == SensorMode::Mode2028x1520);
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
 }

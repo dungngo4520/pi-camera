@@ -11,11 +11,14 @@ using picamera::copyrightCharAt;
 using picamera::copyrightCharCount;
 using picamera::copyrightCycleChar;
 using picamera::darkFrameSubtract;
+using picamera::estimateBlackLevel;
 using picamera::hdrMergeY;
 using picamera::isPortrait;
 using picamera::readFileRating;
+using picamera::rgb24ToUv;
 using picamera::rgb24ToY;
 using picamera::rotateRgb565Cw;
+using picamera::subtractBlackLevel;
 using picamera::writeFileRating;
 using picamera::yuvToRgb24;
 
@@ -384,4 +387,152 @@ TEST(copyright_cycle_char_invalid_pos_noop) {
   copyrightCycleChar(buf, -1, 1);
   copyrightCycleChar(buf, 3, 1);
   CHECK(buf == "ABC");
+}
+
+// --- Black level estimation tests ---
+
+TEST(estimate_black_level_uniform_border) {
+  // 8x8 image, all pixels = 100, border width = 2.
+  // All border pixels are 100, so black level = 100.
+  std::vector<uint8_t> y(8 * 8, 100);
+  CHECK(estimateBlackLevel(y.data(), 8, 8, 8, 2) == 100);
+}
+
+TEST(estimate_black_level_dark_border_bright_center) {
+  // 8x8 image: border = 10, center = 200.
+  std::vector<uint8_t> y(8 * 8, 200);
+  for (int r = 0; r < 2; ++r)
+    for (int c = 0; c < 8; ++c) {
+      y[r * 8 + c] = 10;
+      y[(7 - r) * 8 + c] = 10;
+    }
+  for (int r = 2; r < 6; ++r)
+    for (int c = 0; c < 2; ++c) {
+      y[r * 8 + c] = 10;
+      y[r * 8 + (7 - c)] = 10;
+    }
+  CHECK(estimateBlackLevel(y.data(), 8, 8, 8, 2) == 10);
+}
+
+TEST(estimate_black_level_null_returns_zero) {
+  CHECK(estimateBlackLevel(nullptr, 8, 8, 8, 2) == 0);
+}
+
+TEST(estimate_black_level_border_too_large_returns_zero) {
+  std::vector<uint8_t> y(4 * 4, 50);
+  // border=2 means 2*2 >= 4 (width), so can't sample.
+  CHECK(estimateBlackLevel(y.data(), 4, 4, 4, 2) == 0);
+}
+
+TEST(estimate_black_level_averages_border) {
+  // 8x8 image: top border row 0 = 20, row 1 = 40, rest = 200.
+  // Border width = 2. Average of all border pixels:
+  // Top rows: 8*2 = 16 pixels, sum = 8*20 + 8*40 = 480
+  // Bottom rows: 8*2 = 16 pixels, all = 200, sum = 3200
+  // Left/right cols (rows 2-5): 4*2 + 4*2 = 16 pixels, all = 200, sum = 3200
+  // Total: 48 pixels, sum = 480 + 3200 + 3200 = 6880, avg = 143
+  std::vector<uint8_t> y(8 * 8, 200);
+  for (int c = 0; c < 8; ++c) {
+    y[0 * 8 + c] = 20;
+    y[1 * 8 + c] = 40;
+  }
+  CHECK(estimateBlackLevel(y.data(), 8, 8, 8, 2) == 143);
+}
+
+// --- subtractBlackLevel tests ---
+
+TEST(subtract_black_level_basic) {
+  std::vector<uint8_t> y = {100, 200, 50, 10};
+  auto result = subtractBlackLevel(y.data(), 4, 1, 4, 10);
+  CHECK(result.size() == 4);
+  CHECK(result[0] == 90);
+  CHECK(result[1] == 190);
+  CHECK(result[2] == 40);
+  CHECK(result[3] == 0);
+}
+
+TEST(subtract_black_level_clamps_to_zero) {
+  std::vector<uint8_t> y = {5, 10, 3};
+  auto result = subtractBlackLevel(y.data(), 3, 1, 3, 10);
+  CHECK(result.size() == 3);
+  CHECK(result[0] == 0);
+  CHECK(result[1] == 0);
+  CHECK(result[2] == 0);
+}
+
+TEST(subtract_black_level_zero_offset_passthrough) {
+  std::vector<uint8_t> y = {0, 128, 255};
+  auto result = subtractBlackLevel(y.data(), 3, 1, 3, 0);
+  CHECK(result.size() == 3);
+  CHECK(result[0] == 0);
+  CHECK(result[1] == 128);
+  CHECK(result[2] == 255);
+}
+
+TEST(subtract_black_level_null_returns_empty) {
+  auto result = subtractBlackLevel(nullptr, 4, 1, 4, 10);
+  CHECK(result.empty());
+}
+
+// --- rgb24ToUv tests ---
+
+TEST(rgb24_to_uv_null_returns_empty) {
+  auto result = rgb24ToUv(nullptr, 4, 4);
+  CHECK(result.empty());
+}
+
+TEST(rgb24_to_uv_odd_width_returns_empty) {
+  std::vector<uint8_t> rgb(3 * 3, 128);
+  auto result = rgb24ToUv(rgb.data(), 3, 2);
+  CHECK(result.empty());
+}
+
+TEST(rgb24_to_uv_neutral_gray) {
+  // 2x2 gray image (128,128,128) → U=128, V=128 (neutral chroma).
+  std::vector<uint8_t> rgb(2 * 2 * 3, 128);
+  auto uv = rgb24ToUv(rgb.data(), 2, 2);
+  CHECK(uv.size() == 2); // 1*1*2
+  CHECK(uv[0] == 128);   // U
+  CHECK(uv[1] == 128);   // V
+}
+
+TEST(rgb24_to_uv_red_pixel) {
+  // 2x2 red image (255,0,0):
+  // U = (-38*255)/256 + 128 = -9690/256 + 128 = -37 + 128 = 91
+  // V = (112*255)/256 + 128 = 28560/256 + 128 = 111 + 128 = 239
+  std::vector<uint8_t> rgb(2 * 2 * 3);
+  for (size_t i = 0; i < rgb.size(); i += 3) {
+    rgb[i] = 255;
+    rgb[i + 1] = 0;
+    rgb[i + 2] = 0;
+  }
+  auto uv = rgb24ToUv(rgb.data(), 2, 2);
+  CHECK(uv.size() == 2);
+  CHECK(uv[0] == 91);   // U
+  CHECK(uv[1] == 239);  // V
+}
+
+TEST(rgb24_to_uv_blue_pixel) {
+  // 2x2 blue image (0,0,255):
+  // U = (-38*0 - 74*0 + 112*255)/256 + 128 = 28560/256 + 128 = 111 + 128 = 239
+  // V = (112*0 - 94*0 - 18*255)/256 + 128 = -4590/256 + 128 = -17 + 128 = 111
+  std::vector<uint8_t> rgb(2 * 2 * 3);
+  for (size_t i = 0; i < rgb.size(); i += 3) {
+    rgb[i] = 0;
+    rgb[i + 1] = 0;
+    rgb[i + 2] = 255;
+  }
+  auto uv = rgb24ToUv(rgb.data(), 2, 2);
+  CHECK(uv.size() == 2);
+  CHECK(uv[0] == 239);  // U
+  CHECK(uv[1] == 111);  // V
+}
+
+TEST(rgb24_to_uv_4x4_image) {
+  // 4x4 gray image → 2x2 chroma, all 128.
+  std::vector<uint8_t> rgb(4 * 4 * 3, 128);
+  auto uv = rgb24ToUv(rgb.data(), 4, 4);
+  CHECK(uv.size() == 8); // 2*2*2
+  for (size_t i = 0; i < uv.size(); ++i)
+    CHECK(uv[i] == 128);
 }
