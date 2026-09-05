@@ -19,6 +19,33 @@ void settingsItemAdjustLeft(SettingsTab tab, int item, CameraSettings &s);
 
 void settingsItemAdjustRight(SettingsTab tab, int item, CameraSettings &s);
 
+// Basic menu API — a flat list of the most important items.
+int basicMenuItemCount();
+
+std::string_view basicMenuItemLabel(int item);
+
+std::string basicMenuItemValue(int item, const CameraSettings &s);
+
+void basicMenuItemAdjustLeft(int item, CameraSettings &s);
+
+void basicMenuItemAdjustRight(int item, CameraSettings &s);
+
+bool basicMenuItemIsFormatCard(int item);
+
+bool basicMenuItemIsAdvancedToggle(int item);
+
+// Advanced menu special-item predicates (used by preview.cpp to avoid
+// hardcoding tab+index pairs throughout the input handler).
+bool advancedMenuItemIsBasicToggle(SettingsTab tab, int item);
+bool advancedMenuItemIsFormatCard(SettingsTab tab, int item);
+bool advancedMenuItemIsReset(SettingsTab tab, int item);
+bool advancedMenuItemIsDate(SettingsTab tab, int item);
+bool advancedMenuItemIsVideo(SettingsTab tab, int item);
+bool advancedMenuItemIsCopyright(SettingsTab tab, int item);
+bool advancedMenuItemIsExit(SettingsTab tab, int item);
+bool advancedMenuItemIsAirplane(SettingsTab tab, int item);
+bool advancedMenuItemIsCustomMode(SettingsTab tab, int item);
+
 bool settingsNeedsReconfigure(const CameraSettings &before,
                               const CameraSettings &after);
 

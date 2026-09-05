@@ -34,6 +34,7 @@ using picamera::drawTimerCountdown;
 using picamera::drawZebra;
 using picamera::GridType;
 using picamera::kColorGreen;
+using picamera::MenuMode;
 using picamera::modeName;
 using picamera::OverlayState;
 using picamera::SettingsTab;
@@ -335,14 +336,15 @@ TEST(draw_histogram_draws_on_valid_input) {
 TEST(draw_settings_menu_renders_without_crash) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Shooting, 0);
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
   CHECK(fb.anyNonZero());
 }
 
 TEST(draw_settings_menu_draws_tab_bar) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Shooting, 0);
+  settings.menuMode = MenuMode::Advanced;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
   // Tab bar at top.
   bool found = false;
   for (uint32_t y = 0; y < 12 && !found; ++y)
@@ -355,14 +357,24 @@ TEST(draw_settings_menu_draws_tab_bar) {
 TEST(draw_settings_menu_highlight_selected) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Image, 2);
+  settings.menuMode = MenuMode::Advanced;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Color, 2);
+  CHECK(fb.anyNonZero());
+}
+
+TEST(draw_settings_menu_basic_mode_renders) {
+  Framebuffer fb(128, 128);
+  CameraSettings settings;
+  settings.menuMode = MenuMode::Basic;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
   CHECK(fb.anyNonZero());
 }
 
 TEST(draw_settings_menu_no_crash_small_buffer) {
   Framebuffer fb(32, 32);
   CameraSettings settings;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Display, 0);
+  settings.menuMode = MenuMode::Advanced;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::FocusDisp, 0);
 }
 
 // --- drawPlaybackBrowser tests ---

@@ -52,12 +52,19 @@ enum class ZebraMode {
 };
 
 enum class SettingsTab {
-  Shooting,
-  Image,
-  Display,
+  Capture,
+  Exposure,
+  Color,
+  FocusDisp,
+  Video,
   System,
 };
-constexpr int kSettingsTabCount = 4;
+constexpr int kSettingsTabCount = 6;
+
+enum class MenuMode {
+  Basic = 0,
+  Advanced = 1,
+};
 
 enum class ExposureMode {
   Program = 0,
@@ -205,6 +212,7 @@ struct CameraSettings {
   VideoCodec videoCodec = VideoCodec::MJPEG;
   int videoBitrate = 5; // Mbps for H264: 1/5/10/20
   SensorMode sensorMode = SensorMode::Auto; // IMX477 sensor mode preset
+  MenuMode menuMode = MenuMode::Basic; // Basic/Advanced menu toggle
 };
 
 struct OverlayState {

@@ -52,8 +52,8 @@ constexpr int kShutterHoldMs = 500;
 constexpr int kPlaybackVisible = 8;
 // Max burst frames for continuous shooting (Pi Zero CPU limit).
 constexpr int kMaxBurstFrames = 3;
-// Number of settings tabs (Shooting, Image, Display, System).
-constexpr int kSettingsTabCount = 4;
+// Number of settings tabs (Capture, Exposure, Color, FocusDisp, Video, System).
+constexpr int kSettingsTabCount = 6;
 
 // Non-blocking capture: queues the still and launches a background thread
 // to wait for completion. The viewfinder keeps streaming. The caller polls
@@ -513,7 +513,7 @@ struct PreviewState {
 
   // Settings menu state
   int settingsIdx = 0;
-  SettingsTab settingsTab = SettingsTab::Shooting;
+  SettingsTab settingsTab = SettingsTab::Capture;
 
   // Battery
   bool batteryOk = false;
@@ -1657,41 +1657,41 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
 // Items: 0=ISO, 1=WB, 2=EV, 3=Drive, 4=Format, 5=PictureStyle.
 void adjustQuickFnItem(PreviewState &s, int idx, int direction) {
   switch (idx) {
-  case 0: // ISO → Shooting tab idx 2
+  case 0: // ISO → Exposure tab idx 2
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Shooting, 2, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Exposure, 2, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Shooting, 2, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Exposure, 2, s.overlay.settings);
     break;
-  case 1: // WB → Image tab idx 5
+  case 1: // WB → Color tab idx 0
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Image, 5, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Color, 0, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Image, 5, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Color, 0, s.overlay.settings);
     break;
-  case 2: // EV → Shooting tab idx 6
+  case 2: // EV → Exposure tab idx 5
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Shooting, 6, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Exposure, 5, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Shooting, 6, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Exposure, 5, s.overlay.settings);
     break;
-  case 3: // Drive → Shooting tab idx 0
+  case 3: // Drive → Capture tab idx 5
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Shooting, 0, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Capture, 5, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Shooting, 0, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Capture, 5, s.overlay.settings);
     break;
-  case 4: // Format → Image tab idx 0
+  case 4: // Format → Capture tab idx 0
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Image, 0, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Capture, 0, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Image, 0, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Capture, 0, s.overlay.settings);
     break;
-  case 5: // PictureStyle → Image tab idx 17
+  case 5: // PictureStyle → Color tab idx 11
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Image, 17, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Color, 11, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Image, 17, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Color, 11, s.overlay.settings);
     break;
   default:
     break;
@@ -2025,8 +2025,9 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
 // Dispatch a button event in Settings mode (navigate + adjust values, exit
 // reconfigures the still stream if the capture format changed).
 // Uses the tabbed settings menu API from settings_menu.cpp.
-// Tab switching: Key1 cycles tabs. JoyUp/Down navigate items.
-// JoyLeft/Right adjust the selected item via settingsItemAdjustLeft/Right.
+// In Basic mode: flat list, Key1 does nothing (no tabs), Key3 toggles to
+// Advanced. In Advanced mode: Key1 cycles tabs, Key3 toggles to Basic.
+// JoyUp/Down navigate items. JoyLeft/Right adjust the selected item.
 void handleSettingsButton(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, StopFlag &stop,
                           const ButtonEvent &evt) {
@@ -2107,31 +2108,109 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
     cam.updateStillConfig(stillCfg);
     s.mode = CameraMode::Viewfinder;
     s.screenDirty = true;
-  } else if (evt.pressed && evt.id == ButtonId::Key1) {
-    // Cycle tabs: Shooting -> Image -> Display -> System -> Shooting
-    s.settingsTab = static_cast<SettingsTab>(
-        (static_cast<int>(s.settingsTab) + 1) % kSettingsTabCount);
+  } else if (evt.pressed && evt.id == ButtonId::Key3) {
+    // Key3: toggle Basic ↔ Advanced mode.
+    s.overlay.settings.menuMode =
+        (s.overlay.settings.menuMode == MenuMode::Basic) ? MenuMode::Advanced
+                                                         : MenuMode::Basic;
     s.settingsIdx = 0;
+    if (s.overlay.settings.menuMode == MenuMode::Advanced)
+      s.settingsTab = SettingsTab::Capture;
     s.screenDirty = true;
+  } else if (evt.pressed && evt.id == ButtonId::Key1) {
+    // Key1: cycle tabs in Advanced mode (no-op in Basic mode).
+    if (s.overlay.settings.menuMode == MenuMode::Advanced) {
+      s.settingsTab = static_cast<SettingsTab>(
+          (static_cast<int>(s.settingsTab) + 1) % kSettingsTabCount);
+      s.settingsIdx = 0;
+      s.screenDirty = true;
+    }
   } else if (evt.pressed && evt.id == ButtonId::JoyUp) {
     if (s.settingsIdx > 0) {
       --s.settingsIdx;
       s.screenDirty = true;
     }
   } else if (evt.pressed && evt.id == ButtonId::JoyDown) {
-    int count = settingsTabItemCount(s.settingsTab);
+    int count = (s.overlay.settings.menuMode == MenuMode::Basic)
+                    ? basicMenuItemCount()
+                    : settingsTabItemCount(s.settingsTab);
     if (s.settingsIdx < count - 1) {
       ++s.settingsIdx;
       s.screenDirty = true;
     }
   } else if (evt.pressed &&
              (evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
-    int count = settingsTabItemCount(s.settingsTab);
-    // EXIT item (System tab, last item) is not adjustable.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == count - 1)
+    // --- Basic mode item handling ---
+    if (s.overlay.settings.menuMode == MenuMode::Basic) {
+      // ADVANCED toggle (last item): JoyRight switches to Advanced.
+      if (basicMenuItemIsAdvancedToggle(s.settingsIdx)) {
+        if (evt.id == ButtonId::JoyRight) {
+          s.overlay.settings.menuMode = MenuMode::Advanced;
+          s.settingsTab = SettingsTab::Capture;
+          s.settingsIdx = 0;
+          s.screenDirty = true;
+        }
+        return;
+      }
+      // FORMAT CARD: double-press JoyRight to confirm.
+      if (basicMenuItemIsFormatCard(s.settingsIdx)) {
+        if (evt.id == ButtonId::JoyRight) {
+          auto now = std::chrono::steady_clock::now();
+          if (s.formatConfirmDeadline !=
+                  std::chrono::steady_clock::time_point{} &&
+              now < s.formatConfirmDeadline) {
+            s.formatConfirmDeadline = {};
+            int deleted = 0;
+            try {
+              namespace fs = std::filesystem;
+              for (const auto &f : listCaptures(pcfg.captureDir)) {
+                if (!isFileProtected(pcfg.captureDir, f)) {
+                  std::error_code ec;
+                  fs::remove(f, ec);
+                  if (!ec)
+                    ++deleted;
+                }
+              }
+            } catch (const std::exception &e) {
+              std::cerr << "Preview: format error: " << e.what() << "\n";
+            }
+            s.persistentError = "FORMATTED";
+            s.errorExpiry = now + std::chrono::seconds(3);
+            std::cout << "Preview: formatted card, deleted " << deleted
+                      << " files\n";
+          } else {
+            s.formatConfirmDeadline = now + std::chrono::seconds(3);
+            s.persistentError = "FORMAT? JOY-R";
+            s.errorExpiry = s.formatConfirmDeadline;
+          }
+          s.screenDirty = true;
+        }
+        return;
+      }
+      // Normal adjustable item.
+      if (evt.id == ButtonId::JoyLeft)
+        basicMenuItemAdjustLeft(s.settingsIdx, s.overlay.settings);
+      else
+        basicMenuItemAdjustRight(s.settingsIdx, s.overlay.settings);
+      s.screenDirty = true;
       return;
-    // FORMAT (System idx 5): double-press JoyRight to confirm.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 5) {
+    }
+
+    // --- Advanced mode item handling ---
+    // EXIT item (System tab, last item) is not adjustable.
+    if (advancedMenuItemIsExit(s.settingsTab, s.settingsIdx))
+      return;
+    // BASIC toggle (System tab idx 10): JoyRight switches to Basic.
+    if (advancedMenuItemIsBasicToggle(s.settingsTab, s.settingsIdx)) {
+      if (evt.id == ButtonId::JoyRight) {
+        s.overlay.settings.menuMode = MenuMode::Basic;
+        s.settingsIdx = 0;
+        s.screenDirty = true;
+      }
+      return;
+    }
+    // FORMAT (System tab idx 2): double-press JoyRight to confirm.
+    if (advancedMenuItemIsFormatCard(s.settingsTab, s.settingsIdx)) {
       if (evt.id == ButtonId::JoyRight) {
         auto now = std::chrono::steady_clock::now();
         if (s.formatConfirmDeadline != std::chrono::steady_clock::time_point{} &&
@@ -2165,8 +2244,8 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       }
       return;
     }
-    // RESET (System idx 6): double-press JoyRight to confirm.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 6) {
+    // RESET (System tab idx 3): double-press JoyRight to confirm.
+    if (advancedMenuItemIsReset(s.settingsTab, s.settingsIdx)) {
       if (evt.id == ButtonId::JoyRight) {
         auto now = std::chrono::steady_clock::now();
         if (s.resetConfirmDeadline !=
@@ -2190,9 +2269,9 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       }
       return;
     }
-    // DATE (System idx 7): show current date/time (read-only on Pi Zero
+    // DATE (System tab idx 5): show current date/time (read-only on Pi Zero
     // without RTC — setting system time requires root privileges).
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 7) {
+    if (advancedMenuItemIsDate(s.settingsTab, s.settingsIdx)) {
       auto now = std::chrono::system_clock::now();
       std::time_t t = std::chrono::system_clock::to_time_t(now);
       std::tm tm;
@@ -2207,8 +2286,8 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.screenDirty = true;
       return;
     }
-    // VIDEO (System idx 8): toggle Video drive mode.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 8) {
+    // VIDEO (Video tab idx 0): toggle Video drive mode.
+    if (advancedMenuItemIsVideo(s.settingsTab, s.settingsIdx)) {
       if (s.overlay.settings.driveMode == DriveMode::Video) {
         s.overlay.settings.driveMode = DriveMode::Single;
         s.persistentError = "VIDEO OFF";
@@ -2221,8 +2300,8 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.screenDirty = true;
       return;
     }
-    // COPYRIGHT (Image idx 19): enter text entry mode on JoyRight.
-    if (s.settingsTab == SettingsTab::Image && s.settingsIdx == 19) {
+    // COPYRIGHT (Color tab idx 14): enter text entry mode on JoyRight.
+    if (advancedMenuItemIsCopyright(s.settingsTab, s.settingsIdx)) {
       if (evt.id == ButtonId::JoyRight) {
         s.copyrightEditing = true;
         s.copyrightBuffer = s.overlay.settings.copyright;
@@ -2245,7 +2324,7 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       settingsItemAdjustRight(s.settingsTab, s.settingsIdx,
                               s.overlay.settings);
     // Handle airplane mode toggle: start/stop servers at runtime.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 3) {
+    if (advancedMenuItemIsAirplane(s.settingsTab, s.settingsIdx)) {
       if (s.overlay.settings.airplaneMode) {
         s.wifiServer.stop();
         s.btServer.stop();
@@ -2263,7 +2342,7 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       }
     }
     // Handle custom mode selection: load saved settings for C1/C2/C3.
-    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 4 &&
+    if (advancedMenuItemIsCustomMode(s.settingsTab, s.settingsIdx) &&
         s.overlay.settings.customMode != CustomMode::Auto) {
       CameraSettings loaded;
       if (loadCustomMode(loaded,

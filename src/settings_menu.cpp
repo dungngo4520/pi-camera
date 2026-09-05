@@ -1125,91 +1125,102 @@ struct SettingItem {
   void (*adjustFn)(CameraSettings &, int);
 };
 
-constexpr std::array<SettingItem, 20> kShootTab = {{
+constexpr std::array<SettingItem, 12> kCaptureTab = {{
+    {"FORMAT", valFormat, adjustImgFormat},
+    {"QUALITY", valQuality, adjustImgQuality},
+    {"SIZE", valImgSize, adjustImgSize},
+    {"ASPECT", valAspect, adjustImgAspect},
+    {"SMODE", valSensorMode, adjustSensorMode},
     {"DRIVE", valDrive, adjustDrive},
+    {"TIMER", valTimer, adjustTimer},
+    {"BRACKET", valBracket, adjustBracket},
+    {"BRKTYPE", valBracketType, adjustBracketType},
+    {"HDR", valHdrMerge, adjustHdrMerge},
+    {"INTERVAL", valInterval, adjustInterval},
+    {"COUNT", valCount, adjustCount},
+}};
+
+constexpr std::array<SettingItem, 12> kExposureTab = {{
+    {"EXPMODE", valExpMode, adjustExpMode},
     {"SHUTTER", valShutter, adjustShutter},
     {"ISO", valIso, adjustIso},
     {"ISO MIN", valIsoMin, adjustIsoMin},
     {"ISO MAX", valIsoMax, adjustIsoMax},
-    {"MIN SS", valMinShutter, adjustMinShutter},
     {"EV", valEv, adjustEv},
     {"METER", valMeter, adjustMeter},
     {"AEMODE", valAeMode, adjustAeMode},
     {"AECONST", valAeConst, adjustAeConst},
     {"FLICKER", valFlicker, adjustFlicker},
-    {"TIMER", valTimer, adjustTimer},
-    {"BRACKET", valBracket, adjustBracket},
-    {"HDR", valHdrMerge, adjustHdrMerge},
-    {"LENR", valLongExposureNr, adjustLongExposureNr},
-    {"INTERVAL", valInterval, adjustInterval},
-    {"COUNT", valCount, adjustCount},
-    {"EXPMODE", valExpMode, adjustExpMode},
-    {"BRKTYPE", valBracketType, adjustBracketType},
-    {"SMODE", valSensorMode, adjustSensorMode},
+    {"MIN SS", valMinShutter, adjustMinShutter},
+    {"SILENT", valSilentShutter, adjustSilentShutter},
 }};
 
-constexpr std::array<SettingItem, 21> kImgTab = {{
-    {"FORMAT", valFormat, adjustImgFormat},
-    {"QUALITY", valQuality, adjustImgQuality},
-    {"SIZE", valImgSize, adjustImgSize},
-    {"ASPECT", valAspect, adjustImgAspect},
-    {"COLOR", valColorSpace, adjustColorSpace},
+constexpr std::array<SettingItem, 15> kColorTab = {{
     {"AWB", valAwb, adjustImgAwb},
     {"KELVIN", valKelvin, adjustImgKelvin},
     {"WBRED", valWbRed, adjustImgWbRed},
     {"WBBLUE", valWbBlue, adjustImgWbBlue},
     {"WBGM", valWbGm, adjustWbGm},
+    {"WBSET", valWbSet, adjustImgWbSet},
     {"BRIGHT", valBrightness, adjustImgBrightness},
     {"CONTRAST", valContrast, adjustImgContrast},
     {"SAT", valSaturation, adjustImgSaturation},
     {"SHARP", valSharpness, adjustImgSharpness},
     {"NR", valNr, adjustImgNr},
-    {"FILENAME", valFileNaming, adjustImgFileNaming},
-    {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders},
     {"PSTYLE", valPictureStyle, adjustPictureStyle},
     {"GRAIN", valGrainEffect, adjustGrainEffect},
+    {"COLOR", valColorSpace, adjustColorSpace},
     {"COPYRIGHT", valCopyright, nullptr},
-    {"WBSET", valWbSet, adjustImgWbSet},
 }};
 
-constexpr std::array<SettingItem, 8> kDispTab = {{
+constexpr std::array<SettingItem, 8> kFocusDispTab = {{
+    {"PEAK", valDispPeak, adjustDispPeak},
+    {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify},
     {"GRID", valDispGrid, adjustDispGrid},
     {"HIST", valDispHist, adjustDispHist},
     {"ZEBRA", valDispZebra, adjustDispZebra},
-    {"PEAK", valDispPeak, adjustDispPeak},
-    {"BRIGHT", valDispBright, adjustDispBright},
-    {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify},
     {"NIGHT", valNightMode, adjustNightMode},
+    {"BRIGHT", valDispBright, adjustDispBright},
     {"ROTATE", valRotateTall, adjustRotateTall},
 }};
 
-constexpr std::array<SettingItem, 14> kSysTab = {{
-    {"BATTERY", valSysBattery, adjustSysBattery},
-    {"PWRSAVE", valPowerSave, adjustSysPowerSave},
-    {"SILENT", valSilentShutter, adjustSilentShutter},
-    {"AIRPLANE", valAirplaneMode, adjustAirplaneMode},
-    {"C MODE", valCustomMode, adjustCustomMode},
-    {"FORMAT", valExit, nullptr},
-    {"RESET", valExit, nullptr},
-    {"DATE", valExit, nullptr},
+constexpr std::array<SettingItem, 5> kVideoTab = {{
     {"VIDEO", valVideo, nullptr},
     {"VIDRES", valVideoResolution, adjustVideoResolution},
     {"VIDFPS", valVideoFps, adjustVideoFps},
     {"VIDCODEC", valVideoCodec, adjustVideoCodec},
     {"VIDBITRATE", valVideoBitrate, adjustVideoBitrate},
+}};
+
+constexpr std::array<SettingItem, 12> kSystemTab = {{
+    {"BATTERY", valSysBattery, adjustSysBattery},
+    {"PWRSAVE", valPowerSave, adjustSysPowerSave},
+    {"FORMAT", valExit, nullptr},
+    {"RESET", valExit, nullptr},
+    {"AIRPLANE", valAirplaneMode, adjustAirplaneMode},
+    {"DATE", valExit, nullptr},
+    {"FILENAME", valFileNaming, adjustImgFileNaming},
+    {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders},
+    {"C MODE", valCustomMode, adjustCustomMode},
+    {"LENR", valLongExposureNr, adjustLongExposureNr},
+    {"BASIC", valExit, nullptr},
     {"EXIT", valExit, nullptr},
 }};
 
 std::span<const SettingItem> tabItems(SettingsTab tab) {
   switch (tab) {
-  case SettingsTab::Shooting:
-    return kShootTab;
-  case SettingsTab::Image:
-    return kImgTab;
-  case SettingsTab::Display:
-    return kDispTab;
+  case SettingsTab::Capture:
+    return kCaptureTab;
+  case SettingsTab::Exposure:
+    return kExposureTab;
+  case SettingsTab::Color:
+    return kColorTab;
+  case SettingsTab::FocusDisp:
+    return kFocusDispTab;
+  case SettingsTab::Video:
+    return kVideoTab;
   case SettingsTab::System:
-    return kSysTab;
+    return kSystemTab;
   }
   return {};
 }
@@ -1221,6 +1232,31 @@ void adjustSetting(SettingsTab tab, int item, CameraSettings &s,
       items[item].adjustFn)
     items[item].adjustFn(s, direction);
 }
+
+// Basic menu: a flat list of the most important items. Each entry maps a
+// basic-menu index to an Advanced tab + item index. The last two items
+// (FORMAT CARD, ADVANCED) are special and handled directly in preview.cpp.
+struct BasicItemRef {
+  SettingsTab tab;
+  int itemIdx;
+};
+
+constexpr std::array<BasicItemRef, 11> kBasicRefs = {{
+    {SettingsTab::Exposure, 0},  // EXPMODE
+    {SettingsTab::Exposure, 2},  // ISO
+    {SettingsTab::Exposure, 1},  // SHUTTER
+    {SettingsTab::Exposure, 5},  // EV
+    {SettingsTab::Color, 0},     // AWB
+    {SettingsTab::Capture, 5},   // DRIVE
+    {SettingsTab::Capture, 6},   // TIMER
+    {SettingsTab::Capture, 0},   // FORMAT
+    {SettingsTab::Capture, 2},   // SIZE
+    {SettingsTab::Color, 11},    // PSTYLE
+    {SettingsTab::System, 0},    // BATTERY
+}};
+constexpr int kBasicMenuItemCount = 13; // 11 refs + FORMAT CARD + ADVANCED
+constexpr int kBasicFormatCardIdx = 11;
+constexpr int kBasicAdvancedIdx = 12;
 
 } // namespace
 
@@ -1282,6 +1318,79 @@ void settingsItemAdjustLeft(SettingsTab tab, int item, CameraSettings &s) {
 
 void settingsItemAdjustRight(SettingsTab tab, int item, CameraSettings &s) {
   adjustSetting(tab, item, s, 1);
+}
+
+int basicMenuItemCount() { return kBasicMenuItemCount; }
+
+std::string_view basicMenuItemLabel(int item) {
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    return settingsItemLabel(kBasicRefs[item].tab, kBasicRefs[item].itemIdx);
+  if (item == kBasicFormatCardIdx)
+    return "FMT CARD";
+  if (item == kBasicAdvancedIdx)
+    return "ADVANCED";
+  return "??";
+}
+
+std::string basicMenuItemValue(int item, const CameraSettings &s) {
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    return settingsItemValue(kBasicRefs[item].tab, kBasicRefs[item].itemIdx,
+                             s);
+  return "";
+}
+
+void basicMenuItemAdjustLeft(int item, CameraSettings &s) {
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    adjustSetting(kBasicRefs[item].tab, kBasicRefs[item].itemIdx, s, -1);
+}
+
+void basicMenuItemAdjustRight(int item, CameraSettings &s) {
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    adjustSetting(kBasicRefs[item].tab, kBasicRefs[item].itemIdx, s, 1);
+}
+
+bool basicMenuItemIsFormatCard(int item) {
+  return item == kBasicFormatCardIdx;
+}
+
+bool basicMenuItemIsAdvancedToggle(int item) {
+  return item == kBasicAdvancedIdx;
+}
+
+bool advancedMenuItemIsBasicToggle(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 10;
+}
+
+bool advancedMenuItemIsFormatCard(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 2;
+}
+
+bool advancedMenuItemIsReset(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 3;
+}
+
+bool advancedMenuItemIsDate(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 5;
+}
+
+bool advancedMenuItemIsVideo(SettingsTab tab, int item) {
+  return tab == SettingsTab::Video && item == 0;
+}
+
+bool advancedMenuItemIsCopyright(SettingsTab tab, int item) {
+  return tab == SettingsTab::Color && item == 14;
+}
+
+bool advancedMenuItemIsExit(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 11;
+}
+
+bool advancedMenuItemIsAirplane(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 4;
+}
+
+bool advancedMenuItemIsCustomMode(SettingsTab tab, int item) {
+  return tab == SettingsTab::System && item == 8;
 }
 
 bool settingsNeedsReconfigure(const CameraSettings &before,
@@ -1633,6 +1742,8 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
     s.videoBitrate = static_cast<int>(toInt(val));
   else if (key == "sensorMode")
     s.sensorMode = static_cast<SensorMode>(toInt(val));
+  else if (key == "menuMode")
+    s.menuMode = static_cast<MenuMode>(toInt(val));
 }
 
 } // namespace
@@ -1711,6 +1822,7 @@ bool saveSettings(const CameraSettings &s, const std::string &path) {
   writeKeyInt(f, "videoCodec", static_cast<int>(s.videoCodec));
   writeKeyInt(f, "videoBitrate", s.videoBitrate);
   writeKeyInt(f, "sensorMode", static_cast<int>(s.sensorMode));
+  writeKeyInt(f, "menuMode", static_cast<int>(s.menuMode));
   // bracketEv is a vector — serialize as a comma-separated list
   f << "bracketEv=";
   for (size_t i = 0; i < s.bracketEv.size(); ++i) {

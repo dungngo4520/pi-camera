@@ -11,6 +11,13 @@ using picamera::AeConstraintMode;
 using picamera::AeExposureMode;
 using picamera::AspectRatio;
 using picamera::aspectRatioCrop;
+using picamera::basicMenuItemAdjustLeft;
+using picamera::basicMenuItemAdjustRight;
+using picamera::basicMenuItemCount;
+using picamera::basicMenuItemIsAdvancedToggle;
+using picamera::basicMenuItemIsFormatCard;
+using picamera::basicMenuItemLabel;
+using picamera::basicMenuItemValue;
 using picamera::BracketType;
 using picamera::CameraConfig;
 using picamera::CameraSettings;
@@ -22,6 +29,7 @@ using picamera::FileNamingMode;
 using picamera::GridType;
 using picamera::ImageSize;
 using picamera::loadSettings;
+using picamera::MenuMode;
 using picamera::MeteringMode;
 using picamera::NoiseReductionMode;
 using picamera::OutputFormat;
@@ -46,78 +54,86 @@ using picamera::ZebraMode;
 
 // --- Item count tests ---
 
-TEST(settings_tab_shooting_has_20_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Shooting) == 20);
+TEST(settings_tab_capture_has_12_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Capture) == 12);
 }
 
-TEST(settings_tab_image_has_21_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Image) == 21);
+TEST(settings_tab_exposure_has_12_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Exposure) == 12);
 }
 
-TEST(settings_tab_display_has_8_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Display) == 8);
+TEST(settings_tab_color_has_15_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Color) == 15);
 }
 
-TEST(settings_tab_system_has_14_items) {
-  CHECK(settingsTabItemCount(SettingsTab::System) == 14);
+TEST(settings_tab_focusdisp_has_8_items) {
+  CHECK(settingsTabItemCount(SettingsTab::FocusDisp) == 8);
+}
+
+TEST(settings_tab_video_has_5_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Video) == 5);
+}
+
+TEST(settings_tab_system_has_12_items) {
+  CHECK(settingsTabItemCount(SettingsTab::System) == 12);
 }
 
 // --- Label tests ---
 
 TEST(settings_label_shooting_drive) {
-  CHECK(settingsItemLabel(SettingsTab::Shooting, 0) == "DRIVE");
+  CHECK(settingsItemLabel(SettingsTab::Capture, 5) == "DRIVE");
 }
 
 TEST(settings_label_shooting_shutter) {
-  CHECK(settingsItemLabel(SettingsTab::Shooting, 1) == "SHUTTER");
+  CHECK(settingsItemLabel(SettingsTab::Exposure, 1) == "SHUTTER");
 }
 
 TEST(settings_label_image_format) {
-  CHECK(settingsItemLabel(SettingsTab::Image, 0) == "FORMAT");
+  CHECK(settingsItemLabel(SettingsTab::Capture, 0) == "FORMAT");
 }
 
 TEST(settings_label_display_grid) {
-  CHECK(settingsItemLabel(SettingsTab::Display, 0) == "GRID");
+  CHECK(settingsItemLabel(SettingsTab::FocusDisp, 2) == "GRID");
 }
 
 TEST(settings_label_system_exit) {
-  CHECK(settingsItemLabel(SettingsTab::System, 13) == "EXIT");
+  CHECK(settingsItemLabel(SettingsTab::System, 11) == "EXIT");
 }
 
 TEST(settings_label_out_of_range_returns_question) {
-  CHECK(settingsItemLabel(SettingsTab::Shooting, 99) == "??");
+  CHECK(settingsItemLabel(SettingsTab::Capture, 99) == "??");
 }
 
 // --- Value tests ---
 
 TEST(settings_value_drive_default_single) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 0, s) == "SINGLE");
+  CHECK(settingsItemValue(SettingsTab::Capture, 5, s) == "SINGLE");
 }
 
 TEST(settings_value_shutter_default_auto) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 1, s) == "AUTO");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 1, s) == "AUTO");
 }
 
 TEST(settings_value_iso_default_auto) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 2, s) == "AUTO");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 2, s) == "AUTO");
 }
 
 TEST(settings_value_ev_default_zero) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 6, s) == "0");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 5, s) == "0");
 }
 
 TEST(settings_value_format_default_jpeg) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Image, 0, s) == "JPEG");
+  CHECK(settingsItemValue(SettingsTab::Capture, 0, s) == "JPEG");
 }
 
 TEST(settings_value_grid_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Display, 0, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 2, s) == "OFF");
 }
 
 TEST(settings_value_battery_default_on) {
@@ -130,62 +146,62 @@ TEST(settings_value_battery_default_on) {
 TEST(settings_adjust_drive_mode_cycles) {
   CameraSettings s;
   // Single -> SelfTimer
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::SelfTimer);
   // SelfTimer -> Bracket
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Bracket);
   // Bracket -> Timelapse
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Timelapse);
   // Timelapse -> Continuous
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Continuous);
   // Continuous -> Bulb
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Bulb);
   // Bulb -> Video
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Video);
   // Video -> Single (wrap)
-  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Single);
 }
 
 TEST(settings_adjust_drive_mode_left_cycles) {
   CameraSettings s;
   // Single -> Video (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Shooting, 0, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 5, s);
   CHECK(s.driveMode == DriveMode::Video);
 }
 
 TEST(settings_value_drive_mode_bulb_label) {
   CameraSettings s;
   s.driveMode = DriveMode::Bulb;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 0, s) == "BULB");
+  CHECK(settingsItemValue(SettingsTab::Capture, 5, s) == "BULB");
 }
 
 TEST(settings_value_drive_mode_video_label) {
   CameraSettings s;
   s.driveMode = DriveMode::Video;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 0, s) == "VIDEO");
+  CHECK(settingsItemValue(SettingsTab::Capture, 5, s) == "VIDEO");
 }
 
 TEST(settings_adjust_shutter_increases) {
   CameraSettings s;
   CHECK(s.shutterUs == 0);
-  settingsItemAdjustRight(SettingsTab::Shooting, 1, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 1, s);
   CHECK(s.shutterUs > 0);
   CHECK(s.aeEnable == false); // manual shutter disables AE
 }
 
 TEST(settings_adjust_shutter_back_to_auto_reenables_ae) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::Shooting, 1, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 1, s);
   CHECK(s.aeEnable == false);
   // Cycle back to AUTO (shutterUs == 0)
   while (s.shutterUs != 0) {
-    settingsItemAdjustLeft(SettingsTab::Shooting, 1, s);
+    settingsItemAdjustLeft(SettingsTab::Exposure, 1, s);
   }
   CHECK(s.shutterUs == 0);
   CHECK(s.aeEnable == true); // AE re-enabled
@@ -193,12 +209,12 @@ TEST(settings_adjust_shutter_back_to_auto_reenables_ae) {
 
 TEST(settings_adjust_iso_back_to_auto_reenables_ae) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::Shooting, 2, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 2, s);
   CHECK(s.analogueGain > 0);
   CHECK(s.aeEnable == false);
   // Cycle back to AUTO (gain == 0)
   while (s.analogueGain != 0.0f) {
-    settingsItemAdjustLeft(SettingsTab::Shooting, 2, s);
+    settingsItemAdjustLeft(SettingsTab::Exposure, 2, s);
   }
   CHECK(s.analogueGain == 0.0f);
   CHECK(s.aeEnable == true);
@@ -207,102 +223,102 @@ TEST(settings_adjust_iso_back_to_auto_reenables_ae) {
 TEST(settings_adjust_shutter_decreases) {
   CameraSettings s;
   s.shutterUs = 8000; // 1/125
-  settingsItemAdjustLeft(SettingsTab::Shooting, 1, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 1, s);
   CHECK(s.shutterUs < 8000);
 }
 
 TEST(settings_adjust_iso_increases) {
   CameraSettings s;
   CHECK(s.analogueGain == 0);
-  settingsItemAdjustRight(SettingsTab::Shooting, 2, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 2, s);
   CHECK(s.analogueGain > 0);
 }
 
 TEST(settings_adjust_ev_increases) {
   CameraSettings s;
   CHECK(s.exposureValue == 0);
-  settingsItemAdjustRight(SettingsTab::Shooting, 6, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 5, s);
   CHECK(s.exposureValue > 0);
 }
 
 TEST(settings_adjust_ev_decreases) {
   CameraSettings s;
   s.exposureValue = 1.0f;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 6, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 5, s);
   CHECK(s.exposureValue < 1.0f);
 }
 
 TEST(settings_adjust_metering_cycles) {
   CameraSettings s;
   CHECK(s.meteringMode == MeteringMode::Matrix);
-  settingsItemAdjustRight(SettingsTab::Shooting, 7, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 6, s);
   CHECK(s.meteringMode == MeteringMode::Centre);
-  settingsItemAdjustRight(SettingsTab::Shooting, 7, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 6, s);
   CHECK(s.meteringMode == MeteringMode::Spot);
-  settingsItemAdjustRight(SettingsTab::Shooting, 7, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 6, s);
   CHECK(s.meteringMode == MeteringMode::Matrix);
 }
 
 TEST(settings_adjust_format_cycles_right) {
   CameraSettings s;
   CHECK(s.captureFormat == OutputFormat::JPEG);
-  settingsItemAdjustRight(SettingsTab::Image, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 0, s);
   CHECK(s.captureFormat == OutputFormat::DNG);
-  settingsItemAdjustRight(SettingsTab::Image, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 0, s);
   CHECK(s.captureFormat == OutputFormat::DngJpeg);
-  settingsItemAdjustRight(SettingsTab::Image, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 0, s);
   CHECK(s.captureFormat == OutputFormat::RawJpeg);
-  settingsItemAdjustRight(SettingsTab::Image, 0, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 0, s);
   CHECK(s.captureFormat == OutputFormat::PNG);
 }
 
 TEST(settings_adjust_format_cycles_left) {
   CameraSettings s;
   CHECK(s.captureFormat == OutputFormat::JPEG);
-  settingsItemAdjustLeft(SettingsTab::Image, 0, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 0, s);
   CHECK(s.captureFormat == OutputFormat::RAW_NV12);
 }
 
 TEST(settings_adjust_quality_increases) {
   CameraSettings s;
   CHECK(s.jpegQuality == 90);
-  settingsItemAdjustRight(SettingsTab::Image, 1, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 1, s);
   CHECK(s.jpegQuality == 91);
 }
 
 TEST(settings_adjust_quality_decreases) {
   CameraSettings s;
   s.jpegQuality = 50;
-  settingsItemAdjustLeft(SettingsTab::Image, 1, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 1, s);
   CHECK(s.jpegQuality == 49);
 }
 
 TEST(settings_adjust_quality_min_10) {
   CameraSettings s;
   s.jpegQuality = 10;
-  settingsItemAdjustLeft(SettingsTab::Image, 1, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 1, s);
   CHECK(s.jpegQuality == 10); // clamped
 }
 
 TEST(settings_adjust_quality_max_100) {
   CameraSettings s;
   s.jpegQuality = 100;
-  settingsItemAdjustRight(SettingsTab::Image, 1, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 1, s);
   CHECK(s.jpegQuality == 100); // clamped
 }
 
 TEST(settings_adjust_grid_cycles) {
   CameraSettings s;
   CHECK(s.gridType == GridType::Off);
-  settingsItemAdjustRight(SettingsTab::Display, 0, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 2, s);
   CHECK(s.gridType == GridType::Thirds);
-  settingsItemAdjustRight(SettingsTab::Display, 0, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 2, s);
   CHECK(s.gridType == GridType::Square);
-  settingsItemAdjustRight(SettingsTab::Display, 0, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 2, s);
   CHECK(s.gridType == GridType::Diagonal);
-  settingsItemAdjustRight(SettingsTab::Display, 0, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 2, s);
   CHECK(s.gridType == GridType::GoldenRatio);
-  settingsItemAdjustRight(SettingsTab::Display, 0, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 2, s);
   CHECK(s.gridType == GridType::Off);
 }
 
@@ -310,21 +326,21 @@ TEST(settings_adjust_brightness_increases) {
   CameraSettings s;
   CHECK(s.displayBrightness == 100);
   // Already at max — should stay
-  settingsItemAdjustRight(SettingsTab::Display, 4, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 6, s);
   CHECK(s.displayBrightness == 100);
 }
 
 TEST(settings_adjust_brightness_decreases) {
   CameraSettings s;
   s.displayBrightness = 50;
-  settingsItemAdjustLeft(SettingsTab::Display, 4, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 6, s);
   CHECK(s.displayBrightness == 40);
 }
 
 TEST(settings_adjust_brightness_min_10) {
   CameraSettings s;
   s.displayBrightness = 10;
-  settingsItemAdjustLeft(SettingsTab::Display, 4, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 6, s);
   CHECK(s.displayBrightness == 10); // clamped
 }
 
@@ -332,27 +348,27 @@ TEST(settings_adjust_awb_cycles_through_modes) {
   CameraSettings s;
   CHECK(s.awbEnable == true);
   CHECK(s.awbMode == "auto");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "daylight");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "cloudy");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "incandescent");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "tungsten");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "fluorescent");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "indoor");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "shade");
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "flash");
   // Next step turns AWB off
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbEnable == false);
   // Next step turns it back on with "auto"
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbEnable == true);
   CHECK(s.awbMode == "auto");
 }
@@ -360,7 +376,7 @@ TEST(settings_adjust_awb_cycles_through_modes) {
 TEST(settings_adjust_bracket_increases_spread) {
   CameraSettings s;
   CHECK(s.bracketEv.empty());
-  settingsItemAdjustRight(SettingsTab::Shooting, 12, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 7, s);
   CHECK(s.bracketEv.size() == 3);
   CHECK(s.bracketEv[0] < 0);
   CHECK(s.bracketEv[1] == 0);
@@ -370,21 +386,21 @@ TEST(settings_adjust_bracket_increases_spread) {
 TEST(settings_adjust_bracket_decreases_to_off) {
   CameraSettings s;
   s.bracketEv = {-0.5f, 0.0f, 0.5f};
-  settingsItemAdjustLeft(SettingsTab::Shooting, 12, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 7, s);
   CHECK(s.bracketEv.empty());
 }
 
 TEST(settings_adjust_flicker_cycles) {
   CameraSettings s;
   CHECK(s.antiFlicker == false);
-  settingsItemAdjustRight(SettingsTab::Shooting, 10, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 9, s);
   CHECK(s.antiFlicker == true);
   CHECK(s.flickerHz == 50);
-  settingsItemAdjustRight(SettingsTab::Shooting, 10, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 9, s);
   CHECK(s.flickerHz == 60);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 10, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 9, s);
   CHECK(s.flickerHz == 50);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 10, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 9, s);
   CHECK(s.antiFlicker == false);
 }
 
@@ -392,16 +408,16 @@ TEST(settings_adjust_timer_cycles_through_presets) {
   CameraSettings s;
   CHECK(s.timerDuration == 0);
   // 0 -> 2
-  settingsItemAdjustRight(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 2);
   // 2 -> 5
-  settingsItemAdjustRight(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 5);
   // 5 -> 10
-  settingsItemAdjustRight(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 10);
   // 10 -> 0 (wrap)
-  settingsItemAdjustRight(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 0);
 }
 
@@ -409,10 +425,10 @@ TEST(settings_adjust_timer_left_cycles_backward) {
   CameraSettings s;
   CHECK(s.timerDuration == 0);
   // 0 -> 10 (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 10);
   // 10 -> 5
-  settingsItemAdjustLeft(SettingsTab::Shooting, 11, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 6, s);
   CHECK(s.timerDuration == 5);
 }
 
@@ -593,19 +609,19 @@ TEST(clamp_gain_inverted_range_defensive) {
 TEST(settings_value_shutter_near_1s_shows_1s) {
   CameraSettings s;
   s.shutterUs = 999999; // just under 1s — denom would be 1
-  CHECK(settingsItemValue(SettingsTab::Shooting, 1, s) == "1\"");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 1, s) == "1\"");
 }
 
 TEST(settings_value_shutter_half_second) {
   CameraSettings s;
   s.shutterUs = 500000; // 1/2
-  CHECK(settingsItemValue(SettingsTab::Shooting, 1, s) == "1/2");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 1, s) == "1/2");
 }
 
 TEST(settings_value_shutter_one_minute) {
   CameraSettings s;
   s.shutterUs = 60000000; // 60s = 1'
-  CHECK(settingsItemValue(SettingsTab::Shooting, 1, s) == "1'");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 1, s) == "1'");
 }
 
 // --- Float slider clamp regression tests ---
@@ -613,21 +629,21 @@ TEST(settings_value_shutter_one_minute) {
 TEST(settings_adjust_wb_red_clamps_min) {
   CameraSettings s;
   s.wbRedGain = 0.05f; // below min
-  settingsItemAdjustLeft(SettingsTab::Image, 7, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 2, s);
   CHECK(s.wbRedGain == 0.1f); // clamped to min
 }
 
 TEST(settings_adjust_sharpness_clamps_max) {
   CameraSettings s;
   s.sharpness = 15.8f;
-  settingsItemAdjustRight(SettingsTab::Image, 13, s);
+  settingsItemAdjustRight(SettingsTab::Color, 9, s);
   CHECK(s.sharpness == 16.0f); // clamped to max
 }
 
 TEST(settings_adjust_brightness_clamps_min) {
   CameraSettings s;
   s.brightness = -0.95f;
-  settingsItemAdjustLeft(SettingsTab::Image, 10, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 6, s);
   CHECK(s.brightness == -1.0f); // clamped to min
 }
 
@@ -636,10 +652,10 @@ TEST(settings_adjust_brightness_clamps_min) {
 TEST(settings_adjust_awb_unknown_mode_falls_back_to_auto) {
   CameraSettings s;
   s.awbMode = "bogus"; // not a valid mode
-  settingsItemAdjustLeft(SettingsTab::Image, 5, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "auto"); // fallback
   s.awbMode = "bogus";
-  settingsItemAdjustRight(SettingsTab::Image, 5, s);
+  settingsItemAdjustRight(SettingsTab::Color, 0, s);
   CHECK(s.awbMode == "auto"); // fallback
 }
 
@@ -649,7 +665,7 @@ TEST(settings_adjust_flicker_right_wraps_to_off) {
   CameraSettings s;
   s.antiFlicker = true;
   s.flickerHz = 60;
-  settingsItemAdjustRight(SettingsTab::Shooting, 10, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 9, s);
   CHECK(s.antiFlicker == false); // 60Hz -> OFF
 }
 
@@ -658,29 +674,29 @@ TEST(settings_adjust_flicker_right_wraps_to_off) {
 TEST(settings_adjust_image_size_cycles) {
   CameraSettings s;
   CHECK(s.imageSize == ImageSize::Large);
-  settingsItemAdjustRight(SettingsTab::Image, 2, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 2, s);
   CHECK(s.imageSize == ImageSize::Medium);
-  settingsItemAdjustRight(SettingsTab::Image, 2, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 2, s);
   CHECK(s.imageSize == ImageSize::Small);
-  settingsItemAdjustRight(SettingsTab::Image, 2, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 2, s);
   CHECK(s.imageSize == ImageSize::Large);
 }
 
 TEST(settings_adjust_file_naming_cycles) {
   CameraSettings s;
   CHECK(s.fileNamingMode == FileNamingMode::Timestamp);
-  settingsItemAdjustRight(SettingsTab::Image, 15, s);
+  settingsItemAdjustRight(SettingsTab::System, 6, s);
   CHECK(s.fileNamingMode == FileNamingMode::Sequential);
-  settingsItemAdjustRight(SettingsTab::Image, 15, s);
+  settingsItemAdjustRight(SettingsTab::System, 6, s);
   CHECK(s.fileNamingMode == FileNamingMode::Timestamp);
 }
 
 TEST(settings_adjust_date_subfolders_toggles) {
   CameraSettings s;
   CHECK(s.useDateSubfolders == false);
-  settingsItemAdjustRight(SettingsTab::Image, 16, s);
+  settingsItemAdjustRight(SettingsTab::System, 7, s);
   CHECK(s.useDateSubfolders == true);
-  settingsItemAdjustLeft(SettingsTab::Image, 16, s);
+  settingsItemAdjustLeft(SettingsTab::System, 7, s);
   CHECK(s.useDateSubfolders == false);
 }
 
@@ -785,19 +801,19 @@ TEST(settings_default_path_contains_config) {
 TEST(settings_adjust_exposure_mode_cycles) {
   CameraSettings s;
   CHECK(s.exposureMode == ExposureMode::Program);
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Shutter);
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Manual);
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Auto);
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Program);
 }
 
 TEST(settings_exposure_mode_shutter_sets_manual_shutter) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Shutter);
   CHECK(s.shutterUs > 0);
   CHECK(s.aeEnable == true);
@@ -805,8 +821,8 @@ TEST(settings_exposure_mode_shutter_sets_manual_shutter) {
 
 TEST(settings_exposure_mode_manual_disables_ae) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s);
   CHECK(s.exposureMode == ExposureMode::Manual);
   CHECK(s.aeEnable == false);
   CHECK(s.shutterUs > 0);
@@ -819,8 +835,8 @@ TEST(settings_exposure_mode_program_reenables_ae) {
   s.aeEnable = false;
   s.shutterUs = 1000;
   s.analogueGain = 2.0f;
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s); // Auto
-  settingsItemAdjustRight(SettingsTab::Shooting, 17, s); // Program
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s); // Auto
+  settingsItemAdjustRight(SettingsTab::Exposure, 0, s); // Program
   CHECK(s.exposureMode == ExposureMode::Program);
   CHECK(s.aeEnable == true);
   CHECK(s.shutterUs == 0);
@@ -829,7 +845,7 @@ TEST(settings_exposure_mode_program_reenables_ae) {
 
 TEST(settings_value_exposure_mode_default) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 17, s) == "P");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 0, s) == "P");
 }
 
 // --- Bracket type tests ---
@@ -837,33 +853,33 @@ TEST(settings_value_exposure_mode_default) {
 TEST(settings_adjust_bracket_type_cycles) {
   CameraSettings s;
   CHECK(s.bracketType == BracketType::AE);
-  settingsItemAdjustRight(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::WB);
-  settingsItemAdjustRight(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::ISO);
-  settingsItemAdjustRight(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::AE);
 }
 
 TEST(settings_value_bracket_type_default_ae) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 18, s) == "AE");
+  CHECK(settingsItemValue(SettingsTab::Capture, 8, s) == "AE");
 }
 
 TEST(settings_value_bracket_type_iso) {
   CameraSettings s;
   s.bracketType = BracketType::ISO;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 18, s) == "ISO");
+  CHECK(settingsItemValue(SettingsTab::Capture, 8, s) == "ISO");
 }
 
 TEST(settings_adjust_bracket_type_reverse_cycles) {
   CameraSettings s;
   s.bracketType = BracketType::AE;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::ISO);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::WB);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 18, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 8, s);
   CHECK(s.bracketType == BracketType::AE);
 }
 
@@ -872,33 +888,33 @@ TEST(settings_adjust_bracket_type_reverse_cycles) {
 TEST(settings_adjust_picture_style_cycles) {
   CameraSettings s;
   CHECK(s.pictureStyle == PictureStyle::Standard);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Vivid);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Natural);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Monochrome);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Portrait);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Landscape);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Sepia);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Cool);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Warm);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Film);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::HDR);
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Standard);
 }
 
 TEST(settings_picture_style_vivid_sets_params) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::Image, 17, s);
+  settingsItemAdjustRight(SettingsTab::Color, 11, s);
   CHECK(s.pictureStyle == PictureStyle::Vivid);
   CHECK(s.contrast > 1.0f);
   CHECK(s.saturation > 1.0f);
@@ -922,7 +938,7 @@ TEST(settings_picture_style_standard_neutral) {
 
 TEST(settings_value_picture_style_default) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Image, 17, s) == "STD");
+  CHECK(settingsItemValue(SettingsTab::Color, 11, s) == "STD");
 }
 
 // --- Focus magnify tests ---
@@ -930,23 +946,23 @@ TEST(settings_value_picture_style_default) {
 TEST(settings_adjust_focus_magnify_cycles) {
   CameraSettings s;
   CHECK(s.focusMagnify == 0);
-  settingsItemAdjustRight(SettingsTab::Display, 5, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 1, s);
   CHECK(s.focusMagnify == 2);
-  settingsItemAdjustRight(SettingsTab::Display, 5, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 1, s);
   CHECK(s.focusMagnify == 4);
-  settingsItemAdjustRight(SettingsTab::Display, 5, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 1, s);
   CHECK(s.focusMagnify == 0);
 }
 
 TEST(settings_value_focus_magnify_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Display, 5, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 1, s) == "OFF");
 }
 
 TEST(settings_value_focus_magnify_2x) {
   CameraSettings s;
   s.focusMagnify = 2;
-  CHECK(settingsItemValue(SettingsTab::Display, 5, s) == "2X");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 1, s) == "2X");
 }
 
 // --- Aspect ratio crop tests ---
@@ -1085,18 +1101,18 @@ TEST(wb_bracket_formula_opposite_rb_shift) {
 // --- WBSET (one-touch custom white balance) tests ---
 
 TEST(settings_label_image_wbset) {
-  CHECK(settingsItemLabel(SettingsTab::Image, 20) == "WBSET");
+  CHECK(settingsItemLabel(SettingsTab::Color, 5) == "WBSET");
 }
 
 TEST(settings_value_wbset_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Image, 20, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::Color, 5, s) == "OFF");
 }
 
 TEST(settings_adjust_wbset_arms_measure) {
   CameraSettings s;
   CHECK(s.wbMeasurePending == false);
-  settingsItemAdjustRight(SettingsTab::Image, 20, s);
+  settingsItemAdjustRight(SettingsTab::Color, 5, s);
   CHECK(s.wbMeasurePending == true);
   CHECK(s.awbEnable == false); // switches to manual gain mode
 }
@@ -1104,13 +1120,13 @@ TEST(settings_adjust_wbset_arms_measure) {
 TEST(settings_value_wbset_shows_set_when_pending) {
   CameraSettings s;
   s.wbMeasurePending = true;
-  CHECK(settingsItemValue(SettingsTab::Image, 20, s) == "SET");
+  CHECK(settingsItemValue(SettingsTab::Color, 5, s) == "SET");
 }
 
 TEST(settings_adjust_wbset_left_also_arms) {
   // Either direction arms the measure (it's a one-shot action).
   CameraSettings s;
-  settingsItemAdjustLeft(SettingsTab::Image, 20, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 5, s);
   CHECK(s.wbMeasurePending == true);
 }
 
@@ -1118,32 +1134,32 @@ TEST(settings_adjust_wbset_left_also_arms) {
 
 TEST(settings_value_iso_min_default_100) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 3, s) == "100");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 3, s) == "100");
 }
 
 TEST(settings_value_iso_max_default_3200) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 4, s) == "3200");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 4, s) == "3200");
 }
 
 TEST(settings_adjust_iso_min_increases) {
   CameraSettings s;
   CHECK(s.isoMin == 100);
-  settingsItemAdjustRight(SettingsTab::Shooting, 3, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 3, s);
   CHECK(s.isoMin == 200);
 }
 
 TEST(settings_adjust_iso_min_decreases) {
   CameraSettings s;
   s.isoMin = 800;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 3, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 3, s);
   CHECK(s.isoMin == 400);
 }
 
 TEST(settings_adjust_iso_max_increases) {
   CameraSettings s;
   s.isoMax = 1600;
-  settingsItemAdjustRight(SettingsTab::Shooting, 4, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 4, s);
   CHECK(s.isoMax == 3200);
 }
 
@@ -1152,8 +1168,8 @@ TEST(settings_adjust_iso_min_clamps_to_max) {
   CameraSettings s;
   s.isoMin = 100;
   s.isoMax = 200;
-  settingsItemAdjustRight(SettingsTab::Shooting, 3, s); // 100 -> 200
-  settingsItemAdjustRight(SettingsTab::Shooting, 3, s); // 200 -> 400
+  settingsItemAdjustRight(SettingsTab::Exposure, 3, s); // 100 -> 200
+  settingsItemAdjustRight(SettingsTab::Exposure, 3, s); // 200 -> 400
   CHECK(s.isoMin == 400);
   CHECK(s.isoMax == 400);
 }
@@ -1163,8 +1179,8 @@ TEST(settings_adjust_iso_max_clamps_to_min) {
   CameraSettings s;
   s.isoMin = 800;
   s.isoMax = 1600;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 4, s); // 1600 -> 800
-  settingsItemAdjustLeft(SettingsTab::Shooting, 4, s); // 800 -> 400
+  settingsItemAdjustLeft(SettingsTab::Exposure, 4, s); // 1600 -> 800
+  settingsItemAdjustLeft(SettingsTab::Exposure, 4, s); // 800 -> 400
   CHECK(s.isoMax == 400);
   CHECK(s.isoMin == 400);
 }
@@ -1174,7 +1190,7 @@ TEST(settings_adjust_iso_max_clamps_to_min) {
 TEST(settings_format_dngjpeg_label) {
   CameraSettings s;
   s.captureFormat = OutputFormat::DngJpeg;
-  CHECK(settingsItemValue(SettingsTab::Image, 0, s) == "DNG+JPG");
+  CHECK(settingsItemValue(SettingsTab::Capture, 0, s) == "DNG+JPG");
 }
 
 // --- AEMODE (AeExposureMode cycling: Normal/Short/Long) ---
@@ -1182,12 +1198,12 @@ TEST(settings_format_dngjpeg_label) {
 TEST(settings_adjust_aemode_cycles_right) {
   CameraSettings s;
   CHECK(s.aeExposureMode == AeExposureMode::Normal);
-  settingsItemAdjustRight(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Short);
-  settingsItemAdjustRight(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Long);
   // wrap back to Normal
-  settingsItemAdjustRight(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Normal);
 }
 
@@ -1195,31 +1211,31 @@ TEST(settings_adjust_aemode_cycles_left) {
   CameraSettings s;
   CHECK(s.aeExposureMode == AeExposureMode::Normal);
   // Normal -> Long (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Long);
   // Long -> Short
-  settingsItemAdjustLeft(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Short);
   // Short -> Normal
-  settingsItemAdjustLeft(SettingsTab::Shooting, 8, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 7, s);
   CHECK(s.aeExposureMode == AeExposureMode::Normal);
 }
 
 TEST(settings_value_aemode_default_normal) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 8, s) == "NORMAL");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 7, s) == "NORMAL");
 }
 
 TEST(settings_value_aemode_short) {
   CameraSettings s;
   s.aeExposureMode = AeExposureMode::Short;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 8, s) == "SHORT");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 7, s) == "SHORT");
 }
 
 TEST(settings_value_aemode_long) {
   CameraSettings s;
   s.aeExposureMode = AeExposureMode::Long;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 8, s) == "LONG");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 7, s) == "LONG");
 }
 
 // --- AECONST (AeConstraintMode cycling: Normal/Highlight/Shadows) ---
@@ -1227,12 +1243,12 @@ TEST(settings_value_aemode_long) {
 TEST(settings_adjust_aeconst_cycles_right) {
   CameraSettings s;
   CHECK(s.aeConstraintMode == AeConstraintMode::Normal);
-  settingsItemAdjustRight(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Highlight);
-  settingsItemAdjustRight(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Shadows);
   // wrap back to Normal
-  settingsItemAdjustRight(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustRight(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Normal);
 }
 
@@ -1240,31 +1256,31 @@ TEST(settings_adjust_aeconst_cycles_left) {
   CameraSettings s;
   CHECK(s.aeConstraintMode == AeConstraintMode::Normal);
   // Normal -> Shadows (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Shadows);
   // Shadows -> Highlight
-  settingsItemAdjustLeft(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Highlight);
   // Highlight -> Normal
-  settingsItemAdjustLeft(SettingsTab::Shooting, 9, s);
+  settingsItemAdjustLeft(SettingsTab::Exposure, 8, s);
   CHECK(s.aeConstraintMode == AeConstraintMode::Normal);
 }
 
 TEST(settings_value_aeconst_default_normal) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 9, s) == "NORMAL");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 8, s) == "NORMAL");
 }
 
 TEST(settings_value_aeconst_highlight) {
   CameraSettings s;
   s.aeConstraintMode = AeConstraintMode::Highlight;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 9, s) == "HIGHLIGHT");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 8, s) == "HIGHLIGHT");
 }
 
 TEST(settings_value_aeconst_shadows) {
   CameraSettings s;
   s.aeConstraintMode = AeConstraintMode::Shadows;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 9, s) == "SHADOWS");
+  CHECK(settingsItemValue(SettingsTab::Exposure, 8, s) == "SHADOWS");
 }
 
 // --- INTERVAL (timelapseInterval adjustment: 1-3600s) ---
@@ -1272,40 +1288,40 @@ TEST(settings_value_aeconst_shadows) {
 TEST(settings_adjust_interval_increases) {
   CameraSettings s;
   CHECK(s.timelapseInterval == 5);
-  settingsItemAdjustRight(SettingsTab::Shooting, 15, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 10, s);
   CHECK(s.timelapseInterval == 6);
 }
 
 TEST(settings_adjust_interval_decreases) {
   CameraSettings s;
   CHECK(s.timelapseInterval == 5);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 15, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 10, s);
   CHECK(s.timelapseInterval == 4);
 }
 
 TEST(settings_adjust_interval_clamps_min_1) {
   CameraSettings s;
   s.timelapseInterval = 1;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 15, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 10, s);
   CHECK(s.timelapseInterval == 1); // clamped
 }
 
 TEST(settings_adjust_interval_clamps_max_3600) {
   CameraSettings s;
   s.timelapseInterval = 3600;
-  settingsItemAdjustRight(SettingsTab::Shooting, 15, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 10, s);
   CHECK(s.timelapseInterval == 3600); // clamped
 }
 
 TEST(settings_value_interval_default) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 15, s) == "5S");
+  CHECK(settingsItemValue(SettingsTab::Capture, 10, s) == "5S");
 }
 
 TEST(settings_value_interval_custom) {
   CameraSettings s;
   s.timelapseInterval = 60;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 15, s) == "60S");
+  CHECK(settingsItemValue(SettingsTab::Capture, 10, s) == "60S");
 }
 
 // --- COUNT (timelapseCount adjustment: 0-999, 0=infinite) ---
@@ -1313,40 +1329,40 @@ TEST(settings_value_interval_custom) {
 TEST(settings_adjust_count_increases) {
   CameraSettings s;
   CHECK(s.timelapseCount == 10);
-  settingsItemAdjustRight(SettingsTab::Shooting, 16, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 11, s);
   CHECK(s.timelapseCount == 11);
 }
 
 TEST(settings_adjust_count_decreases) {
   CameraSettings s;
   CHECK(s.timelapseCount == 10);
-  settingsItemAdjustLeft(SettingsTab::Shooting, 16, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 11, s);
   CHECK(s.timelapseCount == 9);
 }
 
 TEST(settings_adjust_count_clamps_min_0) {
   CameraSettings s;
   s.timelapseCount = 0;
-  settingsItemAdjustLeft(SettingsTab::Shooting, 16, s);
+  settingsItemAdjustLeft(SettingsTab::Capture, 11, s);
   CHECK(s.timelapseCount == 0); // clamped
 }
 
 TEST(settings_adjust_count_clamps_max_999) {
   CameraSettings s;
   s.timelapseCount = 999;
-  settingsItemAdjustRight(SettingsTab::Shooting, 16, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 11, s);
   CHECK(s.timelapseCount == 999); // clamped
 }
 
 TEST(settings_value_count_default) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 16, s) == "10");
+  CHECK(settingsItemValue(SettingsTab::Capture, 11, s) == "10");
 }
 
 TEST(settings_value_count_zero_shows_inf) {
   CameraSettings s;
   s.timelapseCount = 0;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 16, s) == "INF");
+  CHECK(settingsItemValue(SettingsTab::Capture, 11, s) == "INF");
 }
 
 // --- NR (NoiseReductionMode cycling: Off/Fast/HQ/Minimal) ---
@@ -1354,14 +1370,14 @@ TEST(settings_value_count_zero_shows_inf) {
 TEST(settings_adjust_nr_cycles_right) {
   CameraSettings s;
   CHECK(s.noiseReduction == NoiseReductionMode::Fast);
-  settingsItemAdjustRight(SettingsTab::Image, 14, s);
+  settingsItemAdjustRight(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::HighQuality);
-  settingsItemAdjustRight(SettingsTab::Image, 14, s);
+  settingsItemAdjustRight(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Minimal);
-  settingsItemAdjustRight(SettingsTab::Image, 14, s);
+  settingsItemAdjustRight(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Off);
   // wrap back to Fast
-  settingsItemAdjustRight(SettingsTab::Image, 14, s);
+  settingsItemAdjustRight(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Fast);
 }
 
@@ -1369,40 +1385,40 @@ TEST(settings_adjust_nr_cycles_left) {
   CameraSettings s;
   CHECK(s.noiseReduction == NoiseReductionMode::Fast);
   // Fast -> Off (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Image, 14, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Off);
   // Off -> Minimal
-  settingsItemAdjustLeft(SettingsTab::Image, 14, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Minimal);
   // Minimal -> HighQuality
-  settingsItemAdjustLeft(SettingsTab::Image, 14, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::HighQuality);
   // HighQuality -> Fast
-  settingsItemAdjustLeft(SettingsTab::Image, 14, s);
+  settingsItemAdjustLeft(SettingsTab::Color, 10, s);
   CHECK(s.noiseReduction == NoiseReductionMode::Fast);
 }
 
 TEST(settings_value_nr_default_fast) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Image, 14, s) == "FAST");
+  CHECK(settingsItemValue(SettingsTab::Color, 10, s) == "FAST");
 }
 
 TEST(settings_value_nr_off) {
   CameraSettings s;
   s.noiseReduction = NoiseReductionMode::Off;
-  CHECK(settingsItemValue(SettingsTab::Image, 14, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::Color, 10, s) == "OFF");
 }
 
 TEST(settings_value_nr_hq) {
   CameraSettings s;
   s.noiseReduction = NoiseReductionMode::HighQuality;
-  CHECK(settingsItemValue(SettingsTab::Image, 14, s) == "HQ");
+  CHECK(settingsItemValue(SettingsTab::Color, 10, s) == "HQ");
 }
 
 TEST(settings_value_nr_minimal) {
   CameraSettings s;
   s.noiseReduction = NoiseReductionMode::Minimal;
-  CHECK(settingsItemValue(SettingsTab::Image, 14, s) == "MIN");
+  CHECK(settingsItemValue(SettingsTab::Color, 10, s) == "MIN");
 }
 
 // --- PWRSAVE (powerSaveTimeout cycling: 0/30/60/300s) ---
@@ -1463,21 +1479,21 @@ TEST(settings_value_pwrsave_300s) {
 TEST(settings_adjust_hist_toggles) {
   CameraSettings s;
   CHECK(s.showHistogram == false);
-  settingsItemAdjustRight(SettingsTab::Display, 1, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 3, s);
   CHECK(s.showHistogram == true);
-  settingsItemAdjustLeft(SettingsTab::Display, 1, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 3, s);
   CHECK(s.showHistogram == false);
 }
 
 TEST(settings_value_hist_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Display, 1, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 3, s) == "OFF");
 }
 
 TEST(settings_value_hist_on) {
   CameraSettings s;
   s.showHistogram = true;
-  CHECK(settingsItemValue(SettingsTab::Display, 1, s) == "ON");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 3, s) == "ON");
 }
 
 // --- ZEBRA (ZebraMode cycling: Off/70%/80%/100%) ---
@@ -1485,14 +1501,14 @@ TEST(settings_value_hist_on) {
 TEST(settings_adjust_zebra_cycles_right) {
   CameraSettings s;
   CHECK(s.zebraMode == ZebraMode::Off);
-  settingsItemAdjustRight(SettingsTab::Display, 2, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold70);
-  settingsItemAdjustRight(SettingsTab::Display, 2, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold80);
-  settingsItemAdjustRight(SettingsTab::Display, 2, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold100);
   // wrap back to Off
-  settingsItemAdjustRight(SettingsTab::Display, 2, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Off);
 }
 
@@ -1500,40 +1516,40 @@ TEST(settings_adjust_zebra_cycles_left) {
   CameraSettings s;
   CHECK(s.zebraMode == ZebraMode::Off);
   // Off -> 100% (wrap backward)
-  settingsItemAdjustLeft(SettingsTab::Display, 2, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold100);
   // 100% -> 80%
-  settingsItemAdjustLeft(SettingsTab::Display, 2, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold80);
   // 80% -> 70%
-  settingsItemAdjustLeft(SettingsTab::Display, 2, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Threshold70);
   // 70% -> Off
-  settingsItemAdjustLeft(SettingsTab::Display, 2, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 4, s);
   CHECK(s.zebraMode == ZebraMode::Off);
 }
 
 TEST(settings_value_zebra_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Display, 2, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 4, s) == "OFF");
 }
 
 TEST(settings_value_zebra_70) {
   CameraSettings s;
   s.zebraMode = ZebraMode::Threshold70;
-  CHECK(settingsItemValue(SettingsTab::Display, 2, s) == "70%");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 4, s) == "70%");
 }
 
 TEST(settings_value_zebra_80) {
   CameraSettings s;
   s.zebraMode = ZebraMode::Threshold80;
-  CHECK(settingsItemValue(SettingsTab::Display, 2, s) == "80%");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 4, s) == "80%");
 }
 
 TEST(settings_value_zebra_100) {
   CameraSettings s;
   s.zebraMode = ZebraMode::Threshold100;
-  CHECK(settingsItemValue(SettingsTab::Display, 2, s) == "100%");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 4, s) == "100%");
 }
 
 // --- PEAK (focusPeaking toggle: on/off) ---
@@ -1541,21 +1557,21 @@ TEST(settings_value_zebra_100) {
 TEST(settings_adjust_peak_toggles) {
   CameraSettings s;
   CHECK(s.focusPeaking == false);
-  settingsItemAdjustRight(SettingsTab::Display, 3, s);
+  settingsItemAdjustRight(SettingsTab::FocusDisp, 0, s);
   CHECK(s.focusPeaking == true);
-  settingsItemAdjustLeft(SettingsTab::Display, 3, s);
+  settingsItemAdjustLeft(SettingsTab::FocusDisp, 0, s);
   CHECK(s.focusPeaking == false);
 }
 
 TEST(settings_value_peak_default_off) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::Display, 3, s) == "OFF");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 0, s) == "OFF");
 }
 
 TEST(settings_value_peak_on) {
   CameraSettings s;
   s.focusPeaking = true;
-  CHECK(settingsItemValue(SettingsTab::Display, 3, s) == "ON");
+  CHECK(settingsItemValue(SettingsTab::FocusDisp, 0, s) == "ON");
 }
 
 // --- Sensor mode mapping tests ---
@@ -1591,25 +1607,25 @@ TEST(sensor_mode_dims_4056x3040) {
 }
 
 TEST(sensor_mode_label_shows_resolution) {
-  CHECK(settingsItemValue(SettingsTab::Shooting, 19, CameraSettings{}) ==
+  CHECK(settingsItemValue(SettingsTab::Capture, 4, CameraSettings{}) ==
         "AUTO");
   CameraSettings s;
   s.sensorMode = SensorMode::Mode2028x1080;
-  CHECK(settingsItemValue(SettingsTab::Shooting, 19, s) == "2028x1080");
+  CHECK(settingsItemValue(SettingsTab::Capture, 4, s) == "2028x1080");
 }
 
 TEST(sensor_mode_adjust_cycles) {
   CameraSettings s;
   CHECK(s.sensorMode == SensorMode::Auto);
-  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 4, s);
   CHECK(s.sensorMode == SensorMode::Mode1332x990);
-  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 4, s);
   CHECK(s.sensorMode == SensorMode::Mode2028x1080);
-  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 4, s);
   CHECK(s.sensorMode == SensorMode::Mode2028x1520);
-  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 4, s);
   CHECK(s.sensorMode == SensorMode::Mode4056x3040);
-  settingsItemAdjustRight(SettingsTab::Shooting, 19, s);
+  settingsItemAdjustRight(SettingsTab::Capture, 4, s);
   CHECK(s.sensorMode == SensorMode::Auto); // wraps around
 }
 
@@ -1647,20 +1663,20 @@ TEST(video_resolution_dims_1920x1080) {
 
 TEST(video_resolution_label) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::System, 9, s) == "320x240");
+  CHECK(settingsItemValue(SettingsTab::Video, 1, s) == "320x240");
   s.videoResolution = VideoResolution::Res1280x720;
-  CHECK(settingsItemValue(SettingsTab::System, 9, s) == "720P");
+  CHECK(settingsItemValue(SettingsTab::Video, 1, s) == "720P");
 }
 
 TEST(video_resolution_adjust_cycles) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  settingsItemAdjustRight(SettingsTab::Video, 1, s);
   CHECK(s.videoResolution == VideoResolution::Res640x480);
-  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  settingsItemAdjustRight(SettingsTab::Video, 1, s);
   CHECK(s.videoResolution == VideoResolution::Res1280x720);
-  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  settingsItemAdjustRight(SettingsTab::Video, 1, s);
   CHECK(s.videoResolution == VideoResolution::Res1920x1080);
-  settingsItemAdjustRight(SettingsTab::System, 9, s);
+  settingsItemAdjustRight(SettingsTab::Video, 1, s);
   CHECK(s.videoResolution == VideoResolution::Res320x240); // wraps
 }
 
@@ -1668,18 +1684,18 @@ TEST(video_resolution_adjust_cycles) {
 
 TEST(video_fps_label) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::System, 10, s) == "30FPS");
+  CHECK(settingsItemValue(SettingsTab::Video, 2, s) == "30FPS");
 }
 
 TEST(video_fps_adjust_cycles) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  settingsItemAdjustRight(SettingsTab::Video, 2, s);
   CHECK(s.videoFps == 50);
-  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  settingsItemAdjustRight(SettingsTab::Video, 2, s);
   CHECK(s.videoFps == 60);
-  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  settingsItemAdjustRight(SettingsTab::Video, 2, s);
   CHECK(s.videoFps == 10); // wraps
-  settingsItemAdjustRight(SettingsTab::System, 10, s);
+  settingsItemAdjustRight(SettingsTab::Video, 2, s);
   CHECK(s.videoFps == 24);
 }
 
@@ -1687,22 +1703,22 @@ TEST(video_fps_adjust_cycles) {
 
 TEST(video_codec_label) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "MJPEG");
+  CHECK(settingsItemValue(SettingsTab::Video, 3, s) == "MJPEG");
   s.videoCodec = VideoCodec::H264;
   // H264 falls back to MJPEG encoding (no HW H264 encoder on Pi Zero 2 W);
   // the menu shows "MJPEG*" to indicate the fallback.
-  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "MJPEG*");
+  CHECK(settingsItemValue(SettingsTab::Video, 3, s) == "MJPEG*");
   s.videoCodec = VideoCodec::YUV;
-  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "YUV");
+  CHECK(settingsItemValue(SettingsTab::Video, 3, s) == "YUV");
 }
 
 TEST(video_codec_adjust_cycles) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  settingsItemAdjustRight(SettingsTab::Video, 3, s);
   CHECK(s.videoCodec == VideoCodec::H264);
-  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  settingsItemAdjustRight(SettingsTab::Video, 3, s);
   CHECK(s.videoCodec == VideoCodec::YUV);
-  settingsItemAdjustRight(SettingsTab::System, 11, s);
+  settingsItemAdjustRight(SettingsTab::Video, 3, s);
   CHECK(s.videoCodec == VideoCodec::MJPEG); // wraps
 }
 
@@ -1710,18 +1726,18 @@ TEST(video_codec_adjust_cycles) {
 
 TEST(video_bitrate_label) {
   CameraSettings s;
-  CHECK(settingsItemValue(SettingsTab::System, 12, s) == "5MB");
+  CHECK(settingsItemValue(SettingsTab::Video, 4, s) == "5MB");
 }
 
 TEST(video_bitrate_adjust_cycles) {
   CameraSettings s;
-  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  settingsItemAdjustRight(SettingsTab::Video, 4, s);
   CHECK(s.videoBitrate == 10);
-  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  settingsItemAdjustRight(SettingsTab::Video, 4, s);
   CHECK(s.videoBitrate == 20);
-  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  settingsItemAdjustRight(SettingsTab::Video, 4, s);
   CHECK(s.videoBitrate == 1); // wraps
-  settingsItemAdjustRight(SettingsTab::System, 12, s);
+  settingsItemAdjustRight(SettingsTab::Video, 4, s);
   CHECK(s.videoBitrate == 5);
 }
 
@@ -1746,4 +1762,200 @@ TEST(settings_persistence_video_and_sensor_roundtrip) {
   CHECK(loaded.sensorMode == SensorMode::Mode2028x1520);
   std::error_code ec;
   std::filesystem::remove(path, ec);
+}
+
+// --- Basic menu tests ---
+
+TEST(basic_menu_item_count_is_13) {
+  CHECK(basicMenuItemCount() == 13);
+}
+
+TEST(basic_menu_label_expmode) {
+  CHECK(basicMenuItemLabel(0) == "EXPMODE");
+}
+
+TEST(basic_menu_label_iso) {
+  CHECK(basicMenuItemLabel(1) == "ISO");
+}
+
+TEST(basic_menu_label_shutter) {
+  CHECK(basicMenuItemLabel(2) == "SHUTTER");
+}
+
+TEST(basic_menu_label_ev) {
+  CHECK(basicMenuItemLabel(3) == "EV");
+}
+
+TEST(basic_menu_label_awb) {
+  CHECK(basicMenuItemLabel(4) == "AWB");
+}
+
+TEST(basic_menu_label_drive) {
+  CHECK(basicMenuItemLabel(5) == "DRIVE");
+}
+
+TEST(basic_menu_label_timer) {
+  CHECK(basicMenuItemLabel(6) == "TIMER");
+}
+
+TEST(basic_menu_label_format) {
+  CHECK(basicMenuItemLabel(7) == "FORMAT");
+}
+
+TEST(basic_menu_label_size) {
+  CHECK(basicMenuItemLabel(8) == "SIZE");
+}
+
+TEST(basic_menu_label_pstyle) {
+  CHECK(basicMenuItemLabel(9) == "PSTYLE");
+}
+
+TEST(basic_menu_label_battery) {
+  CHECK(basicMenuItemLabel(10) == "BATTERY");
+}
+
+TEST(basic_menu_label_format_card) {
+  CHECK(basicMenuItemLabel(11) == "FMT CARD");
+}
+
+TEST(basic_menu_label_advanced) {
+  CHECK(basicMenuItemLabel(12) == "ADVANCED");
+}
+
+TEST(basic_menu_value_expmode_default) {
+  CameraSettings s;
+  CHECK(basicMenuItemValue(0, s) == "P");
+}
+
+TEST(basic_menu_value_iso_default_auto) {
+  CameraSettings s;
+  CHECK(basicMenuItemValue(1, s) == "AUTO");
+}
+
+TEST(basic_menu_value_format_default_jpeg) {
+  CameraSettings s;
+  CHECK(basicMenuItemValue(7, s) == "JPEG");
+}
+
+TEST(basic_menu_value_format_card_empty) {
+  CameraSettings s;
+  CHECK(basicMenuItemValue(11, s) == "");
+}
+
+TEST(basic_menu_value_advanced_empty) {
+  CameraSettings s;
+  CHECK(basicMenuItemValue(12, s) == "");
+}
+
+TEST(basic_menu_adjust_iso_increases) {
+  CameraSettings s;
+  CHECK(s.analogueGain == 0);
+  basicMenuItemAdjustRight(1, s);
+  CHECK(s.analogueGain > 0);
+}
+
+TEST(basic_menu_adjust_ev_increases) {
+  CameraSettings s;
+  CHECK(s.exposureValue == 0);
+  basicMenuItemAdjustRight(3, s);
+  CHECK(s.exposureValue > 0);
+}
+
+TEST(basic_menu_adjust_format_cycles) {
+  CameraSettings s;
+  CHECK(s.captureFormat == OutputFormat::JPEG);
+  basicMenuItemAdjustRight(7, s);
+  CHECK(s.captureFormat == OutputFormat::DNG);
+}
+
+TEST(basic_menu_is_format_card_idx_11) {
+  CHECK(basicMenuItemIsFormatCard(11));
+  CHECK(!basicMenuItemIsFormatCard(10));
+}
+
+TEST(basic_menu_is_advanced_toggle_idx_12) {
+  CHECK(basicMenuItemIsAdvancedToggle(12));
+  CHECK(!basicMenuItemIsAdvancedToggle(0));
+}
+
+// --- Menu mode tests ---
+
+TEST(menu_mode_default_is_basic) {
+  CameraSettings s;
+  CHECK(s.menuMode == MenuMode::Basic);
+}
+
+TEST(menu_mode_persistence_roundtrip) {
+  CameraSettings s;
+  s.menuMode = MenuMode::Advanced;
+  std::string path = "/tmp/test_menu_mode_" +
+                     std::to_string(getpid()) + ".conf";
+  CHECK(saveSettings(s, path));
+  CameraSettings loaded;
+  CHECK(loadSettings(loaded, path));
+  CHECK(loaded.menuMode == MenuMode::Advanced);
+  std::remove(path.c_str());
+}
+
+// --- Advanced menu special-item predicate tests ---
+
+using picamera::advancedMenuItemIsAirplane;
+using picamera::advancedMenuItemIsBasicToggle;
+using picamera::advancedMenuItemIsCopyright;
+using picamera::advancedMenuItemIsCustomMode;
+using picamera::advancedMenuItemIsDate;
+using picamera::advancedMenuItemIsExit;
+using picamera::advancedMenuItemIsFormatCard;
+using picamera::advancedMenuItemIsReset;
+using picamera::advancedMenuItemIsVideo;
+
+TEST(advanced_is_basic_toggle_system_idx_10) {
+  CHECK(advancedMenuItemIsBasicToggle(SettingsTab::System, 10));
+  CHECK(!advancedMenuItemIsBasicToggle(SettingsTab::System, 0));
+}
+
+TEST(advanced_is_format_card_system_idx_2) {
+  CHECK(advancedMenuItemIsFormatCard(SettingsTab::System, 2));
+  CHECK(!advancedMenuItemIsFormatCard(SettingsTab::Capture, 0));
+}
+
+TEST(advanced_is_reset_system_idx_3) {
+  CHECK(advancedMenuItemIsReset(SettingsTab::System, 3));
+}
+
+TEST(advanced_is_date_system_idx_5) {
+  CHECK(advancedMenuItemIsDate(SettingsTab::System, 5));
+}
+
+TEST(advanced_is_video_video_idx_0) {
+  CHECK(advancedMenuItemIsVideo(SettingsTab::Video, 0));
+}
+
+TEST(advanced_is_copyright_color_idx_14) {
+  CHECK(advancedMenuItemIsCopyright(SettingsTab::Color, 14));
+}
+
+TEST(advanced_is_exit_system_idx_11) {
+  CHECK(advancedMenuItemIsExit(SettingsTab::System, 11));
+}
+
+TEST(advanced_is_airplane_system_idx_4) {
+  CHECK(advancedMenuItemIsAirplane(SettingsTab::System, 4));
+}
+
+TEST(advanced_is_custom_mode_system_idx_8) {
+  CHECK(advancedMenuItemIsCustomMode(SettingsTab::System, 8));
+}
+
+// --- All features reachable in Advanced mode ---
+
+TEST(advanced_mode_all_features_reachable) {
+  // Total items across all 6 Advanced tabs:
+  // 12+12+15+8+5+12 = 64 menu items (including EXIT and BASIC toggle).
+  int total = 0;
+  for (int t = 0; t < 6; ++t) {
+    auto tab = static_cast<SettingsTab>(t);
+    total += settingsTabItemCount(tab);
+  }
+  CHECK(total == 64);
 }

@@ -534,7 +534,8 @@ std::string settingsToJson(const CameraSettings &s) {
   oss << jsonNum("videoFps", s.videoFps) << ',';
   oss << jsonNum("videoCodec", static_cast<int>(s.videoCodec)) << ',';
   oss << jsonNum("videoBitrate", s.videoBitrate) << ',';
-  oss << jsonNum("sensorMode", static_cast<int>(s.sensorMode));
+  oss << jsonNum("sensorMode", static_cast<int>(s.sensorMode)) << ',';
+  oss << jsonNum("menuMode", static_cast<int>(s.menuMode));
   oss << '}';
   return oss.str();
 }
@@ -717,6 +718,10 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
           jsonNumValue<int>(jsonFindValue(json, "sensorMode").value_or("")))
     if (*v >= 0 && *v <= static_cast<int>(SensorMode::Mode4056x3040))
       s.sensorMode = static_cast<SensorMode>(*v);
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "menuMode").value_or("")))
+    if (*v >= 0 && *v <= 1)
+      s.menuMode = static_cast<MenuMode>(*v);
 }
 
 std::string urlDecode(std::string_view s) {

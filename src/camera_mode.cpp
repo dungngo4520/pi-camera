@@ -479,8 +479,56 @@ void drawSettingsMenu(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       int selectedItem) {
   fillRect(rgb565, fbW, fbH, 0, 0, fbW, fbH, kColorBlack);
 
-  static constexpr std::string_view kTabNames[] = {"SHOT", "IMG", "DISP",
-                                                   "SYS"};
+  if (settings.menuMode == MenuMode::Basic) {
+    // Basic mode: single flat list, no tab bar. A simple "BASIC" header.
+    std::string_view header = "BASIC";
+    int headerW = static_cast<int>(header.size()) * kTextWidth;
+    fillRect(rgb565, fbW, fbH, 0, 0, fbW, kTextHeight + 4, kColorAmber);
+    drawText(rgb565, fbW, fbH,
+             (static_cast<int>(fbW) - headerW) / 2, 2,
+             std::string(header), kColorBlack, kColorAmber, false);
+
+    int itemCount = basicMenuItemCount();
+    constexpr int kMenuRowH = kTextHeight + 5;
+    int y = kTextHeight + 6;
+    int maxVisible = (static_cast<int>(fbH) - y - 4) / kMenuRowH;
+    int visible = std::max(0, std::min(itemCount, maxVisible));
+    int maxScroll = std::max(0, itemCount - visible);
+    int scrollOffset = std::clamp(selectedItem, 0, maxScroll);
+
+    for (int i = 0; i < visible; ++i) {
+      int idx = scrollOffset + i;
+      bool selected = (idx == selectedItem);
+      uint16_t fg = selected ? kColorBlack : kColorWhite;
+      uint16_t bg = selected ? kColorGreen : kColorBlack;
+
+      std::string label = std::string(basicMenuItemLabel(idx));
+      std::string value = basicMenuItemValue(idx, settings);
+
+      std::string line = label;
+      if (!value.empty()) {
+        int totalChars = (static_cast<int>(fbW) - 4) / kTextWidth;
+        int labelChars = static_cast<int>(label.size());
+        int valueChars = static_cast<int>(value.size());
+        int spaces = totalChars - labelChars - valueChars;
+        spaces = std::max(spaces, 1);
+        line += std::string(spaces, ' ');
+        line += value;
+      } else if (idx == selectedItem) {
+        line += " >";
+      }
+
+      int textY = y + (kMenuRowH - kTextHeight) / 2;
+      fillRect(rgb565, fbW, fbH, 0, y, fbW, kMenuRowH, bg);
+      drawText(rgb565, fbW, fbH, kMargin + 2, textY, line, fg, bg, false);
+      y += kMenuRowH;
+    }
+    return;
+  }
+
+  // Advanced mode: tabbed menu.
+  static constexpr std::string_view kTabNames[] = {
+      "CAP", "EXP", "COL", "FOC", "VID", "SYS"};
   constexpr int kTabCount = static_cast<int>(std::size(kTabNames));
   int tabWidth = static_cast<int>(fbW) / kTabCount;
   for (int i = 0; i < kTabCount; ++i) {
