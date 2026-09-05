@@ -38,6 +38,57 @@ std::vector<uint8_t> darkFrameSubtract(const uint8_t *image,
   return result;
 }
 
+uint8_t estimateBlackLevel(const uint8_t *y, uint32_t width, uint32_t height,
+                           uint32_t stride, uint32_t borderWidth) {
+  if (!y || width == 0 || height == 0 || stride < width)
+    return 0;
+  if (borderWidth == 0 || borderWidth * 2 >= width || borderWidth * 2 >= height)
+    return 0;
+  uint64_t sum = 0;
+  uint64_t count = 0;
+  // Top and bottom border rows.
+  for (uint32_t row = 0; row < borderWidth; ++row) {
+    for (uint32_t col = 0; col < width; ++col) {
+      sum += y[static_cast<size_t>(row) * stride + col];
+      ++count;
+    }
+  }
+  for (uint32_t row = height - borderWidth; row < height; ++row) {
+    for (uint32_t col = 0; col < width; ++col) {
+      sum += y[static_cast<size_t>(row) * stride + col];
+      ++count;
+    }
+  }
+  // Left and right border columns (excluding corners already counted).
+  for (uint32_t row = borderWidth; row < height - borderWidth; ++row) {
+    for (uint32_t col = 0; col < borderWidth; ++col) {
+      sum += y[static_cast<size_t>(row) * stride + col];
+      ++count;
+    }
+    for (uint32_t col = width - borderWidth; col < width; ++col) {
+      sum += y[static_cast<size_t>(row) * stride + col];
+      ++count;
+    }
+  }
+  if (count == 0)
+    return 0;
+  return static_cast<uint8_t>(sum / count);
+}
+
+std::vector<uint8_t> subtractBlackLevel(const uint8_t *y, uint32_t width,
+                                        uint32_t height, uint32_t stride,
+                                        uint8_t blackLevel) {
+  if (!y || width == 0 || height == 0 || stride < width)
+    return {};
+  size_t planeSize = static_cast<size_t>(stride) * height;
+  std::vector<uint8_t> result(planeSize);
+  for (size_t i = 0; i < planeSize; ++i) {
+    int val = static_cast<int>(y[i]) - static_cast<int>(blackLevel);
+    result[i] = static_cast<uint8_t>(std::clamp(val, 0, 255));
+  }
+  return result;
+}
+
 void applyGrainEffect(uint8_t *yPlane, uint32_t width, uint32_t height,
                       uint32_t stride, int strength, uint32_t seed) {
   if (!yPlane || width == 0 || height == 0 || strength <= 0)
@@ -133,6 +184,42 @@ std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
     }
   }
   return rgb;
+}
+
+std::vector<uint8_t> rgb24ToUv(const uint8_t *rgb, uint32_t width,
+                               uint32_t height) {
+  if (!rgb || width == 0 || height == 0 || (width & 1) || (height & 1))
+    return {};
+  uint32_t halfW = width / 2;
+  uint32_t halfH = height / 2;
+  std::vector<uint8_t> uv(static_cast<size_t>(halfW) * halfH * 2);
+  for (uint32_t cy = 0; cy < halfH; ++cy) {
+    for (uint32_t cx = 0; cx < halfW; ++cx) {
+      // Average the 2x2 block of RGB pixels.
+      int rSum = 0;
+      int gSum = 0;
+      int bSum = 0;
+      for (uint32_t dy = 0; dy < 2; ++dy) {
+        for (uint32_t dx = 0; dx < 2; ++dx) {
+          size_t idx = (static_cast<size_t>(cy * 2 + dy) * width +
+                        (cx * 2 + dx)) *
+                       3;
+          rSum += rgb[idx];
+          gSum += rgb[idx + 1];
+          bSum += rgb[idx + 2];
+        }
+      }
+      int r = rSum / 4;
+      int g = gSum / 4;
+      int b = bSum / 4;
+      int u = (-38 * r - 74 * g + 112 * b) / 256 + 128;
+      int v = (112 * r - 94 * g - 18 * b) / 256 + 128;
+      size_t uvIdx = (static_cast<size_t>(cy) * halfW + cx) * 2;
+      uv[uvIdx] = static_cast<uint8_t>(std::clamp(u, 0, 255));
+      uv[uvIdx + 1] = static_cast<uint8_t>(std::clamp(v, 0, 255));
+    }
+  }
+  return uv;
 }
 
 // Copyright text entry character set.

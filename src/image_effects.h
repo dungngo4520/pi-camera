@@ -24,6 +24,22 @@ std::vector<uint8_t> darkFrameSubtract(const uint8_t *image,
                                        const uint8_t *dark, uint32_t width,
                                        uint32_t height, uint32_t stride);
 
+// Estimate the sensor black level from the border (optical-black) pixels
+// of a Y-plane. Samples the outer `borderWidth` rows/columns on all four
+// sides and returns their average. This approximates the fixed-pattern
+// dark current that accumulates during long exposures, without needing a
+// separate dark-frame capture (the sensor's optical-black border pixels
+// are masked from light). Returns 0 if the image is too small to sample.
+uint8_t estimateBlackLevel(const uint8_t *y, uint32_t width, uint32_t height,
+                           uint32_t stride, uint32_t borderWidth);
+
+// Subtract a uniform black-level offset from every pixel in a Y-plane.
+// The result is clamped to [0, 255]. Returns the corrected Y-plane.
+// Returns empty on invalid input.
+std::vector<uint8_t> subtractBlackLevel(const uint8_t *y, uint32_t width,
+                                        uint32_t height, uint32_t stride,
+                                        uint8_t blackLevel);
+
 // Apply film grain noise to a Y-plane. Uses a simple deterministic pseudo-
 // random pattern seeded by pixel position + seed. Strength controls the
 // maximum noise amplitude (0-50 typical). Modifies the buffer in place.
@@ -56,6 +72,13 @@ std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
 std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
                                 uint32_t width, uint32_t height,
                                 uint32_t stride);
+
+// Extract a UV (NV12 chroma) plane from an RGB24 buffer using BT.601.
+// U = -38*R -74*G +112*B + 128, V = 112*R -94*G -18*B + 128.
+// The output UV plane has width/2 * height/2 * 2 bytes (4:2:0 subsampled).
+// width must be even. Returns empty on invalid input.
+std::vector<uint8_t> rgb24ToUv(const uint8_t *rgb, uint32_t width,
+                               uint32_t height);
 
 // Copyright text entry character set: A-Z, 0-9, space, '-', '.', and
 // special control markers '<' (backspace) and '>' (done). Returns the

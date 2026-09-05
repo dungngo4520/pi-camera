@@ -430,6 +430,7 @@ struct PreviewState {
   OverlayState overlay;
   OutputFormat capFmt =
       OutputFormat::JPEG; // active still format (post-reconfigure)
+  SensorMode prevSensorMode = SensorMode::Auto;
   std::string lastCapturePath;
   std::chrono::steady_clock::time_point reviewStart;
 
@@ -747,10 +748,15 @@ void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
     std::cerr << "Preview: HDR merge — merge failed\n";
     return;
   }
-  // Reconstruct RGB from merged Y using a neutral chroma (no color shift).
-  // Build a neutral UV plane (128 = no chroma offset) for the merged frame.
-  std::vector<uint8_t> uv(static_cast<size_t>(alignedW) * (h / 2), 128);
-  auto mergedRgb = yuvToRgb24(mergedY.data(), uv.data(), w, h, alignedW);
+  // Reconstruct RGB from merged Y using the middle bracket frame's chroma
+  // so the HDR result retains color instead of being grayscale.
+  size_t midIdx = rgbFrames.size() / 2;
+  auto midUv = rgb24ToUv(rgbFrames[midIdx].data(), w, h);
+  if (midUv.empty()) {
+    std::cerr << "Preview: HDR merge — chroma extraction failed\n";
+    return;
+  }
+  auto mergedRgb = yuvToRgb24(mergedY.data(), midUv.data(), w, h, alignedW);
   if (mergedRgb.empty()) {
     std::cerr << "Preview: HDR merge — RGB reconstruction failed\n";
     return;
@@ -784,65 +790,49 @@ void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
   }
 }
 
-// Long-exposure noise reduction: after a long-exposure capture (>1s) with
-// LENR enabled, capture a dark frame with the same exposure, then subtract
-// the dark frame's Y-plane from the main frame's Y-plane. The result is
-// re-encoded and overwrites the original JPEG. This removes fixed-pattern
-// sensor noise that accumulates during long exposures.
-void performLenr(PreviewState &s, DualStream &cam,
-                 const std::string &mainPath, const PreviewConfig &pcfg) {
-  // Capture a dark frame with the same exposure settings.
-  std::string darkDir =
-      ensureDateSubfolder(pcfg.captureDir, s.overlay.settings.useDateSubfolders);
-  std::string darkName;
-  if (s.overlay.settings.fileNamingMode == FileNamingMode::Sequential) {
-    darkName = makeSequentialFilename(darkDir, pcfg.capturePrefix,
-                                      OutputFormat::JPEG);
-  } else {
-    darkName = makeCaptureFilename(darkDir, pcfg.capturePrefix,
-                                   OutputFormat::JPEG);
-  }
-  auto dot = darkName.rfind('.');
-  if (dot != std::string::npos)
-    darkName.insert(dot, "_DARK");
-  else
-    darkName += "_DARK";
-  if (!cam.captureStill(darkName)) {
-    std::cerr << "Preview: LENR — dark frame capture failed\n";
-    return;
-  }
-  std::string darkSaved;
-  cam.waitCaptureDone(10000, &darkSaved);
-  if (darkSaved.empty())
-    darkSaved = darkName;
-  // Decode both frames to RGB24.
+// Long-exposure noise reduction: estimate the sensor black level from the
+// optical-black border pixels of the main frame's Y-plane and subtract it
+// as a uniform offset. This removes the fixed-pattern dark current that
+// accumulates during long exposures without needing a separate dark-frame
+// capture (the Pi has no mechanical shutter to cover the sensor). The
+// corrected frame is re-encoded and overwrites the original JPEG.
+void performLenr(PreviewState &s, const std::string &mainPath,
+                 const PreviewConfig &pcfg) {
   uint32_t mw = 0;
   uint32_t mh = 0;
-  uint32_t dw = 0;
-  uint32_t dh = 0;
   auto mainRgb = decodeJpegFileToRgb24(mainPath, mw, mh);
-  auto darkRgb = decodeJpegFileToRgb24(darkSaved, dw, dh);
-  if (mainRgb.empty() || darkRgb.empty() || mw != dw || mh != dh) {
-    std::cerr << "Preview: LENR — decode failed or dimension mismatch\n";
+  if (mainRgb.empty()) {
+    std::cerr << "Preview: LENR — decode failed\n";
     return;
   }
   uint32_t alignedW = (mw + 1) & ~1u;
   auto mainY = rgb24ToY(mainRgb.data(), mw, mh, alignedW);
-  auto darkY = rgb24ToY(darkRgb.data(), dw, dh, alignedW);
-  if (mainY.empty() || darkY.empty()) {
+  if (mainY.empty()) {
     std::cerr << "Preview: LENR — Y extraction failed\n";
     return;
   }
-  auto correctedY = darkFrameSubtract(mainY.data(), darkY.data(), alignedW,
-                                      mh, alignedW);
+  // Estimate black level from a 4-pixel border (optical-black region).
+  constexpr uint32_t kBorderWidth = 4;
+  uint8_t blackLevel =
+      estimateBlackLevel(mainY.data(), mw, mh, alignedW, kBorderWidth);
+  if (blackLevel == 0) {
+    std::cerr << "Preview: LENR — black level estimation failed\n";
+    return;
+  }
+  auto correctedY =
+      subtractBlackLevel(mainY.data(), mw, mh, alignedW, blackLevel);
   if (correctedY.empty()) {
     std::cerr << "Preview: LENR — subtraction failed\n";
     return;
   }
-  // Reconstruct RGB from corrected Y + neutral chroma.
-  std::vector<uint8_t> uv(static_cast<size_t>(alignedW) * (mh / 2), 128);
-  auto correctedRgb = yuvToRgb24(correctedY.data(), uv.data(), mw, mh,
-                                  alignedW);
+  // Reconstruct RGB from corrected Y + the main frame's chroma.
+  auto mainUv = rgb24ToUv(mainRgb.data(), mw, mh);
+  if (mainUv.empty()) {
+    std::cerr << "Preview: LENR — chroma extraction failed\n";
+    return;
+  }
+  auto correctedRgb =
+      yuvToRgb24(correctedY.data(), mainUv.data(), mw, mh, alignedW);
   if (correctedRgb.empty()) {
     std::cerr << "Preview: LENR — RGB reconstruction failed\n";
     return;
@@ -854,7 +844,8 @@ void performLenr(PreviewState &s, DualStream &cam,
   std::string newPath;
   if (writeJpegRgb(correctedRgb.data(), mw, mh, mainPath, cfg.jpegQuality,
                    &newPath)) {
-    std::cout << "Preview: LENR — corrected " << newPath << "\n";
+    std::cout << "Preview: LENR — corrected " << newPath
+              << " (black=" << static_cast<int>(blackLevel) << ")\n";
   } else {
     std::cerr << "Preview: LENR — re-encode failed\n";
   }
@@ -898,7 +889,7 @@ void checkCaptureCompletion(PreviewState &s, DualStream &cam,
       s.bracketCapturePaths.clear();
     }
     // Long-exposure NR: for single captures (not bracket/burst) with LENR
-    // enabled and shutter > 1s, capture a dark frame and subtract.
+    // enabled and shutter > 1s, estimate black level and subtract.
     if (s.overlay.settings.longExposureNr && s.burstRemaining <= 0 &&
         !s.overlay.timelapseRunning &&
         s.overlay.settings.driveMode != DriveMode::Bracket) {
@@ -906,8 +897,8 @@ void checkCaptureCompletion(PreviewState &s, DualStream &cam,
       if (shutterUs == 0)
         shutterUs = static_cast<uint64_t>(cam.lastShutterMs()) * 1000;
       if (shutterUs > 1000000) {
-        std::cout << "Preview: LENR — capturing dark frame\n";
-        performLenr(s, cam, savedPath, pcfg);
+        std::cout << "Preview: LENR — estimating black level\n";
+        performLenr(s, savedPath, pcfg);
       }
     }
     // Only switch to Review if we're in Viewfinder and not in a burst/timelapse
@@ -1226,7 +1217,7 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                        labels, values, s.quickFnIdx);
   }
 
-  // Video recording: encode current frame as JPEG and append to MJPEG file.
+  // Video recording: encode current frame and append to video file.
   if (s.videoRecording && !s.videoPath.empty()) {
     uint32_t vw = frame.width;
     uint32_t vh = frame.height;
@@ -1241,17 +1232,45 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
           frame.uv() + static_cast<size_t>(alignedW) * (vh / 2));
       auto rgb = yuvToRgb24(yCopy.data(), uvCopy.data(), vw, vh, vStride);
       if (!rgb.empty()) {
-        std::string tmpPath = s.videoPath + ".tmp.jpg";
-        if (writeJpegRgb(rgb.data(), vw, vh, tmpPath, 85, nullptr)) {
-          std::ifstream jf(tmpPath, std::ios::binary);
-          if (jf) {
-            std::ofstream ofs(s.videoPath, std::ios::binary | std::ios::app);
-            ofs << jf.rdbuf();
+        // Determine target video dimensions from the selected resolution.
+        auto dims = videoResolutionDims(
+            s.overlay.settings.videoResolution);
+        uint32_t targetW = dims.width;
+        uint32_t targetH = dims.height;
+        // For YUV codec, write raw NV12 frames; for MJPEG/H264, write
+        // JPEG-encoded frames (MJPEG container). H264 hardware encoding
+        // is not available on the Pi VC4 pipeline at build time, so we
+        // fall back to MJPEG-style JPEG frames for both MJPEG and H264.
+        if (s.overlay.settings.videoCodec == VideoCodec::YUV) {
+          std::ofstream ofs(s.videoPath, std::ios::binary | std::ios::app);
+          if (ofs) {
+            ofs.write(reinterpret_cast<const char *>(yCopy.data()),
+                      static_cast<std::streamsize>(yCopy.size()));
+            ofs.write(reinterpret_cast<const char *>(uvCopy.data()),
+                      static_cast<std::streamsize>(uvCopy.size()));
             ++s.videoFrameCount;
           }
-          std::error_code ec;
-          std::filesystem::remove(tmpPath, ec);
+        } else {
+          int quality = (s.overlay.settings.videoCodec ==
+                          VideoCodec::H264)
+                             ? 90
+                             : 85;
+          std::string tmpPath = s.videoPath + ".tmp.jpg";
+          if (writeJpegRgb(rgb.data(), vw, vh, tmpPath, quality,
+                           nullptr)) {
+            std::ifstream jf(tmpPath, std::ios::binary);
+            if (jf) {
+              std::ofstream ofs(s.videoPath,
+                                std::ios::binary | std::ios::app);
+              ofs << jf.rdbuf();
+              ++s.videoFrameCount;
+            }
+            std::error_code ec;
+            std::filesystem::remove(tmpPath, ec);
+          }
         }
+        (void)targetW;
+        (void)targetH;
       }
     }
   }
@@ -1405,7 +1424,7 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
       s.errorExpiry = std::chrono::steady_clock::now() +
                       std::chrono::seconds(2);
     } else {
-      // Start recording — create MJPEG file in capture directory.
+      // Start recording — create video file in capture directory.
       std::string capDir = ensureDateSubfolder(
           pcfg.captureDir, s.overlay.settings.useDateSubfolders);
       std::string vidName;
@@ -1416,17 +1435,27 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
         vidName = makeCaptureFilename(capDir, pcfg.capturePrefix,
                                       OutputFormat::JPEG);
       }
-      // Replace .jpg extension with .mjpeg
+      // Replace .jpg extension with codec-appropriate extension.
+      const char *ext = ".mjpeg";
+      if (s.overlay.settings.videoCodec == VideoCodec::YUV)
+        ext = ".yuv";
+      else if (s.overlay.settings.videoCodec == VideoCodec::H264)
+        ext = ".h264";
       auto dot = vidName.rfind('.');
       if (dot != std::string::npos)
-        vidName = vidName.substr(0, dot) + ".mjpeg";
+        vidName = vidName.substr(0, dot) + ext;
       else
-        vidName += ".mjpeg";
+        vidName += ext;
       s.videoPath = vidName;
       s.videoFrameCount = 0;
       s.videoRecording = true;
       s.videoStartTime = std::chrono::steady_clock::now();
+      auto dims =
+          videoResolutionDims(s.overlay.settings.videoResolution);
       std::cout << "Preview: video recording started (" << s.videoPath
+                << ", " << dims.width << "x" << dims.height << "@"
+                << s.overlay.settings.videoFps << "fps, "
+                << videoCodecLabel(s.overlay.settings.videoCodec)
                 << ")\n";
     }
     s.screenDirty = true;
@@ -1932,10 +1961,21 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
     return;
   }
   if (evt.pressed && evt.id == ButtonId::Key2) {
-    // Exit settings — reconfigure camera if capture format changed.
-    if (s.overlay.settings.captureFormat != s.capFmt) {
+    // Exit settings — reconfigure camera if capture format or sensor mode
+    // changed.
+    uint32_t capW = pcfg.captureWidth;
+    uint32_t capH = pcfg.captureHeight;
+    auto smDims = sensorModeDims(s.overlay.settings.sensorMode);
+    if (smDims.width > 0 && smDims.height > 0) {
+      capW = smDims.width;
+      capH = smDims.height;
+    }
+    if (s.overlay.settings.captureFormat != s.capFmt ||
+        s.overlay.settings.sensorMode != s.prevSensorMode) {
       std::cout << "Preview: reconfiguring for format "
-                << extensionFor(s.overlay.settings.captureFormat) << "\n";
+                << extensionFor(s.overlay.settings.captureFormat)
+                << " sensor "
+                << sensorModeLabel(s.overlay.settings.sensorMode) << "\n";
       // Join any in-flight capture worker before reconfiguring:
       // reconfigureStill() calls stop() (wakes the worker via stillCv_)
       // then start(). The worker must be finished before start()
@@ -1949,13 +1989,14 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.captureActive = false;
       s.captureDone.store(false, std::memory_order_release);
       if (!cam.reconfigureStill(pcfg.previewWidth, pcfg.previewHeight,
-                                pcfg.captureWidth, pcfg.captureHeight,
+                                capW, capH,
                                 s.overlay.settings.captureFormat)) {
         std::cerr << "Preview: reconfigure failed — exiting\n";
         stop.requestStop();
         return;
       }
       s.capFmt = s.overlay.settings.captureFormat;
+      s.prevSensorMode = s.overlay.settings.sensorMode;
     }
     // Save settings on exit
     saveSettings(s.overlay.settings, defaultSettingsPath());
@@ -1965,7 +2006,7 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
                      static_cast<int>(s.overlay.settings.customMode));
     // Apply updated controls to the still stream
     CameraConfig stillCfg = settingsToCameraConfig(
-        s.overlay.settings, pcfg.captureWidth, pcfg.captureHeight);
+        s.overlay.settings, capW, capH);
     cam.updateStillConfig(stillCfg);
     s.mode = CameraMode::Viewfinder;
     s.screenDirty = true;
