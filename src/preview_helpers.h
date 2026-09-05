@@ -6,6 +6,7 @@
 // (std::filesystem) — no libcamera/libgpiod dependency.
 
 #include "camera_config.h"
+#include "camera_mode.h"
 
 #include <string>
 #include <vector>
@@ -22,6 +23,17 @@ std::string makeCaptureFilename(const std::string &dir,
                                 const std::string &prefix,
                                 OutputFormat fmt);
 
+// Generate a sequentially-numbered filename: prefix_IMGXXXX.ext
+// Finds the highest existing IMG number in the directory and increments.
+std::string makeSequentialFilename(const std::string &dir,
+                                   const std::string &prefix,
+                                   OutputFormat fmt);
+
+// Create a date-based subfolder (YYYY-MM-DD) under dir if useDateSubfolders
+// is true. Returns the (possibly new) directory path. If false, returns dir
+// unchanged. Creates the subfolder if it doesn't exist.
+std::string ensureDateSubfolder(const std::string &dir, bool useDateSubfolders);
+
 // Check that there's enough disk space for a capture.
 // Returns true if at least `minBytes` is available. Fails closed (returns
 // false) if the filesystem can't be queried — safer than silently allowing
@@ -34,5 +46,20 @@ bool hasDiskSpace(const std::string &dir,
 // List captured image files in the capture directory, sorted by modification
 // time (newest first). Used by the playback browser.
 std::vector<std::string> listCaptures(const std::string &dir);
+
+// --- File protection (playback) ---
+// Protected files are tracked in a `.protected` marker file in the capture
+// directory, listing protected basenames (one per line). This avoids needing
+// root (chattr +i) and is portable across filesystems.
+
+// Returns true if the file (by basename) is in the .protected list.
+bool isFileProtected(const std::string &dir, const std::string &filename);
+
+// Toggle protection for a file. Returns true if the file is protected after
+// the toggle, false if unprotected (or on error).
+bool toggleFileProtection(const std::string &dir, const std::string &filename);
+
+// Returns the set of protected basenames in the capture directory.
+std::vector<std::string> listProtectedFiles(const std::string &dir);
 
 } // namespace picamera

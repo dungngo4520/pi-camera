@@ -6,13 +6,24 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <set>
 #include <sys/statvfs.h>
 
 namespace picamera {
+
+namespace {
+std::string toLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+} // namespace
 
 std::string makeCaptureFilename(const std::string &dir,
                                 const std::string &prefix,
@@ -75,11 +86,7 @@ std::vector<std::string> listCaptures(const std::string &dir) {
                 // pointing outside the capture dir should not appear as a
                 // capturable image in the playback browser.
                 if (!fs::is_regular_file(entry.symlink_status())) continue;
-                auto ext = entry.path().extension().string();
-                // Lowercase compare (cast to unsigned char to avoid UB
-                // on negative char values with non-ASCII paths).
-                std::transform(ext.begin(), ext.end(), ext.begin(),
-                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                std::string ext = toLower(entry.path().extension().string());
                 if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
                     ext == ".dng" || ext == ".ppm" || ext == ".raw") {
                     // Use the error_code overload of last_write_time so a
@@ -104,6 +111,145 @@ std::vector<std::string> listCaptures(const std::string &dir) {
         std::cerr << "Preview: failed to list captures: " << e.what() << "\n";
     }
     return files;
+}
+
+std::string makeSequentialFilename(const std::string &dir,
+                                   const std::string &prefix,
+                                   OutputFormat fmt) {
+    namespace fs = std::filesystem;
+    int maxNum = 0;
+    std::string ext = std::string(extensionFor(fmt));
+    std::string extLower = toLower(ext);
+    try {
+        if (fs::exists(dir)) {
+            for (const auto &entry : fs::directory_iterator(dir)) {
+                try {
+                    if (!fs::is_regular_file(entry.symlink_status())) continue;
+                    std::string name = entry.path().filename().string();
+                    // Match prefix_IMGXXXX.ext pattern
+                    std::string needle = prefix + "_IMG";
+                    if (name.size() <= needle.size() + ext.size() + 1) continue;
+                    if (name.compare(0, needle.size(), needle) != 0) continue;
+                    if (toLower(entry.path().extension().string()) != "." + extLower) continue;
+                    size_t numStart = needle.size();
+                    size_t dotPos = name.rfind('.');
+                    if (dotPos == std::string::npos || dotPos <= numStart) continue;
+                    std::string numStr = name.substr(numStart, dotPos - numStart);
+                    if (numStr.empty()) continue;
+                    bool allDigits = true;
+                    for (char c : numStr) {
+                        if (c < '0' || c > '9') { allDigits = false; break; }
+                    }
+                    if (!allDigits) continue;
+                    int num = 0;
+                    try { num = std::stoi(numStr); } catch (...) { continue; }
+                    maxNum = std::max(num, maxNum);
+                } catch (const std::exception &) { continue; }
+            }
+        }
+    } catch (const std::exception &) { // directory access failure — start at 1
+        maxNum = 0;
+    }
+    int nextNum = maxNum + 1;
+    char numBuf[16];
+    std::snprintf(numBuf, sizeof(numBuf), "IMG%04d", nextNum);
+    return safeCapturePath(dir, prefix, numBuf, ext);
+}
+
+std::string ensureDateSubfolder(const std::string &dir, bool useDateSubfolders) {
+    if (!useDateSubfolders) return dir;
+    auto now = std::chrono::system_clock::now();
+    auto nowT = std::chrono::system_clock::to_time_t(now);
+    std::tm tm;
+    std::tm *tmPtr = nullptr;
+#ifdef _WIN32
+    if (std::localtime_s(&tm, &nowT) == 0) tmPtr = &tm;
+#else
+    tmPtr = localtime_r(&nowT, &tm);
+#endif
+    if (!tmPtr) return dir;
+    char dateBuf[16] = {};
+    if (std::strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", tmPtr) == 0) return dir;
+    namespace fs = std::filesystem;
+    fs::path sub = fs::path(dir) / dateBuf;
+    std::error_code ec;
+    if (!fs::exists(sub, ec)) {
+        fs::create_directories(sub, ec);
+    }
+    return sub.string();
+}
+
+// --- File protection ---
+
+namespace {
+
+std::string protectedListPath(const std::string &dir) {
+    namespace fs = std::filesystem;
+    return (fs::path(dir) / ".protected").string();
+}
+
+std::string basenameOf(const std::string &path) {
+    namespace fs = std::filesystem;
+    return fs::path(path).filename().string();
+}
+
+} // namespace
+
+std::vector<std::string> listProtectedFiles(const std::string &dir) {
+    std::vector<std::string> result;
+    std::ifstream f(protectedListPath(dir));
+    if (!f.is_open()) return result;
+    std::string line;
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+            line.pop_back();
+        if (!line.empty()) result.push_back(line);
+    }
+    return result;
+}
+
+bool isFileProtected(const std::string &dir, const std::string &filename) {
+    std::string base = basenameOf(filename);
+    if (base.empty()) return false;
+    auto protectedList = listProtectedFiles(dir);
+    return std::find(protectedList.begin(), protectedList.end(), base) !=
+           protectedList.end();
+}
+
+bool toggleFileProtection(const std::string &dir, const std::string &filename) {
+    std::string base = basenameOf(filename);
+    if (base.empty()) return false;
+
+    auto current = listProtectedFiles(dir);
+    std::set<std::string> protectedSet(current.begin(), current.end());
+
+    bool nowProtected;
+    if (protectedSet.contains(base)) {
+        protectedSet.erase(base);
+        nowProtected = false;
+    } else {
+        protectedSet.insert(base);
+        nowProtected = true;
+    }
+
+    // Write the updated list back. Use a temp file + rename for atomicity.
+    std::string listPath = protectedListPath(dir);
+    std::string tmpPath = listPath + ".tmp";
+    {
+        std::ofstream f(tmpPath);
+        if (!f.is_open()) return false;
+        for (const auto &name : protectedSet) {
+            f << name << "\n";
+        }
+        if (!f.good()) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, listPath, ec);
+    if (ec) {
+        std::filesystem::remove(tmpPath, ec);
+        return false;
+    }
+    return nowProtected;
 }
 
 } // namespace picamera

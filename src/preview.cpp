@@ -8,6 +8,10 @@
 #include "camera_mode.h"
 #include "safe_path.h"
 #include "preview_helpers.h"
+#include "settings_menu.h"
+#include "hardware_config.h"
+#include "wifi_server.h"
+#include "bt_server.h"
 
 #ifdef HAVE_GPIOD
 #include "display.h"
@@ -17,6 +21,7 @@
 
 #include <iostream>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <chrono>
 #include <thread>
@@ -39,26 +44,14 @@ constexpr uint32_t kStatsIntervalFrames = 60;
 constexpr int kSplashDurationMs = 1500;
 // Review screen duration (ms) — how long the last capture is shown
 constexpr int kReviewDurationMs = 2000;
-// Inactivity timeout before the display backlight is turned off (auto-power-off).
-constexpr int kSleepTimeoutSec = 30;
 // Shutter press duration threshold: below = capture (quick tap), at/above = metering lock.
 constexpr int kShutterHoldMs = 500;
 // Number of playback entries visible without scrolling.
 constexpr int kPlaybackVisible = 8;
-// Number of items in the on-camera settings menu.
-constexpr int kSettingsCount = 7;
-// Named indices for the settings menu (matches the order drawn by
-// drawSettingsScreen). Using named constants prevents silent breakage
-// when settings are reordered or added.
-enum SettingIndex : int {
-    kSettingFormat = 0,
-    kSettingJpegQuality = 1,
-    kSettingGrid = 2,
-    kSettingHistogram = 3,
-    kSettingBrightness = 4,
-    kSettingTimer = 5,
-    kSettingExit = 6,
-};
+// Max burst frames for continuous shooting (Pi Zero CPU limit).
+constexpr int kMaxBurstFrames = 3;
+// Number of settings tabs (Shooting, Image, Display, System).
+constexpr int kSettingsTabCount = 4;
 
 // Non-blocking capture: queues the still and launches a background thread
 // to wait for completion. The viewfinder keeps streaming. The caller polls
@@ -76,13 +69,29 @@ enum SettingIndex : int {
 // The worker thread locks captureMtx when writing the strings, then stores
 // captureDone=true (release). The main thread loads captureDone=true
 // (acquire), joins the thread, then locks captureMtx to read the strings.
+// Forward declaration — captureDngJpegAsync is defined below but called
+// from captureStillAsync when the format is DngJpeg with no overrides.
+std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
+                                  const CameraSettings &settings,
+                                  std::atomic<bool> &captureDone,
+                                  std::atomic<bool> &captureSuccess,
+                                  std::string &captureFilename,
+                                  std::string &errorMsg,
+                                  std::mutex &captureMtx,
+                                  uint64_t exposureOverride);
+
 std::jthread captureStillAsync(DualStream &cam, const PreviewConfig &pcfg,
                               const CameraSettings &settings,
                               std::atomic<bool> &captureDone,
                               std::atomic<bool> &captureSuccess,
                               std::string &captureFilename,
                               std::string &errorMsg,
-                              std::mutex &captureMtx) {
+                              std::mutex &captureMtx,
+                              float evOverride,
+                              float wbRedOverride,
+                              float wbBlueOverride,
+                              uint64_t exposureOverride,
+                              float gainOverride) {
     captureDone.store(false, std::memory_order_release);
     captureSuccess.store(false, std::memory_order_release);
     {
@@ -97,10 +106,23 @@ std::jthread captureStillAsync(DualStream &cam, const PreviewConfig &pcfg,
     // exited settings yet (which triggers reconfigureStill).
     OutputFormat fmt = cam.stillFormat();
 
+    // DngJpeg format: use sequential DNG+JPEG capture for single shots.
+    // For bracket/burst (non-zero EV/WB overrides), fall through to the
+    // normal JPEG-only path — DngJpeg bracketing would produce too many
+    // files and the reconfigure overhead would be excessive.
+    if (fmt == OutputFormat::DngJpeg && evOverride == 0.0f && wbRedOverride == 0.0f) {
+        return captureDngJpegAsync(cam, pcfg, settings, captureDone, captureSuccess,
+                                   captureFilename, errorMsg, captureMtx,
+                                   exposureOverride);
+    }
+
     // Size the disk-space threshold to the capture format:
     // - JPEG/PNG: full-res ~5-10 MB, 50 MB is generous.
     // - DNG/RAW: full-res IMX477 10-bit ~15-20 MB, need 64 MB headroom.
-    uint64_t minBytes = (fmt == OutputFormat::DNG || fmt == OutputFormat::RAW_NV12)
+    // - DngJpeg: needs both DNG + JPEG, so use the larger DNG threshold.
+    // - RawJpeg: needs NV12 + JPEG, use the larger threshold.
+    uint64_t minBytes = (fmt == OutputFormat::DNG || fmt == OutputFormat::RAW_NV12 ||
+                         fmt == OutputFormat::DngJpeg || fmt == OutputFormat::RawJpeg)
                             ? 64ull * 1024 * 1024
                             : 50ull * 1024 * 1024;
     if (!hasDiskSpace(pcfg.captureDir, minBytes)) {
@@ -114,18 +136,40 @@ std::jthread captureStillAsync(DualStream &cam, const PreviewConfig &pcfg,
     }
 
     // Start from the CLI camera config (preserves exposure/gain/AWB)
-    // and override only the JPEG quality from the settings menu.
-    CameraConfig stillCfg = pcfg.cameraCfg;
+    // and override with the full settings menu config.
+    CameraConfig stillCfg = settingsToCameraConfig(settings,
+        pcfg.captureWidth, pcfg.captureHeight);
+    // Merge in CLI-only fields that settingsToCameraConfig doesn't set
     stillCfg.jpegQuality = settings.jpegQuality;
+    // Bulb mode: override the exposure time with the user-measured value
+    // and force manual exposure (AE off) for this single capture.
+    if (exposureOverride > 0) {
+        stillCfg.exposureTime = exposureOverride;
+        stillCfg.aeEnable = false;
+    }
     cam.updateStillConfig(stillCfg);
 
-    // Pass the timestamped name straight to the writer; it opens with
-    // O_EXCL and, on a collision, appends a _2/_3 suffix atomically,
-    // reporting the real path via waitCaptureDone()'s savedPath out-param.
-    // Probing with lstat first would be a redundant TOCTOU race that
-    // duplicates the writer's own suffix logic.
-    std::string filename =
-        makeCaptureFilename(pcfg.captureDir, pcfg.capturePrefix, fmt);
+    // Set bracketing overrides (EV for AE bracket, WB gains for WB bracket,
+    // analogue gain for ISO bracket). These are applied by
+    // DualStream::applyControls() for the still request and cleared
+    // automatically after the capture completes.
+    cam.setStillEvOverride(evOverride);
+    if (wbRedOverride > 0.0f) {
+        cam.setStillWbOverride(wbRedOverride, wbBlueOverride);
+    } else {
+        cam.setStillWbOverride(0.0f, 0.0f);
+    }
+    cam.setStillGainOverride(gainOverride);
+
+    // Build the capture filename (with optional date subfolder).
+    std::string capDir = ensureDateSubfolder(pcfg.captureDir,
+                                              settings.useDateSubfolders);
+    std::string filename;
+    if (settings.fileNamingMode == FileNamingMode::Sequential) {
+        filename = makeSequentialFilename(capDir, pcfg.capturePrefix, fmt);
+    } else {
+        filename = makeCaptureFilename(capDir, pcfg.capturePrefix, fmt);
+    }
 
     if (filename.empty()) {
         {
@@ -180,6 +224,190 @@ std::jthread captureStillAsync(DualStream &cam, const PreviewConfig &pcfg,
     });
 }
 
+// Sequential DNG+JPEG capture (true mirrorless RAW+JPEG). The camera starts
+// in NV12 still mode (for JPEG). This function:
+//   1. Captures NV12 still → saves JPEG (viewfinder keeps streaming)
+//   2. Reconfigures to raw Bayer → captures → saves DNG (VF pauses briefly)
+//   3. Reconfigures back to NV12 still (VF resumes)
+// The viewfinder continues during phase 1; phases 2-3 cause a brief blackout
+// (~2-4s) while the camera stops/restarts — acceptable for RAW+JPEG, like a
+// real camera's brief delay. The "SAVING..." indicator shows throughout.
+// Both files are valid: an openable JPEG and an openable DNG with real raw
+// Bayer data.
+//
+// Thread-safety: the main loop's grabFrame returns empty frames during
+// reconfigure (camera stopped), and checkCaptureCompletion won't fire until
+// captureDone is set (after all phases complete). The main loop handles
+// frame timeouts gracefully, so no deadlock or crash.
+std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
+                                  const CameraSettings &settings,
+                                  std::atomic<bool> &captureDone,
+                                  std::atomic<bool> &captureSuccess,
+                                  std::string &captureFilename,
+                                  std::string &errorMsg,
+                                  std::mutex &captureMtx,
+                                  uint64_t exposureOverride) {
+    captureDone.store(false, std::memory_order_release);
+    captureSuccess.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(captureMtx);
+        errorMsg.clear();
+    }
+
+    // Check disk space (need room for both DNG + JPEG).
+    if (!hasDiskSpace(pcfg.captureDir, 64ull * 1024 * 1024)) {
+        std::cerr << "Preview: insufficient disk space for DNG+JPEG capture\n";
+        {
+            std::lock_guard<std::mutex> lk(captureMtx);
+            errorMsg = "CARD FULL";
+        }
+        captureDone.store(true, std::memory_order_release);
+        return {};
+    }
+
+    CameraConfig stillCfg = settingsToCameraConfig(settings,
+        pcfg.captureWidth, pcfg.captureHeight);
+    stillCfg.jpegQuality = settings.jpegQuality;
+    // Bulb mode: override the exposure time with the user-measured value.
+    if (exposureOverride > 0) {
+        stillCfg.exposureTime = exposureOverride;
+        stillCfg.aeEnable = false;
+    }
+    cam.updateStillConfig(stillCfg);
+
+    // Build the JPEG filename (primary; extensionFor(DngJpeg) = "jpg").
+    std::string capDir = ensureDateSubfolder(pcfg.captureDir,
+                                              settings.useDateSubfolders);
+    std::string jpegFilename;
+    if (settings.fileNamingMode == FileNamingMode::Sequential) {
+        jpegFilename = makeSequentialFilename(capDir, pcfg.capturePrefix,
+                                               OutputFormat::DngJpeg);
+    } else {
+        jpegFilename = makeCaptureFilename(capDir, pcfg.capturePrefix,
+                                            OutputFormat::DngJpeg);
+    }
+    if (jpegFilename.empty()) {
+        {
+            std::lock_guard<std::mutex> lk(captureMtx);
+            errorMsg = "BAD FILENAME";
+        }
+        captureDone.store(true, std::memory_order_release);
+        return {};
+    }
+
+    // Derive the DNG filename inside the thread from the *actual* saved JPEG
+    // path (which may carry a _2/_3 suffix from O_EXCL collision handling) so
+    // the companion DNG always matches the JPEG that was really written.
+    uint32_t vfW = pcfg.previewWidth, vfH = pcfg.previewHeight;
+    uint32_t capW = pcfg.captureWidth, capH = pcfg.captureHeight;
+
+    return std::jthread([&cam, &captureDone, &captureSuccess,
+                        &captureFilename, &errorMsg, &captureMtx,
+                        jpegFilename,
+                        vfW, vfH, capW, capH,
+                        &settings, exposureOverride]() {
+        constexpr int kStillTimeoutMs = 10000;  // generous for full-res + DNG
+
+        // Phase 1: Capture JPEG (NV12 still stream — VF keeps streaming).
+        std::string jpegSavedPath;
+        bool jpegOk = false;
+        if (cam.captureStill(jpegFilename)) {
+            jpegOk = cam.waitCaptureDone(kStillTimeoutMs, &jpegSavedPath);
+        }
+        if (!jpegOk) {
+            std::cerr << "Preview: DNG+JPEG — JPEG phase failed\n";
+            {
+                std::lock_guard<std::mutex> lk(captureMtx);
+                errorMsg = "JPEG FAIL";
+            }
+            captureDone.store(true, std::memory_order_release);
+            return;
+        }
+        std::cout << "Preview: DNG+JPEG — JPEG saved, capturing DNG...\n";
+
+        // Derive the DNG filename from the actual saved JPEG path so the
+        // companion pair stays in sync even when a _2/_3 suffix was added.
+        const std::string &jpegPath = jpegSavedPath.empty()
+                                          ? jpegFilename : jpegSavedPath;
+        auto se = splitPathStemExt(jpegPath);
+        std::string dngFilename = se.stem + ".dng";
+
+        // Phase 2: Reconfigure to raw Bayer (DNG). VF pauses during this.
+        if (!cam.reconfigureStill(vfW, vfH, capW, capH,
+                                  OutputFormat::DNG)) {
+            std::cerr << "Preview: DNG+JPEG — reconfigure to DNG failed\n";
+            // JPEG was saved successfully, so report partial success.
+            {
+                std::lock_guard<std::mutex> lk(captureMtx);
+                captureFilename = jpegSavedPath.empty() ? jpegFilename : jpegSavedPath;
+                errorMsg = "DNG RECONFIG FAIL";
+            }
+            captureSuccess.store(true, std::memory_order_release);
+            captureDone.store(true, std::memory_order_release);
+            return;
+        }
+
+        // Re-apply still config for the DNG capture (reconfigure resets it).
+        CameraConfig dngCfg = settingsToCameraConfig(settings, capW, capH);
+        if (exposureOverride > 0) {
+            dngCfg.exposureTime = exposureOverride;
+            dngCfg.aeEnable = false;
+        }
+        cam.updateStillConfig(dngCfg);
+
+        // Phase 3: Capture DNG (raw Bayer stream).
+        std::string dngSavedPath;
+        bool dngOk = false;
+        if (cam.captureStill(dngFilename)) {
+            dngOk = cam.waitCaptureDone(kStillTimeoutMs, &dngSavedPath);
+        }
+
+        // Phase 4: Reconfigure back to DngJpeg (NV12 still). VF resumes.
+        // Even if the DNG capture failed, we must reconfigure back so the
+        // camera is in a usable state for subsequent captures.
+        if (!cam.reconfigureStill(vfW, vfH, capW, capH,
+                                  OutputFormat::DngJpeg)) {
+            std::cerr << "Preview: DNG+JPEG — reconfigure back failed — exiting\n";
+            {
+                std::lock_guard<std::mutex> lk(captureMtx);
+                errorMsg = "RECONFIG FAIL";
+            }
+            captureDone.store(true, std::memory_order_release);
+            return;
+        }
+        // Re-apply still config after reconfigure back.
+        CameraConfig backCfg = settingsToCameraConfig(settings, capW, capH);
+        if (exposureOverride > 0) {
+            backCfg.exposureTime = exposureOverride;
+            backCfg.aeEnable = false;
+        }
+        cam.updateStillConfig(backCfg);
+
+        if (dngOk) {
+            {
+                std::lock_guard<std::mutex> lk(captureMtx);
+                captureFilename = jpegSavedPath.empty() ? jpegFilename : jpegSavedPath;
+            }
+            std::cout << "Preview: saved DNG+JPEG: "
+                      << (dngSavedPath.empty() ? dngFilename : dngSavedPath)
+                      << " + "
+                      << (jpegSavedPath.empty() ? jpegFilename : jpegSavedPath)
+                      << "\n";
+            captureSuccess.store(true, std::memory_order_release);
+        } else {
+            std::cerr << "Preview: DNG+JPEG — DNG phase failed (JPEG saved)\n";
+            {
+                std::lock_guard<std::mutex> lk(captureMtx);
+                captureFilename = jpegSavedPath.empty() ? jpegFilename : jpegSavedPath;
+                errorMsg = "DNG FAIL";
+            }
+            // JPEG was saved, so report partial success for the review screen.
+            captureSuccess.store(true, std::memory_order_release);
+        }
+        captureDone.store(true, std::memory_order_release);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Preview loop state + extracted helpers.
 //
@@ -196,6 +424,8 @@ std::jthread captureStillAsync(DualStream &cam, const PreviewConfig &pcfg,
 struct PreviewState {
     // Framebuffer + timing
     size_t dispPixels = 0;
+    uint32_t dispW = 0;
+    uint32_t dispH = 0;
     std::vector<uint8_t> rgb565;
     std::chrono::microseconds frameDelay{50000};
     uint32_t frameCount = 0;
@@ -212,6 +442,13 @@ struct PreviewState {
     std::vector<std::string> playbackFiles;
     int playbackIdx = 0;
     int playbackScroll = 0;
+    // Image view zoom: 1=1x, 2=2x, 4=4x. Pan offset in source pixels.
+    int imageViewZoom = 1;
+    int imageViewPanX = 0;
+    int imageViewPanY = 0;
+    // Slideshow: auto-advance through playback images.
+    bool slideshowActive = false;
+    std::chrono::steady_clock::time_point slideshowNextAdvance;
 
     // Image viewer state (decoded image for full-screen view)
     std::vector<uint8_t> imageViewPixels;
@@ -227,8 +464,33 @@ struct PreviewState {
     bool timerActive = false;
     std::chrono::steady_clock::time_point timerEndTime;
 
+    // Bulb mode state: first shutter press starts a counting-up timer;
+    // second press captures with the elapsed time as the exposure.
+    bool bulbActive = false;
+    std::chrono::steady_clock::time_point bulbStartTime;
+
+    // Timelapse state
+    std::chrono::steady_clock::time_point timelapseNextCapture;
+    int timelapseShotsTaken = 0;
+
+    // Burst/bracket remaining frames
+    int burstRemaining = 0;
+    int bracketIndex = 0;  // current bracket frame index
+    BracketType bracketMode = BracketType::AE;  // bracket type for current sequence
+
     // Metering lock state (AE/AWB lock via long shutter hold)
     bool meteringLocked = false;
+
+    // Focus magnifier pan offset (in viewfinder source pixels). When the
+    // focus magnifier is active (2x or 4x), the joystick pans the crop
+    // region within the 320x240 viewfinder. Pan range is clamped so the
+    // crop region stays within the frame.
+    int focusMagPanX = 0;
+    int focusMagPanY = 0;
+
+    // File protection state (ImageView mode). True when the currently
+    // displayed image is protected (in the .protected list).
+    bool fileProtected = false;
 
     // Error message with expiry (for on-screen display)
     std::string persistentError;
@@ -259,7 +521,73 @@ struct PreviewState {
     bool batteryOk = false;
     BatteryReading lastBattery;
     std::chrono::steady_clock::time_point lastBatteryRead;
+
+    // Wi-Fi server
+    WifiServer wifiServer;
+    std::mutex wifiSettingsMtx;
+    std::atomic<bool> wifiCaptureRequest{false};
+    std::atomic<int> wifiBatteryPercent{0};
+    std::atomic<uint32_t> wifiCaptureCount{0};
+
+    // Bluetooth server (shares wifiSettingsMtx + overlay.settings)
+    BtServer btServer;
+    std::atomic<bool> btCaptureRequest{false};
 };
+
+struct BracketOverride { float ev, wbRed, wbBlue, gain; };
+BracketOverride computeBracketOverride(const PreviewState &s, int index) {
+    BracketOverride o{0.0f, 0.0f, 0.0f, 0.0f};
+    float ev = s.overlay.settings.bracketEv[index];
+    if (s.bracketMode == BracketType::WB) {
+        o.wbRed = 1.0f + ev * 0.2f;
+        o.wbBlue = 1.0f - ev * 0.2f;
+    } else if (s.bracketMode == BracketType::ISO) {
+        float baseGain = (s.overlay.settings.analogueGain > 0.0f)
+            ? s.overlay.settings.analogueGain : 1.0f;
+        o.gain = baseGain * std::pow(2.0f, ev);
+    } else {
+        o.ev = ev;
+    }
+    return o;
+}
+
+void launchCapture(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg,
+                   St7735Display &display, float evOv, float wbRed,
+                   float wbBlue, uint64_t exposureOverride, float gainOv) {
+    display.flash();
+    {
+        std::lock_guard<std::mutex> lk(s.captureMtx);
+        s.captureErrorMsg.clear();
+    }
+    s.captureThread = captureStillAsync(cam, pcfg, s.overlay.settings,
+                                      s.captureDone, s.captureSuccess,
+                                      s.captureFilename, s.captureErrorMsg,
+                                      s.captureMtx, evOv, wbRed, wbBlue,
+                                      exposureOverride, gainOv);
+    s.captureActive = s.captureThread.joinable();
+}
+
+void handleRemoteCaptureRequest(PreviewState &s, DualStream &cam,
+                                const PreviewConfig &pcfg, St7735Display &display,
+                                std::atomic<bool> &request, const char *label) {
+    if (!request.load(std::memory_order_acquire)) return;
+    request.store(false, std::memory_order_release);
+    if (s.captureActive || s.overlay.timelapseRunning || s.timerActive ||
+        s.overlay.settings.driveMode == DriveMode::Bulb) return;
+    std::cout << "Preview: " << label << " capture request — capturing...\n";
+    launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f, 0, 0.0f);
+}
+
+void exitImageView(PreviewState &s) {
+    s.deleteConfirmDeadline = {};
+    s.mode = CameraMode::Playback;
+    s.imageViewPixels.clear();
+    s.imageViewPath.clear();
+    s.slideshowActive = false;
+    s.imageViewZoom = 1;
+    s.imageViewPanX = 0;
+    s.imageViewPanY = 0;
+}
 
 // Canonicalize and verify/create the capture directory. Returns false on
 // failure (after logging). Mutates pcfg.captureDir to the canonicalized path.
@@ -352,10 +680,9 @@ void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
         // Decode for review screen (like a real camera)
         s.reviewPixels = decodeImageToRgb565(
             savedPath, display.width(), display.height());
-        // Only switch to Review if we're in Viewfinder — if the user
-        // navigated to Playback/Settings/ImageView during a long capture,
-        // don't yank them out of their current mode.
-        if (s.mode == CameraMode::Viewfinder) {
+        // Only switch to Review if we're in Viewfinder and not in a burst/timelapse
+        if (s.mode == CameraMode::Viewfinder && s.burstRemaining <= 0 &&
+            !s.overlay.timelapseRunning) {
             s.mode = CameraMode::Review;
             s.reviewStart = std::chrono::steady_clock::now();
             s.screenDirty = true;
@@ -366,6 +693,9 @@ void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
         // Force redraw so the error is visible even in static modes
         // (Review/Playback/Settings) that only render when screenDirty.
         s.screenDirty = true;
+        // On error, cancel any remaining burst/timelapse
+        s.burstRemaining = 0;
+        s.overlay.timelapseRunning = false;
     }
     // Reset captureDone so the completion handler doesn't re-trigger next frame.
     s.captureDone.store(false, std::memory_order_release);
@@ -393,6 +723,14 @@ void updateOverlayState(PreviewState &s, DualStream &cam) {
     if (s.batteryOk && s.lastBattery.valid && s.lastBattery.percent < 15) {
         s.overlay.errorMessage = "LOW BATTERY";
     }
+
+    // Sync Wi-Fi server atomics with current state
+    s.wifiBatteryPercent.store(
+        s.batteryOk && s.lastBattery.valid ? s.lastBattery.percent : 0,
+        std::memory_order_release);
+    s.wifiCaptureCount.store(s.captureCount, std::memory_order_release);
+    s.overlay.wifiActive = s.wifiServer.isRunning();
+    s.overlay.btActive = s.btServer.isRunning();
 }
 
 // Advance the self-timer: draw countdown, capture when expired. Defers the
@@ -413,22 +751,39 @@ void handleSelfTimer(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg
             s.timerActive = false;
             s.overlay.timerRemaining = 0;
             std::cout << "Preview: self-timer expired — capturing...\n";
-            display.flash();
-            {
-                std::lock_guard<std::mutex> lk(s.captureMtx);
-                s.captureErrorMsg.clear();
-            }
-            s.captureThread = captureStillAsync(cam, pcfg, s.overlay.settings,
-                                              s.captureDone, s.captureSuccess,
-                                              s.captureFilename, s.captureErrorMsg,
-                                              s.captureMtx);
-            s.captureActive = s.captureThread.joinable();
+            launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f, 0, 0.0f);
         }
     } else {
         auto remaining = std::chrono::duration_cast<std::chrono::seconds>(
             s.timerEndTime - now).count() + 1;
         s.overlay.timerRemaining = static_cast<uint32_t>(remaining);
     }
+}
+
+// Handle timelapse capture: fires at each interval until count is reached
+// or the user presses the shutter to stop.
+void handleTimelapse(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg,
+                     St7735Display &display) {
+    if (!s.overlay.timelapseRunning) return;
+    if (s.captureActive) return;  // wait for previous capture to finish
+
+    auto now = std::chrono::steady_clock::now();
+    if (now < s.timelapseNextCapture) return;
+
+    // Check if we've reached the target count (0 = unlimited)
+    if (s.overlay.settings.timelapseCount > 0 &&
+        s.timelapseShotsTaken >= s.overlay.settings.timelapseCount) {
+        s.overlay.timelapseRunning = false;
+        std::cout << "Preview: timelapse complete (" << s.timelapseShotsTaken << " shots)\n";
+        s.screenDirty = true;
+        return;
+    }
+
+    std::cout << "Preview: timelapse shot " << (s.timelapseShotsTaken + 1) << "\n";
+    launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f, 0, 0.0f);
+    s.timelapseShotsTaken++;
+    s.timelapseNextCapture = now +
+        std::chrono::seconds(s.overlay.settings.timelapseInterval);
 }
 
 // Render one viewfinder frame: grab, convert, dim, overlay, histogram, blit.
@@ -445,17 +800,56 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
         // camera stream has stalled.
         return false;
     }
-    if (!nv12ToRgb565Scaled(frame.y(), frame.uv(),
-                            frame.width, frame.height, frame.stride,
-                            frame.yData.size(), frame.uvData.size(),
-                            s.rgb565.data(), display.width(), display.height(),
-                            s.rgb565.size())) {
-        std::cerr << "Preview: nv12ToRgb565Scaled failed — skipping frame\n";
-        return false;
+    if (s.overlay.settings.focusMagnify > 0) {
+        // Focus magnifier: crop a region of the viewfinder and scale up.
+        // 2x: crop center half (srcW/2 x srcH/2), 4x: crop center quarter.
+        uint32_t mag = static_cast<uint32_t>(s.overlay.settings.focusMagnify);
+        uint32_t cropW = (frame.width / mag) & ~1u;
+        uint32_t cropH = (frame.height / mag) & ~1u;
+        // Base crop position is center; apply pan offset.
+        uint32_t cropX = ((frame.width - cropW) / 2) & ~1u;
+        uint32_t cropY = ((frame.height - cropH) / 2) & ~1u;
+        // Clamp pan so the crop region stays within the frame.
+        // Pan range: ±(frame.width - cropW)/2 X, ±(frame.height - cropH)/2 Y.
+        int maxPanX = static_cast<int>((frame.width - cropW) / 2);
+        int maxPanY = static_cast<int>((frame.height - cropH) / 2);
+        s.focusMagPanX = std::clamp(s.focusMagPanX, -maxPanX, maxPanX);
+        s.focusMagPanY = std::clamp(s.focusMagPanY, -maxPanY, maxPanY);
+        cropX = static_cast<uint32_t>(
+            std::max(0, static_cast<int>(cropX) + s.focusMagPanX)) & ~1u;
+        cropY = static_cast<uint32_t>(
+            std::max(0, static_cast<int>(cropY) + s.focusMagPanY)) & ~1u;
+        if (!nv12ToRgb565CroppedScaled(frame.y(), frame.uv(),
+                                frame.width, frame.height, frame.stride,
+                                frame.yData.size(), frame.uvData.size(),
+                                cropX, cropY, cropW, cropH,
+                                s.rgb565.data(), display.width(), display.height(),
+                                s.rgb565.size())) {
+            std::cerr << "Preview: nv12ToRgb565CroppedScaled failed — skipping frame\n";
+            return false;
+        }
+        s.overlay.focusMagnify = s.overlay.settings.focusMagnify;
+    } else {
+        if (!nv12ToRgb565Scaled(frame.y(), frame.uv(),
+                                frame.width, frame.height, frame.stride,
+                                frame.yData.size(), frame.uvData.size(),
+                                s.rgb565.data(), display.width(), display.height(),
+                                s.rgb565.size())) {
+            std::cerr << "Preview: nv12ToRgb565Scaled failed — skipping frame\n";
+            return false;
+        }
+        s.overlay.focusMagnify = 0;
+        s.focusMagPanX = 0;
+        s.focusMagPanY = 0;
     }
 
     applyBrightnessDimming(s.rgb565.data(), s.dispPixels,
                            s.overlay.settings.displayBrightness);
+
+    if (s.overlay.settings.aspectRatio != AspectRatio::Native) {
+        drawAspectRatioMask(s.rgb565.data(), display.width(), display.height(),
+                            s.overlay.settings.aspectRatio);
+    }
 
     // Check capture completion BEFORE building the overlay state, so
     // overlay.captureInProgress reflects the up-to-date value this frame.
@@ -469,15 +863,83 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
 
     updateOverlayState(s, cam);
     handleSelfTimer(s, cam, pcfg, display);
+    handleTimelapse(s, cam, pcfg, display);
+
+    handleRemoteCaptureRequest(s, cam, pcfg, display, s.wifiCaptureRequest, "Wi-Fi");
+    handleRemoteCaptureRequest(s, cam, pcfg, display, s.btCaptureRequest, "BT");
+
+    // Bulb mode: update the counting-up timer overlay while the exposure
+    // is "open" (between the first and second shutter press).
+    if (s.bulbActive) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - s.bulbStartTime).count();
+        s.overlay.bulbSeconds = static_cast<uint32_t>(elapsed);
+    } else {
+        s.overlay.bulbSeconds = 0;
+    }
+
+    // One-touch custom white balance: measure the current frame's average
+    // chroma and update the manual R/B gains. Armed by the WBSET settings
+    // action (wbMeasurePending); consumed here where the live frame is
+    // available. Switches AWB off so the computed gains take effect.
+    if (s.overlay.settings.wbMeasurePending) {
+        float red = 1.0f, blue = 1.0f;
+        if (computeWbGainsFromNv12(frame.uv(), frame.width, frame.height,
+                                   frame.uvData.size(), red, blue)) {
+            s.overlay.settings.wbRedGain = red;
+            s.overlay.settings.wbBlueGain = blue;
+            s.overlay.settings.awbEnable = false;
+            std::cout << "Preview: custom WB set R=" << red
+                      << " B=" << blue << "\n";
+            s.persistentError = "WB SET";
+            s.errorExpiry = std::chrono::steady_clock::now() +
+                std::chrono::seconds(2);
+        } else {
+            std::cerr << "Preview: custom WB measure failed\n";
+            s.persistentError = "WB FAIL";
+            s.errorExpiry = std::chrono::steady_clock::now() +
+                std::chrono::seconds(2);
+        }
+        s.overlay.settings.wbMeasurePending = false;
+        s.screenDirty = true;
+    }
+
+    // Fire next burst/bracket frame if remaining and previous is done
+    if (s.burstRemaining > 0 && !s.captureActive && !s.overlay.timelapseRunning) {
+        float evOv = 0.0f, wbRed = 0.0f, wbBlue = 0.0f, gainOv = 0.0f;
+        if (s.overlay.settings.driveMode == DriveMode::Bracket &&
+            !s.overlay.settings.bracketEv.empty() &&
+            s.bracketIndex < static_cast<int>(s.overlay.settings.bracketEv.size())) {
+            auto bo = computeBracketOverride(s, s.bracketIndex);
+            evOv = bo.ev; wbRed = bo.wbRed; wbBlue = bo.wbBlue; gainOv = bo.gain;
+            s.bracketIndex++;
+        }
+        std::cout << "Preview: burst frame (" << s.burstRemaining << " remaining)\n";
+        launchCapture(s, cam, pcfg, display, evOv, wbRed, wbBlue, 0, gainOv);
+        s.burstRemaining--;
+    }
 
     drawOverlay(s.rgb565.data(), display.width(), display.height(), s.overlay);
 
-    // Live histogram overlay (like a real camera's live histogram)
     if (s.overlay.settings.showHistogram) {
         size_t ySize = frame.yData.size();
         drawHistogram(s.rgb565.data(), display.width(), display.height(),
                       s.rgb565.size(), frame.y(), frame.width, frame.height,
                       frame.stride, ySize);
+    }
+
+    // Zebra stripes (overexposure blinkies) — drawn from the Y plane.
+    if (s.overlay.settings.zebraMode != ZebraMode::Off) {
+        drawZebra(s.rgb565.data(), display.width(), display.height(),
+                  s.rgb565.size(), frame.y(), frame.width, frame.height,
+                  frame.stride, frame.yData.size(),
+                  zebraThreshold(s.overlay.settings.zebraMode));
+    }
+
+    if (s.overlay.settings.focusPeaking) {
+        drawFocusPeaking(s.rgb565.data(), display.width(), display.height(),
+                         s.rgb565.size(), frame.y(), frame.width, frame.height,
+                         frame.stride, frame.yData.size());
     }
 
     if (!display.blit(s.rgb565.data())) {
@@ -528,11 +990,40 @@ void renderImageViewMode(PreviewState &s, St7735Display &display) {
         s.screenDirty = true;
         return;
     }
+    // Slideshow auto-advance: check if it's time to advance to the next image.
+    if (s.slideshowActive) {
+        auto now = std::chrono::steady_clock::now();
+        if (now >= s.slideshowNextAdvance) {
+            // Advance to next image
+            if (!s.playbackFiles.empty()) {
+                s.playbackIdx = (s.playbackIdx + 1) %
+                    static_cast<int>(s.playbackFiles.size());
+                const std::string &sel = s.playbackFiles[s.playbackIdx];
+                s.imageViewPixels = decodeImageToRgb565(
+                    sel, display.width(), display.height());
+                s.imageViewPath = sel;
+                s.imageViewZoom = 1;
+                s.imageViewPanX = 0;
+                s.imageViewPanY = 0;
+                s.slideshowNextAdvance = now + std::chrono::seconds(3);
+                s.screenDirty = true;
+            }
+        } else {
+            // Redraw periodically to update the countdown timer
+            s.screenDirty = true;
+        }
+    }
     if (s.screenDirty || s.mode != s.lastRenderedMode) {
-        drawImageView(s.rgb565.data(), display.width(), display.height(),
-                      s.rgb565.size(),
-                      s.imageViewPixels.data(), s.imageViewPixels.size(),
-                      s.imageViewPath);
+        drawImageViewZoomed(s.rgb565.data(), display.width(), display.height(),
+                            s.rgb565.size(),
+                            s.imageViewPixels.data(), s.imageViewPixels.size(),
+                            display.width(), display.height(),
+                            s.imageViewZoom, s.imageViewPanX, s.imageViewPanY,
+                            s.imageViewPath);
+        // Show protection indicator if the file is protected.
+        if (s.fileProtected) {
+            drawProtectionIndicator(s.rgb565.data(), display.width(), display.height());
+        }
         if (!display.blit(s.rgb565.data())) {
             std::cerr << "Preview: image view blit failed (SPI error)\n";
         }
@@ -557,8 +1048,10 @@ void renderSettingsMode(PreviewState &s, St7735Display &display) {
 // Check inactivity timeout and enter sleep if exceeded.
 void checkSleepTimeout(PreviewState &s, St7735Display &display,
                        std::chrono::steady_clock::time_point now) {
+    int timeout = s.overlay.settings.powerSaveTimeout;
+    if (timeout <= 0) return;  // 0 = never sleep
     if (s.mode == CameraMode::Viewfinder &&
-        now - s.lastActivity > std::chrono::seconds(kSleepTimeoutSec)) {
+        now - s.lastActivity > std::chrono::seconds(timeout)) {
         s.sleeping = true;
         display.setBacklight(false);
         std::cout << "Preview: entering sleep mode (inactivity)\n";
@@ -567,13 +1060,70 @@ void checkSleepTimeout(PreviewState &s, St7735Display &display,
 
 // Handle shutter release: quick tap = capture (or self-timer start),
 // long hold = AE/AWB metering lock (half-press emulation).
+// Drive mode dispatches: Single, SelfTimer, Bracket, Timelapse, Continuous.
 void handleShutterRelease(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg,
                           St7735Display &display, const ButtonEvent &evt) {
     if (evt.pressDurationMs >= 0 && evt.pressDurationMs < kShutterHoldMs) {
         // Re-entry guard: ignore the shutter while a capture is already in
         // flight (the worker thread is still saving the previous shot).
         if (s.captureActive) {
-            // already capturing — ignore
+        } else if (s.overlay.timelapseRunning) {
+            // Shutter press stops a running timelapse
+            s.overlay.timelapseRunning = false;
+            s.timelapseNextCapture = {};
+            std::cout << "Preview: timelapse stopped by shutter press\n";
+            s.screenDirty = true;
+        } else if (s.overlay.settings.driveMode == DriveMode::Timelapse) {
+            // Start timelapse
+            s.overlay.timelapseRunning = true;
+            s.timelapseNextCapture = std::chrono::steady_clock::now();
+            s.timelapseShotsTaken = 0;
+            std::cout << "Preview: timelapse started (interval="
+                      << s.overlay.settings.timelapseInterval << "s, count="
+                      << s.overlay.settings.timelapseCount << ")\n";
+            s.screenDirty = true;
+        } else if (s.overlay.settings.driveMode == DriveMode::Continuous) {
+            // Burst capture: fire kMaxBurstFrames shots in rapid succession
+            std::cout << "Preview: burst capture (" << kMaxBurstFrames << " frames)\n";
+            launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f, 0, 0.0f);
+            s.burstRemaining = kMaxBurstFrames - 1;
+        } else if (s.overlay.settings.driveMode == DriveMode::Bracket) {
+            // Bracket capture: fire one shot per bracketEv entry.
+            // AE bracket varies EV per frame; WB bracket varies WB gains;
+            // ISO bracket varies analogue gain per frame.
+            if (!s.overlay.settings.bracketEv.empty()) {
+                std::cout << "Preview: bracket capture ("
+                          << s.overlay.settings.bracketEv.size() << " frames)\n";
+                s.bracketIndex = 0;
+                s.bracketMode = s.overlay.settings.bracketType;
+                auto bo = computeBracketOverride(s, 0);
+                s.bracketIndex = 1;  // next frame uses index 1
+                launchCapture(s, cam, pcfg, display, bo.ev, bo.wbRed, bo.wbBlue, 0, bo.gain);
+                s.burstRemaining = static_cast<int>(s.overlay.settings.bracketEv.size()) - 1;
+            }
+        } else if (s.overlay.settings.driveMode == DriveMode::Bulb) {
+            // Bulb mode: two-press long exposure. First press starts a
+            // counting-up timer (the "shutter" is considered open); second
+            // press captures with the elapsed time as the exposure. This
+            // emulates holding the shutter open on a mechanical camera —
+            // electronic shutter can't truly stay open, so the user controls
+            // the exposure duration interactively.
+            if (s.bulbActive) {
+                // Second press — capture with the measured exposure time.
+                auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - s.bulbStartTime).count();
+                s.bulbActive = false;
+                s.overlay.bulbSeconds = 0;
+                if (elapsedUs <= 0) elapsedUs = 1;  // guard: min exposure
+                std::cout << "Preview: bulb capture (" << elapsedUs << "us)\n";
+                launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f,
+                              static_cast<uint64_t>(elapsedUs), 0.0f);
+            } else {
+                // First press — start the counting-up timer.
+                s.bulbActive = true;
+                s.bulbStartTime = std::chrono::steady_clock::now();
+                std::cout << "Preview: bulb timer started — press again to capture\n";
+            }
         } else if (s.overlay.settings.timerDuration > 0 && !s.timerActive) {
             // Start self-timer countdown
             s.timerActive = true;
@@ -582,19 +1132,10 @@ void handleShutterRelease(PreviewState &s, DualStream &cam, const PreviewConfig 
             std::cout << "Preview: self-timer started ("
                       << s.overlay.settings.timerDuration << "s)\n";
         } else if (!s.timerActive) {
-            // No timer — capture immediately
+            // No timer — capture immediately (Single mode)
             std::cout << "Preview: shutter pressed ("
                       << evt.pressDurationMs << "ms) — capturing...\n";
-            display.flash();
-            {
-                std::lock_guard<std::mutex> lk(s.captureMtx);
-                s.captureErrorMsg.clear();
-            }
-            s.captureThread = captureStillAsync(cam, pcfg, s.overlay.settings,
-                                              s.captureDone, s.captureSuccess,
-                                              s.captureFilename, s.captureErrorMsg,
-                                              s.captureMtx);
-            s.captureActive = s.captureThread.joinable();
+            launchCapture(s, cam, pcfg, display, 0.0f, 0.0f, 0.0f, 0, 0.0f);
         }
         // If timer is already active, ignore additional presses
     } else if (evt.pressDurationMs >= kShutterHoldMs) {
@@ -614,6 +1155,7 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam, const PreviewConfi
         handleShutterRelease(s, cam, pcfg, display, evt);
     } else if (evt.pressed && evt.id == ButtonId::Key1) {
         // Enter playback mode
+        s.bulbActive = false;  // cancel any pending bulb exposure
         s.playbackFiles = listCaptures(pcfg.captureDir);
         s.playbackIdx = 0;
         s.playbackScroll = 0;
@@ -621,6 +1163,7 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam, const PreviewConfi
         s.screenDirty = true;
     } else if (evt.pressed && evt.id == ButtonId::Key2) {
         // Enter settings mode
+        s.bulbActive = false;  // cancel any pending bulb exposure
         s.mode = CameraMode::Settings;
         s.settingsIdx = 0;
         s.screenDirty = true;
@@ -629,9 +1172,23 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam, const PreviewConfi
         // Any button press wakes the camera back up — like a real camera's
         // power button toggling on/off, rather than shutting down the OS
         // (which would require a reboot to power on again).
+        s.bulbActive = false;  // cancel any pending bulb exposure
         s.sleeping = true;
         display.setBacklight(false);
         std::cout << "Preview: power-off (sleep mode)\n";
+    } else if (evt.pressed && s.overlay.settings.focusMagnify > 0 &&
+               (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
+                evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
+        // Focus magnifier pan: joystick moves the crop region within the
+        // viewfinder. Pan step is 16 source pixels per press (enough to
+        // be noticeable at 320x240 without overshooting). Clamping is
+        // applied in renderViewfinder() where the frame dimensions are
+        // known, so we just adjust the raw offset here.
+        constexpr int kFocusPanStep = 16;
+        if (evt.id == ButtonId::JoyUp)    s.focusMagPanY -= kFocusPanStep;
+        if (evt.id == ButtonId::JoyDown)  s.focusMagPanY += kFocusPanStep;
+        if (evt.id == ButtonId::JoyLeft)  s.focusMagPanX -= kFocusPanStep;
+        if (evt.id == ButtonId::JoyRight) s.focusMagPanX += kFocusPanStep;
     }
 }
 
@@ -644,7 +1201,7 @@ void handleReviewButton(PreviewState &s, const ButtonEvent &evt) {
 }
 
 // Dispatch a button event in Playback browser mode.
-void handlePlaybackButton(PreviewState &s, St7735Display &display, const ButtonEvent &evt) {
+void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg, St7735Display &display, const ButtonEvent &evt) {
     if (evt.pressed && evt.id == ButtonId::Key1) {
         // Exit playback
         s.mode = CameraMode::Viewfinder;
@@ -670,6 +1227,13 @@ void handlePlaybackButton(PreviewState &s, St7735Display &display, const ButtonE
         s.imageViewPixels = decodeImageToRgb565(
             sel, display.width(), display.height());
         s.imageViewPath = sel;
+        // Reset zoom/slideshow state when entering image view.
+        s.imageViewZoom = 1;
+        s.imageViewPanX = 0;
+        s.imageViewPanY = 0;
+        s.slideshowActive = false;
+        // Check if the file is protected.
+        s.fileProtected = isFileProtected(pcfg.captureDir, sel);
         // Enter ImageView mode regardless of decode success — if the
         // image couldn't be decoded (e.g. DNG/RAW), drawImageView shows
         // a black screen with the filename so the user knows what file
@@ -686,14 +1250,37 @@ void handlePlaybackButton(PreviewState &s, St7735Display &display, const ButtonE
 // Dispatch a button event in ImageView mode (delete on Key3, back otherwise).
 // Delete requires two Key3 presses within 3 seconds to prevent accidental
 // data loss from a mis-press — similar to many real cameras' trash flow.
+// Key1 toggles file protection (protected files can't be deleted).
+// Key2 cycles zoom (1x/2x/4x). Joystick pans when zoomed > 1x.
+// Shutter toggles slideshow.
 void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg, const ButtonEvent &evt) {
-    if (evt.pressed && evt.id == ButtonId::Key3) {
+    if (evt.pressed && evt.id == ButtonId::Key1) {
+        // Toggle file protection (like a camera's "protect" key).
+        if (!s.imageViewPath.empty()) {
+            bool nowProtected = toggleFileProtection(pcfg.captureDir, s.imageViewPath);
+            s.fileProtected = nowProtected;
+            s.persistentError = nowProtected ? "PROTECTED" : "UNPROTECTED";
+            s.errorExpiry = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            std::cout << "Preview: " << (nowProtected ? "protected " : "unprotected ")
+                      << s.imageViewPath << "\n";
+            s.screenDirty = true;
+        }
+    } else if (evt.pressed && evt.id == ButtonId::Key3) {
         if (!s.imageViewPath.empty()) {
             auto now = std::chrono::steady_clock::now();
             // Second press within the confirmation window → delete.
             if (s.deleteConfirmDeadline != std::chrono::steady_clock::time_point{} &&
                 now < s.deleteConfirmDeadline) {
                 s.deleteConfirmDeadline = {};
+                // Check if the file is protected — refuse to delete.
+                if (isFileProtected(pcfg.captureDir, s.imageViewPath)) {
+                    std::cerr << "Preview: refusing to delete protected file: "
+                              << s.imageViewPath << "\n";
+                    s.persistentError = "FILE PROTECTED";
+                    s.errorExpiry = now + std::chrono::seconds(3);
+                    s.screenDirty = true;
+                    return;
+                }
                 // Canonicalize the delete target and verify it is inside the
                 // (already canonicalized) capture directory. This prevents symlink
                 // attacks where imageViewPath appears inside captureDir lexically
@@ -706,23 +1293,18 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg, const But
                               << s.imageViewPath << "\n";
                     s.persistentError = "DELETE DENIED";
                     s.errorExpiry = now + std::chrono::seconds(3);
-                    s.mode = CameraMode::Playback;
-                    s.imageViewPixels.clear();
-                    s.imageViewPath.clear();
+                    exitImageView(s);
                     s.screenDirty = true;
                     return;
                 }
                 std::error_code ec;
                 if (std::filesystem::remove(s.imageViewPath, ec)) {
                     std::cout << "Preview: deleted " << s.imageViewPath << "\n";
-                    // Refresh playback list
                     s.playbackFiles = listCaptures(pcfg.captureDir);
                     if (s.playbackIdx >= static_cast<int>(s.playbackFiles.size()))
                         s.playbackIdx = static_cast<int>(s.playbackFiles.size()) - 1;
                     if (s.playbackIdx < 0) s.playbackIdx = 0;
-                    s.mode = CameraMode::Playback;
-                    s.imageViewPixels.clear();
-                    s.imageViewPath.clear();
+                    exitImageView(s);
                 } else {
                     // Delete failed — keep the image on screen and show an error.
                     std::cerr << "Preview: failed to delete " << s.imageViewPath << "\n";
@@ -736,25 +1318,65 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg, const But
                 s.errorExpiry = s.deleteConfirmDeadline;
             }
         } else {
-            s.deleteConfirmDeadline = {};
-            s.mode = CameraMode::Playback;
-            s.imageViewPixels.clear();
-            s.imageViewPath.clear();
+            exitImageView(s);
         }
         s.screenDirty = true;
+    } else if (evt.pressed && evt.id == ButtonId::Key2) {
+        // Cycle zoom: 1x -> 2x -> 4x -> 1x
+        s.imageViewZoom = (s.imageViewZoom == 1) ? 2 : (s.imageViewZoom == 2) ? 4 : 1;
+        s.imageViewPanX = 0;
+        s.imageViewPanY = 0;
+        s.screenDirty = true;
+    } else if (evt.pressed && evt.id == ButtonId::Shutter) {
+        // Toggle slideshow
+        s.slideshowActive = !s.slideshowActive;
+        if (s.slideshowActive) {
+            s.slideshowNextAdvance = std::chrono::steady_clock::now() +
+                std::chrono::seconds(3);
+        }
+        s.screenDirty = true;
+    } else if (evt.pressed && (evt.id == ButtonId::JoyUp ||
+                               evt.id == ButtonId::JoyDown ||
+                               evt.id == ButtonId::JoyLeft ||
+                               evt.id == ButtonId::JoyRight)) {
+        if (s.imageViewZoom > 1) {
+            // Pan when zoomed in
+            int panStep = 8;  // pixels per joystick press
+            if (evt.id == ButtonId::JoyUp)    s.imageViewPanY -= panStep;
+            if (evt.id == ButtonId::JoyDown)  s.imageViewPanY += panStep;
+            if (evt.id == ButtonId::JoyLeft)  s.imageViewPanX -= panStep;
+            if (evt.id == ButtonId::JoyRight) s.imageViewPanX += panStep;
+            s.screenDirty = true;
+        } else if (s.slideshowActive) {
+            // In slideshow mode, joystick navigates manually (stops slideshow)
+            s.slideshowActive = false;
+            if (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyLeft) {
+                if (s.playbackIdx > 0) --s.playbackIdx;
+            } else {
+                if (s.playbackIdx < static_cast<int>(s.playbackFiles.size()) - 1)
+                    ++s.playbackIdx;
+            }
+            if (!s.playbackFiles.empty()) {
+                const std::string &sel = s.playbackFiles[s.playbackIdx];
+                s.imageViewPixels = decodeImageToRgb565(
+                    sel, s.dispW, s.dispH);
+                s.imageViewPath = sel;
+            }
+            s.screenDirty = true;
+        }
     } else if (evt.pressed) {
         // Any other button cancels a pending delete confirmation and
         // returns to playback browser.
-        s.deleteConfirmDeadline = {};
-        s.mode = CameraMode::Playback;
-        s.imageViewPixels.clear();
-        s.imageViewPath.clear();
+        exitImageView(s);
         s.screenDirty = true;
     }
 }
 
 // Dispatch a button event in Settings mode (navigate + adjust values, exit
 // reconfigures the still stream if the capture format changed).
+// Uses the tabbed settings menu API from settings_menu.cpp.
+// Tab switching: Key1 cycles tabs. JoyUp/Down navigate items.
+// JoyLeft/Right adjust the selected item via settingsItemAdjustLeft/Right.
 void handleSettingsButton(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg,
                           StopFlag &stop, const ButtonEvent &evt) {
     if (evt.pressed && evt.id == ButtonId::Key2) {
@@ -783,53 +1405,35 @@ void handleSettingsButton(PreviewState &s, DualStream &cam, const PreviewConfig 
             }
             s.capFmt = s.overlay.settings.captureFormat;
         }
+        // Save settings on exit
+        saveSettings(s.overlay.settings, defaultSettingsPath());
+        // Apply updated controls to the still stream
+        CameraConfig stillCfg = settingsToCameraConfig(s.overlay.settings,
+            pcfg.captureWidth, pcfg.captureHeight);
+        cam.updateStillConfig(stillCfg);
         s.mode = CameraMode::Viewfinder;
+        s.screenDirty = true;
+    } else if (evt.pressed && evt.id == ButtonId::Key1) {
+        // Cycle tabs: Shooting -> Image -> Display -> System -> Shooting
+        s.settingsTab = static_cast<SettingsTab>(
+            (static_cast<int>(s.settingsTab) + 1) % kSettingsTabCount);
+        s.settingsIdx = 0;
         s.screenDirty = true;
     } else if (evt.pressed && evt.id == ButtonId::JoyUp) {
         if (s.settingsIdx > 0) { --s.settingsIdx; s.screenDirty = true; }
     } else if (evt.pressed && evt.id == ButtonId::JoyDown) {
-        if (s.settingsIdx < kSettingsCount - 1) { ++s.settingsIdx; s.screenDirty = true; }
-    } else if (evt.pressed && evt.id == ButtonId::JoyLeft) {
-        // Decrease / cycle left
-        switch (s.settingsIdx) {
-            case kSettingFormat: { // FORMAT: cycle backward JPEG -> RAW_NV12 -> PPM -> PNG -> DNG -> JPEG
-                switch (s.overlay.settings.captureFormat) {
-                    case OutputFormat::JPEG:     s.overlay.settings.captureFormat = OutputFormat::RAW_NV12; break;
-                    case OutputFormat::RAW_NV12: s.overlay.settings.captureFormat = OutputFormat::PPM; break;
-                    case OutputFormat::PPM:      s.overlay.settings.captureFormat = OutputFormat::PNG; break;
-                    case OutputFormat::PNG:      s.overlay.settings.captureFormat = OutputFormat::DNG; break;
-                    case OutputFormat::DNG:      s.overlay.settings.captureFormat = OutputFormat::JPEG; break;
-                }
-                s.screenDirty = true;
-                break;
-            }
-            case kSettingJpegQuality: if (s.overlay.settings.jpegQuality > 10) { --s.overlay.settings.jpegQuality; s.screenDirty = true; } break;
-            case kSettingGrid: s.overlay.settings.gridType = GridType::Off; s.screenDirty = true; break;
-            case kSettingHistogram: s.overlay.settings.showHistogram = false; s.screenDirty = true; break;
-            case kSettingBrightness: if (s.overlay.settings.displayBrightness > 10) { s.overlay.settings.displayBrightness -= 10; s.screenDirty = true; } break;
-            case kSettingTimer: if (s.overlay.settings.timerDuration > 0) { --s.overlay.settings.timerDuration; s.screenDirty = true; } break;
-            // kSettingExit: no JoyLeft action (exit via Key2)
-        }
-    } else if (evt.pressed && evt.id == ButtonId::JoyRight) {
-        // Increase / cycle right
-        switch (s.settingsIdx) {
-            case kSettingFormat: { // FORMAT: cycle forward JPEG -> DNG -> PNG -> PPM -> RAW_NV12 -> JPEG
-                switch (s.overlay.settings.captureFormat) {
-                    case OutputFormat::JPEG:     s.overlay.settings.captureFormat = OutputFormat::DNG; break;
-                    case OutputFormat::DNG:      s.overlay.settings.captureFormat = OutputFormat::PNG; break;
-                    case OutputFormat::PNG:      s.overlay.settings.captureFormat = OutputFormat::PPM; break;
-                    case OutputFormat::PPM:      s.overlay.settings.captureFormat = OutputFormat::RAW_NV12; break;
-                    case OutputFormat::RAW_NV12: s.overlay.settings.captureFormat = OutputFormat::JPEG; break;
-                }
-                s.screenDirty = true;
-                break;
-            }
-            case kSettingJpegQuality: if (s.overlay.settings.jpegQuality < 100) { ++s.overlay.settings.jpegQuality; s.screenDirty = true; } break;
-            case kSettingGrid: s.overlay.settings.gridType = GridType::Thirds; s.screenDirty = true; break;
-            case kSettingHistogram: s.overlay.settings.showHistogram = true; s.screenDirty = true; break;
-            case kSettingBrightness: if (s.overlay.settings.displayBrightness < 100) { s.overlay.settings.displayBrightness += 10; s.screenDirty = true; } break;
-            case kSettingTimer: if (s.overlay.settings.timerDuration < 10) { ++s.overlay.settings.timerDuration; s.screenDirty = true; } break;
-            // kSettingExit: no JoyRight action (exit via Key2)
+        int count = settingsTabItemCount(s.settingsTab);
+        if (s.settingsIdx < count - 1) { ++s.settingsIdx; s.screenDirty = true; }
+    } else if (evt.pressed && (evt.id == ButtonId::JoyLeft ||
+                               evt.id == ButtonId::JoyRight)) {
+        // EXIT item (System tab, last item) is not adjustable — exit via Key2.
+        int count = settingsTabItemCount(s.settingsTab);
+        if (!(s.settingsTab == SettingsTab::System && s.settingsIdx == count - 1)) {
+            if (evt.id == ButtonId::JoyLeft)
+                settingsItemAdjustLeft(s.settingsTab, s.settingsIdx, s.overlay.settings);
+            else
+                settingsItemAdjustRight(s.settingsTab, s.settingsIdx, s.overlay.settings);
+            s.screenDirty = true;
         }
     }
 }
@@ -845,7 +1449,6 @@ static bool runPreviewLoop(PreviewState &s, DualStream &cam,
     while (!stop.stopRequested() && !cam.fatalError()) {
         auto frameStart = std::chrono::steady_clock::now();
 
-        // Update battery reading periodically
         updateBatteryReading(s, battery);
 
         // While sleeping (backlight off, low-power): poll buttons with a
@@ -854,7 +1457,6 @@ static bool runPreviewLoop(PreviewState &s, DualStream &cam,
         // and the device can never wake up.
         if (handleSleepPoll(s, buttons, display)) continue;
 
-        // Render based on current mode
         switch (s.mode) {
         case CameraMode::Viewfinder:
             if (renderViewfinder(s, cam, display, pcfg, stop)) continue;
@@ -897,7 +1499,6 @@ static bool runPreviewLoop(PreviewState &s, DualStream &cam,
 
         s.lastActivity = std::chrono::steady_clock::now();
 
-        // Mode-specific button handling
         switch (s.mode) {
         case CameraMode::Viewfinder:
             handleViewfinderButton(s, cam, pcfg, display, evt);
@@ -906,7 +1507,7 @@ static bool runPreviewLoop(PreviewState &s, DualStream &cam,
             handleReviewButton(s, evt);
             break;
         case CameraMode::Playback:
-            handlePlaybackButton(s, display, evt);
+            handlePlaybackButton(s, pcfg, display, evt);
             break;
         case CameraMode::ImageView:
             handleImageViewButton(s, pcfg, evt);
@@ -957,6 +1558,8 @@ bool runPreview(PreviewConfig &pcfg) {
     // --- Splash screen ---
     PreviewState s;
     s.dispPixels = static_cast<size_t>(display.width()) * display.height();
+    s.dispW = display.width();
+    s.dispH = display.height();
     s.rgb565.resize(s.dispPixels * 2);
     drawSplash(s.rgb565.data(), display.width(), display.height());
     if (!display.blit(s.rgb565.data())) {
@@ -1006,6 +1609,37 @@ bool runPreview(PreviewConfig &pcfg) {
         pcfg.maxFps > 0 ? 1000000 / pcfg.maxFps : 50000);
     s.overlay.settings.captureFormat = s.capFmt;
 
+    // Load saved settings from ~/.config/picamera/settings.conf
+    // (falls back to defaults if the file doesn't exist or is corrupt)
+    {
+        std::string settingsPath = defaultSettingsPath();
+        if (loadSettings(s.overlay.settings, settingsPath)) {
+            std::cout << "Preview: loaded settings from " << settingsPath << "\n";
+            // Override capture format with CLI value if it was explicitly set
+            s.overlay.settings.captureFormat = s.capFmt;
+            CameraConfig stillCfg = settingsToCameraConfig(s.overlay.settings,
+                pcfg.captureWidth, pcfg.captureHeight);
+            cam.updateStillConfig(stillCfg);
+        }
+    }
+
+    // Load hardware config from /etc/picamera.conf (if present)
+    {
+        HardwareConfig hwCfg = loadHardwareConfig("/etc/picamera.conf");
+        if (hwCfg.loaded) {
+            std::cout << "Preview: loaded hardware config from /etc/picamera.conf\n";
+            if (hwCfg.previewWidth > 0) pcfg.previewWidth = hwCfg.previewWidth;
+            if (hwCfg.previewHeight > 0) pcfg.previewHeight = hwCfg.previewHeight;
+            if (hwCfg.captureWidth > 0) pcfg.captureWidth = hwCfg.captureWidth;
+            if (hwCfg.captureHeight > 0) pcfg.captureHeight = hwCfg.captureHeight;
+            if (hwCfg.maxFps > 0) pcfg.maxFps = hwCfg.maxFps;
+            if (!hwCfg.captureDir.empty()) pcfg.captureDir = hwCfg.captureDir;
+            if (!hwCfg.capturePrefix.empty()) pcfg.capturePrefix = hwCfg.capturePrefix;
+            if (hwCfg.wifiEnabled) pcfg.wifiEnabled = true;
+            if (hwCfg.btEnabled) pcfg.btEnabled = true;
+        }
+    }
+
     // Initialize time-based state to "long ago" so the first iteration triggers
     // a battery read and so review/timer/error entries are not pre-expired.
     auto initNow = std::chrono::steady_clock::now();
@@ -1020,7 +1654,35 @@ bool runPreview(PreviewConfig &pcfg) {
               << " (max " << pcfg.maxFps << " fps)\n";
     std::cout << "Preview: shutter=capture, Key1=playback, Key2=settings, Ctrl+C=exit\n";
 
+    // Start Wi-Fi server if enabled (--wifi flag or wifi_enabled config key)
+    if (pcfg.wifiEnabled) {
+        constexpr int kWifiPort = 8080;
+        if (!s.wifiServer.start(kWifiPort, pcfg.captureDir,
+                                s.overlay.settings, s.wifiSettingsMtx,
+                                s.wifiCaptureRequest, s.wifiBatteryPercent,
+                                s.wifiCaptureCount)) {
+            std::cerr << "Preview: Wi-Fi server failed to start on port "
+                      << kWifiPort << " — continuing without remote control\n";
+        }
+    }
+
+    // Start Bluetooth server if enabled (--bt flag or bt_enabled config key).
+    // Shares the same settings mutex + CameraSettings as the Wi-Fi server.
+    if (pcfg.btEnabled) {
+        constexpr int kBtChannel = 1;
+        if (!s.btServer.start(kBtChannel, pcfg.captureDir,
+                              s.overlay.settings, s.wifiSettingsMtx,
+                              s.btCaptureRequest, s.wifiBatteryPercent,
+                              s.wifiCaptureCount)) {
+            std::cerr << "Preview: BT server failed to start on channel "
+                      << kBtChannel << " — continuing without BT remote control\n";
+        }
+    }
+
     bool loopOk = runPreviewLoop(s, cam, display, buttons, battery, stop, pcfg);
+
+    s.wifiServer.stop();
+    s.btServer.stop();
 
     // Shutdown: stop the camera first (wakes any blocked waitCaptureDone()
     // via stillCv_.notify_all()), then join the capture worker thread so it
@@ -1032,6 +1694,8 @@ bool runPreview(PreviewConfig &pcfg) {
     buttons.shutdown();
     display.shutdown();
     if (s.batteryOk) battery.shutdown();
+
+    saveSettings(s.overlay.settings, defaultSettingsPath());
 
     std::cout << "Preview: stopped after " << s.frameCount << " frames, "
               << s.captureCount << " captures\n";
@@ -1060,6 +1724,8 @@ PreviewConfig makePreviewConfig(const CliOptions &opts, const CameraConfig &cfg)
     pcfg.enableBattery = opts.enableBattery;
     pcfg.batteryCfg.i2cDevice = opts.batteryI2cDevice;
     pcfg.batteryCfg.i2cAddress = opts.batteryI2cAddress;
+    pcfg.wifiEnabled = opts.wifiEnabled;
+    pcfg.btEnabled = opts.btEnabled;
     // Use ±6.144V PGA for direct LiPo measurement (3.0-4.2V)
     pcfg.batteryCfg.pgaGain = 0x0000;
     return pcfg;

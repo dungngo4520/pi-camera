@@ -30,6 +30,10 @@ struct PreviewConfig {
     // battery icon + % overlay on the preview display)
     bool enableBattery = false;
     BatteryConfig batteryCfg;
+    // Wi-Fi remote control / image transfer server (optional)
+    bool wifiEnabled = false;
+    // Bluetooth RFCOMM serial remote control server (optional)
+    bool btEnabled = false;
 };
 
 // Run a live preview loop: stream low-res frames to the SPI display,
