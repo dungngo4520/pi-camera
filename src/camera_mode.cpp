@@ -21,6 +21,7 @@ constexpr int kRowStep = kTextHeight + 2;
 
 constexpr uint16_t kColorAmber = rgb565(255, 180, 0);
 constexpr uint16_t kColorGrid = rgb565(80, 80, 80);
+constexpr uint16_t kColorCyan = rgb565(0, 200, 200);
 constexpr int kHistogramSampleStep = 4;
 constexpr int kZebraStripePeriod = 4;
 constexpr uint32_t kMillisPerSec = 1000;
@@ -85,6 +86,27 @@ void drawTextOutlined(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       int x, int y, std::string_view text, uint16_t fg) {
     drawText(rgb565, fbW, fbH, x + 1, y + 1, text, kColorBlack, kColorBlack, true);
     drawText(rgb565, fbW, fbH, x, y, text, fg, kColorBlack, true);
+}
+
+void drawStatusTag(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                   int row, int rightOffset, std::string_view text, uint16_t color) {
+    int y = kMargin + row * (kTextHeight + 3);
+    drawTextOutlined(rgb565, fbW, fbH, static_cast<int>(fbW) - rightOffset, y, text, color);
+}
+
+void drawCenteredBottomHint(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                            std::string_view text) {
+    int w = static_cast<int>(text.size()) * kTextWidth;
+    drawTextWithBg(rgb565, fbW, fbH, (static_cast<int>(fbW) - w) / 2,
+                   static_cast<int>(fbH) - kTextHeight - 4, text, kColorGray, kColorBlack);
+}
+
+int rgb565Luma(const uint8_t *p) {
+    uint16_t px = (static_cast<uint16_t>(p[0]) << 8) | p[1];
+    uint8_t r5 = (px >> 11) & 0x1F;
+    uint8_t g6 = (px >> 5) & 0x3F;
+    uint8_t b5 = px & 0x1F;
+    return (77 * (r5 << 3) + 150 * (g6 << 2) + 29 * (b5 << 3)) >> 8;
 }
 
 void drawExposureInfo(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
@@ -218,12 +240,18 @@ void drawOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
         drawBatteryOverlay(rgb565, fbW, fbH, state.battery);
     if (state.settings.gridType != GridType::Off)
         drawGrid(rgb565, fbW, fbH, state.settings.gridType);
-    if (state.meteringLocked) {
-        constexpr int kAelY = kMargin + 2 * (kTextHeight + 3);
-        drawTextOutlined(rgb565, fbW, fbH,
-                         static_cast<int>(fbW) - 30, kAelY,
-                         "AEL", kColorYellow);
-    }
+    if (state.meteringLocked)
+        drawStatusTag(rgb565, fbW, fbH, 2, 30, "AEL", kColorYellow);
+    if (state.timelapseRunning)
+        drawStatusTag(rgb565, fbW, fbH, 4, 60, "TL RUN", kColorRed);
+    if (state.wifiActive)
+        drawStatusTag(rgb565, fbW, fbH, 5, 30, "WIFI", kColorGreen);
+    if (state.btActive)
+        drawStatusTag(rgb565, fbW, fbH, 6, 30, "BT", kColorCyan);
+    if (state.focusMagnify > 0)
+        drawFocusMagnifyIndicator(rgb565, fbW, fbH, state.focusMagnify);
+    if (state.bulbSeconds > 0)
+        drawBulbTimer(rgb565, fbW, fbH, state.bulbSeconds);
     if (state.timerRemaining > 0)
         drawTimerCountdown(rgb565, fbW, fbH, state.timerRemaining);
     if (state.captureInProgress)
@@ -236,6 +264,10 @@ void drawHistogram(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                    size_t rgb565Size,
                    const uint8_t *yPlane, uint32_t w, uint32_t h,
                    uint32_t stride, size_t ySize) {
+    // Luminance-only histogram from the NV12 Y plane. An RGB histogram would
+    // triple per-frame sampling cost on the Pi Zero 2 W (~15fps viewfinder).
+    // The Y plane is already mapped for zebra/focus-peaking, so reusing it
+    // avoids an extra framebuffer pass. See docs/mirrorless-feature-research.md.
     if (!rgb565 || !yPlane || w == 0 || h == 0 || stride < w) return;
     size_t needFb = 0;
     if (!checkedMul(static_cast<size_t>(fbW), fbH, needFb) ||
@@ -348,11 +380,30 @@ void drawGrid(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, GridType type) {
         vLine(rgb565, fbW, fbH, 2 * w / 3, 0, h, color);
         hLine(rgb565, fbW, fbH, 0, h / 3, w, color);
         hLine(rgb565, fbW, fbH, 0, 2 * h / 3, w, color);
-    } else {
+    } else if (type == GridType::Square) {
         for (int i = 1; i < 4; ++i) {
             vLine(rgb565, fbW, fbH, w * i / 4, 0, h, color);
             hLine(rgb565, fbW, fbH, 0, h * i / 4, w, color);
         }
+    } else if (type == GridType::Diagonal) {
+        for (int i = 0; i < w && i < h; ++i) {
+            size_t idx = (static_cast<size_t>(i) * fbW + i) * 2;
+            rgb565[idx] = static_cast<uint8_t>(color >> 8);
+            rgb565[idx + 1] = static_cast<uint8_t>(color & 0xFF);
+            size_t idx2 = (static_cast<size_t>(i) * fbW + (w - 1 - i)) * 2;
+            rgb565[idx2] = static_cast<uint8_t>(color >> 8);
+            rgb565[idx2 + 1] = static_cast<uint8_t>(color & 0xFF);
+        }
+    } else if (type == GridType::GoldenRatio) {
+        // Golden ratio grid: lines at ~0.382 and ~0.618 (1/phi)
+        int g1 = static_cast<int>(w * 0.382f);
+        int g2 = static_cast<int>(w * 0.618f);
+        vLine(rgb565, fbW, fbH, g1, 0, h, color);
+        vLine(rgb565, fbW, fbH, g2, 0, h, color);
+        int gh1 = static_cast<int>(h * 0.382f);
+        int gh2 = static_cast<int>(h * 0.618f);
+        hLine(rgb565, fbW, fbH, 0, gh1, w, color);
+        hLine(rgb565, fbW, fbH, 0, gh2, w, color);
     }
 }
 
@@ -513,12 +564,75 @@ void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
     drawTextWithBg(rgb565, fbW, fbH, kMargin, kMargin,
                    fitBasename(path, maxChars), kColorWhite, kColorBlack);
 
-    std::string hint = "OK=BACK K3=DEL";
-    int hintW = static_cast<int>(hint.size()) * kTextWidth;
-    drawTextWithBg(rgb565, fbW, fbH,
-                   (static_cast<int>(fbW) - hintW) / 2,
-                   static_cast<int>(fbH) - kTextHeight - 4,
-                   hint, kColorGray, kColorBlack);
+    if (imageSize >= totalBytes && imageRgb565)
+        drawImageViewHistogramAndBlinkies(rgb565, fbW, fbH, rgb565Size);
+
+    drawCenteredBottomHint(rgb565, fbW, fbH, "OK=BACK K1=LOCK K3=DEL");
+}
+
+void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                         size_t rgb565Size,
+                         const uint8_t *imageRgb565, size_t imageSize,
+                         uint32_t imageW, uint32_t imageH,
+                         int zoom, int panX, int panY,
+                         const std::string &path) {
+    size_t totalBytes = 0;
+    if (!checkedMul(static_cast<size_t>(fbW), fbH, totalBytes) ||
+        !checkedMul(totalBytes, 2, totalBytes)) return;
+    if (totalBytes > rgb565Size) return;
+
+    zoom = std::max(zoom, 1);
+    zoom = std::min(zoom, 4);
+
+    if (imageSize >= totalBytes && imageRgb565 && imageW > 0 && imageH > 0) {
+        if (zoom == 1) {
+            std::memcpy(rgb565, imageRgb565, totalBytes);
+        } else {
+            uint32_t srcRegionW = fbW / static_cast<uint32_t>(zoom);
+            uint32_t srcRegionH = fbH / static_cast<uint32_t>(zoom);
+            panX = std::max(panX, 0);
+            panY = std::max(panY, 0);
+            if (panX + srcRegionW > imageW) panX = static_cast<int>(imageW - srcRegionW);
+            if (panY + srcRegionH > imageH) panY = static_cast<int>(imageH - srcRegionH);
+            panX = std::max(panX, 0);
+            panY = std::max(panY, 0);
+
+            for (uint32_t dy = 0; dy < fbH; ++dy) {
+                uint32_t sy = static_cast<uint32_t>(panY) + dy / static_cast<uint32_t>(zoom);
+                if (sy >= imageH) sy = imageH - 1;
+                for (uint32_t dx = 0; dx < fbW; ++dx) {
+                    uint32_t sx = static_cast<uint32_t>(panX) + dx / static_cast<uint32_t>(zoom);
+                    if (sx >= imageW) sx = imageW - 1;
+                    size_t srcIdx = (static_cast<size_t>(sy) * imageW + sx) * 2;
+                    size_t dstIdx = (static_cast<size_t>(dy) * fbW + dx) * 2;
+                    if (srcIdx + 1 < imageSize && dstIdx + 1 < totalBytes) {
+                        rgb565[dstIdx] = imageRgb565[srcIdx];
+                        rgb565[dstIdx + 1] = imageRgb565[srcIdx + 1];
+                    }
+                }
+            }
+        }
+    } else {
+        std::memset(rgb565, 0, totalBytes);
+    }
+
+    int maxChars = std::max(0, static_cast<int>(fbW) / kTextWidth);
+    drawTextWithBg(rgb565, fbW, fbH, kMargin, kMargin,
+                   fitBasename(path, maxChars), kColorWhite, kColorBlack);
+
+    if (zoom > 1) {
+        std::string zoomStr = std::to_string(zoom) + "X";
+        int zoomW = static_cast<int>(zoomStr.size()) * kTextWidth;
+        drawTextWithBg(rgb565, fbW, fbH,
+                       static_cast<int>(fbW) - zoomW - kMargin, kMargin,
+                       zoomStr, kColorYellow, kColorBlack);
+    }
+
+    if (zoom == 1 && imageSize >= totalBytes && imageRgb565)
+        drawImageViewHistogramAndBlinkies(rgb565, fbW, fbH, rgb565Size);
+
+    drawCenteredBottomHint(rgb565, fbW, fbH,
+        zoom > 1 ? "OK=BACK K1=LOCK K3=DEL JOY=PAN" : "OK=BACK K1=LOCK K3=DEL");
 }
 
 void drawZebra(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
@@ -588,6 +702,177 @@ void drawFocusPeaking(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
             }
         }
     }
+}
+
+uint8_t zebraThreshold(ZebraMode mode) {
+    switch (mode) {
+        case ZebraMode::Off:          return 0;
+        case ZebraMode::Threshold70:  return 178;  // ~0.70 * 255
+        case ZebraMode::Threshold80:  return 204;  // ~0.80 * 255
+        case ZebraMode::Threshold100: return 255;
+    }
+    return 0;
+}
+
+bool computeWbGainsFromNv12(const uint8_t *uv, uint32_t w, uint32_t h,
+                            size_t uvSize, float &outRed, float &outBlue) {
+    if (!uv || w < 2 || h < 2) return false;
+    // NV12 chroma plane is 4:2:0: (w/2)*(h/2) interleaved Cb,Cr byte pairs.
+    uint32_t cw = w / 2;
+    uint32_t ch = h / 2;
+    size_t need = 0;
+    if (!checkedMul(static_cast<size_t>(cw), ch, need)) return false;
+    if (!checkedMul(need, 2, need)) return false;
+    if (uvSize < need) return false;
+
+    // Average Cb (blue-diff, even offsets) and Cr (red-diff, odd offsets).
+    // For neutral gray both average 128; gain = 128 / avg neutralizes.
+    uint64_t sumCb = 0;
+    uint64_t sumCr = 0;
+    uint64_t samples = 0;
+    for (uint32_t y = 0; y < ch; ++y) {
+        const uint8_t *row = uv + static_cast<size_t>(y) * cw * 2;
+        for (uint32_t x = 0; x < cw; ++x) {
+            sumCb += row[static_cast<size_t>(x) * 2];
+            sumCr += row[static_cast<size_t>(x) * 2 + 1];
+            ++samples;
+        }
+    }
+    if (samples == 0) return false;
+    float avgCb = static_cast<float>(sumCb) / static_cast<float>(samples);
+    float avgCr = static_cast<float>(sumCr) / static_cast<float>(samples);
+    avgCb = std::max(avgCb, 1.0f);
+    avgCr = std::max(avgCr, 1.0f);
+    float red = 128.0f / avgCr;
+    float blue = 128.0f / avgCb;
+    outRed = std::clamp(red, 0.1f, 8.0f);
+    outBlue = std::clamp(blue, 0.1f, 8.0f);
+    return true;
+}
+
+void drawBulbTimer(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                   uint32_t seconds) {
+    if (!rgb565 || fbW == 0 || fbH == 0) return;
+    std::string label = "BULB " + std::to_string(seconds) + "s";
+    int textW = static_cast<int>(label.size()) * kTextWidth;
+    int x = (static_cast<int>(fbW) - textW) / 2;
+    int y = static_cast<int>(fbH) / 2 - kTextHeight - 2;
+    drawTextWithBg(rgb565, fbW, fbH, x, y, label, kColorYellow, kColorBlack);
+}
+
+void drawAspectRatioMask(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                         AspectRatio ratio) {
+    if (ratio == AspectRatio::Native) return;
+    // Display is square (128x128) — mask black bars to crop to target aspect.
+    float target = 1.0f;
+    switch (ratio) {
+        case AspectRatio::Native:  break;
+        case AspectRatio::Ratio43: target = 4.0f / 3.0f; break;
+        case AspectRatio::Ratio169: target = 16.0f / 9.0f; break;
+        case AspectRatio::Ratio11: target = 1.0f; break;
+    }
+    float dispAspect = static_cast<float>(fbW) / fbH;
+    uint32_t maskW = fbW;
+    uint32_t maskH = fbH;
+    if (target > dispAspect) {
+        maskH = static_cast<uint32_t>(fbW / target);
+    } else {
+        maskW = static_cast<uint32_t>(fbH * target);
+    }
+    maskW = std::min(maskW, fbW);
+    maskH = std::min(maskH, fbH);
+    uint32_t barW = (fbW - maskW) / 2;
+    uint32_t barH = (fbH - maskH) / 2;
+    if (barW > 0) {
+        fillRect(rgb565, fbW, fbH, 0, 0, barW, fbH, kColorBlack);
+        fillRect(rgb565, fbW, fbH, fbW - barW, 0, barW, fbH, kColorBlack);
+    }
+    if (barH > 0) {
+        fillRect(rgb565, fbW, fbH, 0, 0, fbW, barH, kColorBlack);
+        fillRect(rgb565, fbW, fbH, 0, fbH - barH, fbW, barH, kColorBlack);
+    }
+}
+
+void drawFocusMagnifyIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                               int magnify) {
+    if (magnify == 0) return;
+    std::string text = magnify >= 4 ? "4x" : "2x";
+    int textW = static_cast<int>(text.size()) * kTextWidth;
+    int x = static_cast<int>(fbW) - textW - kMargin - 2;
+    int y = kMargin + 3 * (kTextHeight + 3);
+    drawTextOutlined(rgb565, fbW, fbH, x, y, text, kColorYellow);
+}
+
+void drawImageViewHistogramAndBlinkies(uint8_t *rgb565, uint32_t fbW,
+                                       uint32_t fbH, size_t rgb565Size) {
+    // NOTE: Computed from the 128x128 display framebuffer, not the full-res
+    // image. On the Pi Zero 2 W (512MB RAM), decoding a 4056x3040 image just
+    // for a histogram would need ~37MB and several seconds — impractical for
+    // playback review. The downsampled FB suffices for a rough histogram and
+    // blinkie check, matching entry-level camera behavior.
+    size_t needFb = 0;
+    if (!checkedMul(static_cast<size_t>(fbW), fbH, needFb) ||
+        !checkedMul(needFb, 2, needFb)) return;
+    if (needFb > rgb565Size) return;
+
+    constexpr int kHistBins = 256;
+    uint32_t hist[kHistBins] = {};
+    uint32_t sampleCount = 0;
+    for (uint32_t y = 0; y < fbH; y += 4) {
+        for (uint32_t x = 0; x < fbW; x += 4) {
+            size_t idx = (static_cast<size_t>(y) * fbW + x) * 2;
+            int lum = std::min(rgb565Luma(rgb565 + idx), 255);
+            hist[static_cast<uint8_t>(lum)]++;
+            sampleCount++;
+        }
+    }
+    if (sampleCount == 0) return;
+
+    for (uint32_t y = 0; y < fbH; y += 2) {
+        for (uint32_t x = 0; x < fbW; x += 2) {
+            size_t idx = (static_cast<size_t>(y) * fbW + x) * 2;
+            if (rgb565Luma(rgb565 + idx) >= 250)
+                fillRect(rgb565, fbW, fbH, x, y, 2, 2, kColorRed);
+        }
+    }
+
+    uint32_t maxVal = 1;
+    for (int i = 1; i < kHistBins - 1; ++i)
+        maxVal = std::max(maxVal, hist[i]);
+    constexpr int kHistW = 64;
+    constexpr int kHistH = 20;
+    int histX = (static_cast<int>(fbW) - kHistW) / 2;
+    int histY = static_cast<int>(fbH) - kHistH - kTextHeight - 6;
+    fillRect(rgb565, fbW, fbH, histX - 1, histY - 1, kHistW + 2, kHistH + 2, kColorBlack);
+    for (int col = 0; col < kHistW; ++col) {
+        int binStart = (col * kHistBins) / kHistW;
+        int binEnd = ((col + 1) * kHistBins) / kHistW;
+        uint32_t sum = 0;
+        for (int b = binStart; b < binEnd && b < kHistBins; ++b) sum += hist[b];
+        uint32_t avg = sum / (binEnd - binStart > 0 ? (binEnd - binStart) : 1);
+        uint64_t barH64 = (static_cast<uint64_t>(avg) * kHistH) / maxVal;
+        int barH = static_cast<int>(std::min(barH64, static_cast<uint64_t>(kHistH)));
+        for (int dy = 0; dy < barH; ++dy) {
+            int px = histX + col;
+            int py = histY + kHistH - 1 - dy;
+            if (px >= 0 && py >= 0 &&
+                static_cast<uint32_t>(px) < fbW &&
+                static_cast<uint32_t>(py) < fbH) {
+                size_t idx = (static_cast<size_t>(py) * fbW + px) * 2;
+                rgb565[idx] = static_cast<uint8_t>(kColorYellow >> 8);
+                rgb565[idx + 1] = static_cast<uint8_t>(kColorYellow & 0xFF);
+            }
+        }
+    }
+}
+
+void drawProtectionIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH) {
+    if (!rgb565 || fbW == 0 || fbH == 0) return;
+    std::string text = "PROT";
+    int textW = static_cast<int>(text.size()) * kTextWidth;
+    int x = static_cast<int>(fbW) - textW - kMargin - 2;
+    int y = kMargin + 2 * (kTextHeight + 3);
+    drawTextOutlined(rgb565, fbW, fbH, x, y, text, kColorAmber);
 }
 
 }
