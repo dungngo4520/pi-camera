@@ -58,12 +58,12 @@ TEST(settings_tab_capture_has_13_items) {
   CHECK(settingsTabItemCount(SettingsTab::Capture) == 13);
 }
 
-TEST(settings_tab_exposure_has_13_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Exposure) == 13);
+TEST(settings_tab_exposure_has_14_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Exposure) == 14);
 }
 
-TEST(settings_tab_color_has_15_items) {
-  CHECK(settingsTabItemCount(SettingsTab::Color) == 15);
+TEST(settings_tab_color_has_14_items) {
+  CHECK(settingsTabItemCount(SettingsTab::Color) == 14);
 }
 
 TEST(settings_tab_focusdisp_has_8_items) {
@@ -2003,8 +2003,8 @@ TEST(advanced_is_video_video_idx_0) {
   CHECK(advancedMenuItemIsVideo(SettingsTab::Video, 0));
 }
 
-TEST(advanced_is_copyright_color_idx_14) {
-  CHECK(advancedMenuItemIsCopyright(SettingsTab::Color, 14));
+TEST(advanced_is_copyright_system_idx_8) {
+  CHECK(advancedMenuItemIsCopyright(SettingsTab::System, 8));
 }
 
 TEST(advanced_is_exit_system_idx_11) {
@@ -2015,15 +2015,15 @@ TEST(advanced_is_airplane_system_idx_4) {
   CHECK(advancedMenuItemIsAirplane(SettingsTab::System, 4));
 }
 
-TEST(advanced_is_custom_mode_system_idx_8) {
-  CHECK(advancedMenuItemIsCustomMode(SettingsTab::System, 8));
+TEST(advanced_is_custom_mode_system_idx_9) {
+  CHECK(advancedMenuItemIsCustomMode(SettingsTab::System, 9));
 }
 
 // --- All features reachable in Advanced mode ---
 
 TEST(advanced_mode_all_features_reachable) {
   // Total items across all 6 Advanced tabs:
-  // 13+13+15+8+5+12 = 66 menu items (including EXIT and BASIC toggle).
+  // 13+14+14+8+5+12 = 66 menu items (including EXIT and BASIC toggle).
   int total = 0;
   for (int t = 0; t < 6; ++t) {
     auto tab = static_cast<SettingsTab>(t);

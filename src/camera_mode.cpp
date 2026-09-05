@@ -528,7 +528,7 @@ void drawSettingsMenu(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
   // Advanced mode: tabbed menu.
   static constexpr std::string_view kTabNames[] = {
-      "CAP", "EXP", "COL", "FOC", "VID", "SYS"};
+      "CAP", "EXP", "COL", "DISP", "VID", "SYS"};
   constexpr int kTabCount = static_cast<int>(std::size(kTabNames));
   int tabWidth = static_cast<int>(fbW) / kTabCount;
   for (int i = 0; i < kTabCount; ++i) {

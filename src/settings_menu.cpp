@@ -1166,7 +1166,7 @@ constexpr std::array<SettingItem, 13> kCaptureTab = {{
     {"COUNT", valCount, adjustCount},
 }};
 
-constexpr std::array<SettingItem, 13> kExposureTab = {{
+constexpr std::array<SettingItem, 14> kExposureTab = {{
     {"EXPMODE", valExpMode, adjustExpMode},
     {"SHUTTER", valShutter, adjustShutter},
     {"ISO", valIso, adjustIso},
@@ -1180,9 +1180,10 @@ constexpr std::array<SettingItem, 13> kExposureTab = {{
     {"FLICKER", valFlicker, adjustFlicker},
     {"MIN SS", valMinShutter, adjustMinShutter},
     {"SILENT", valSilentShutter, adjustSilentShutter},
+    {"LENR", valLongExposureNr, adjustLongExposureNr},
 }};
 
-constexpr std::array<SettingItem, 15> kColorTab = {{
+constexpr std::array<SettingItem, 14> kColorTab = {{
     {"AWB", valAwb, adjustImgAwb},
     {"KELVIN", valKelvin, adjustImgKelvin},
     {"WBRED", valWbRed, adjustImgWbRed},
@@ -1197,7 +1198,6 @@ constexpr std::array<SettingItem, 15> kColorTab = {{
     {"PSTYLE", valPictureStyle, adjustPictureStyle},
     {"GRAIN", valGrainEffect, adjustGrainEffect},
     {"COLOR", valColorSpace, adjustColorSpace},
-    {"COPYRIGHT", valCopyright, nullptr},
 }};
 
 constexpr std::array<SettingItem, 8> kFocusDispTab = {{
@@ -1228,8 +1228,8 @@ constexpr std::array<SettingItem, 12> kSystemTab = {{
     {"DATE", valExit, nullptr},
     {"FILENAME", valFileNaming, adjustImgFileNaming},
     {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders},
+    {"COPYRIGHT", valCopyright, nullptr},
     {"C MODE", valCustomMode, adjustCustomMode},
-    {"LENR", valLongExposureNr, adjustLongExposureNr},
     {"BASIC", valExit, nullptr},
     {"EXIT", valExit, nullptr},
 }};
@@ -1406,7 +1406,7 @@ bool advancedMenuItemIsVideo(SettingsTab tab, int item) {
 }
 
 bool advancedMenuItemIsCopyright(SettingsTab tab, int item) {
-  return tab == SettingsTab::Color && item == 14;
+  return tab == SettingsTab::System && item == 8;
 }
 
 bool advancedMenuItemIsExit(SettingsTab tab, int item) {
@@ -1418,7 +1418,7 @@ bool advancedMenuItemIsAirplane(SettingsTab tab, int item) {
 }
 
 bool advancedMenuItemIsCustomMode(SettingsTab tab, int item) {
-  return tab == SettingsTab::System && item == 8;
+  return tab == SettingsTab::System && item == 9;
 }
 
 bool settingsNeedsReconfigure(const CameraSettings &before,

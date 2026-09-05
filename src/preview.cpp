@@ -52,7 +52,7 @@ constexpr int kShutterHoldMs = 500;
 constexpr int kPlaybackVisible = 8;
 // Max burst frames for continuous shooting (Pi Zero CPU limit).
 constexpr int kMaxBurstFrames = 3;
-// Number of settings tabs (Capture, Exposure, Color, FocusDisp, Video, System).
+// Number of settings tabs (Capture, Exposure, Color, Display, Video, System).
 constexpr int kSettingsTabCount = 6;
 
 // Non-blocking capture: queues the still and launches a background thread
@@ -2304,7 +2304,7 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.screenDirty = true;
       return;
     }
-    // COPYRIGHT (Color tab idx 14): enter text entry mode on JoyRight.
+    // COPYRIGHT (System tab idx 8): enter text entry mode on JoyRight.
     if (advancedMenuItemIsCopyright(s.settingsTab, s.settingsIdx)) {
       if (evt.id == ButtonId::JoyRight) {
         s.copyrightEditing = true;
