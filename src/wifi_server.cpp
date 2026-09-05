@@ -150,6 +150,16 @@ const char *meteringStr(MeteringMode m) {
   return "unknown";
 }
 
+std::optional<MeteringMode> parseMeteringJson(std::string_view s) {
+  if (s == "matrix")
+    return MeteringMode::Matrix;
+  if (s == "centre")
+    return MeteringMode::Centre;
+  if (s == "spot")
+    return MeteringMode::Spot;
+  return std::nullopt;
+}
+
 const char *imageSizeStr(ImageSize s) {
   switch (s) {
   case ImageSize::Large:
@@ -441,6 +451,39 @@ std::optional<CustomMode> parseCustomModeJson(std::string_view s) {
   return std::nullopt;
 }
 
+// Serialize a bracket EV vector as a comma-separated string (e.g. "-0.5,0,0.5").
+// Matches the on-disk settings-file format for bracketEv.
+std::string bracketEvStr(const std::vector<float> &evs) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < evs.size(); ++i) {
+    if (i)
+      oss << ',';
+    oss << evs[i];
+  }
+  return oss.str();
+}
+
+// Parse a comma-separated bracket EV string into a vector of floats.
+// Returns nullopt if any token fails to parse.
+std::optional<std::vector<float>> parseBracketEvJson(std::string_view s) {
+  std::vector<float> out;
+  if (s.empty())
+    return out;
+  size_t start = 0;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i == s.size() || s[i] == ',') {
+      std::string tok(s.substr(start, i - start));
+      try {
+        out.push_back(std::stof(tok));
+      } catch (...) {
+        return std::nullopt;
+      }
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 // --- Pure-logic helper implementations ---
@@ -535,6 +578,14 @@ std::string settingsToJson(const CameraSettings &s) {
   oss << jsonNum("videoCodec", static_cast<int>(s.videoCodec)) << ',';
   oss << jsonNum("videoBitrate", s.videoBitrate) << ',';
   oss << jsonNum("sensorMode", static_cast<int>(s.sensorMode)) << ',';
+  oss << jsonNum("aeExposureMode", static_cast<int>(s.aeExposureMode)) << ',';
+  oss << jsonNum("aeConstraintMode", static_cast<int>(s.aeConstraintMode)) << ',';
+  oss << jsonNum("noiseReduction", static_cast<int>(s.noiseReduction)) << ',';
+  oss << jsonNum("gridType", static_cast<int>(s.gridType)) << ',';
+  oss << jsonBool("showHistogram", s.showHistogram) << ',';
+  oss << jsonNum("zebraMode", static_cast<int>(s.zebraMode)) << ',';
+  oss << jsonBool("focusPeaking", s.focusPeaking) << ',';
+  oss << jsonStr("bracketEv", bracketEvStr(s.bracketEv)) << ',';
   oss << jsonNum("menuMode", static_cast<int>(s.menuMode));
   oss << '}';
   return oss.str();
@@ -721,6 +772,42 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
           jsonNumValue<int>(jsonFindValue(json, "sensorMode").value_or("")))
     if (*v >= 0 && *v <= static_cast<int>(SensorMode::Mode4056x3040))
       s.sensorMode = static_cast<SensorMode>(*v);
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "aeExposureMode").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(AeExposureMode::Long))
+      s.aeExposureMode = static_cast<AeExposureMode>(*v);
+  if (auto v = jsonNumValue<int>(
+          jsonFindValue(json, "aeConstraintMode").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(AeConstraintMode::Shadows))
+      s.aeConstraintMode = static_cast<AeConstraintMode>(*v);
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "noiseReduction").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(NoiseReductionMode::Minimal))
+      s.noiseReduction = static_cast<NoiseReductionMode>(*v);
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "gridType").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(GridType::GoldenRatio))
+      s.gridType = static_cast<GridType>(*v);
+  if (auto v =
+          jsonBoolValue(jsonFindValue(json, "showHistogram").value_or("")))
+    s.showHistogram = *v;
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "zebraMode").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(ZebraMode::Threshold100))
+      s.zebraMode = static_cast<ZebraMode>(*v);
+  if (auto v =
+          jsonBoolValue(jsonFindValue(json, "focusPeaking").value_or("")))
+    s.focusPeaking = *v;
+  if (auto v = jsonFindValue(json, "meteringMode")) {
+    if (auto m = parseMeteringJson(*v))
+      s.meteringMode = *m;
+    else if (auto n = jsonNumValue<int>(*v))
+      if (*n >= 0 && *n <= static_cast<int>(MeteringMode::Matrix))
+        s.meteringMode = static_cast<MeteringMode>(*n);
+  }
+  if (auto v = jsonFindValue(json, "bracketEv"))
+    if (auto evs = parseBracketEvJson(*v))
+      s.bracketEv = *evs;
   if (auto v =
           jsonNumValue<int>(jsonFindValue(json, "menuMode").value_or("")))
     if (*v >= 0 && *v <= 1)
