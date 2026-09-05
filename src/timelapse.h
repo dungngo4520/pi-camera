@@ -24,13 +24,13 @@ class CameraApp;
 // snprintf failure.
 std::string formatTimelapseName(const std::string &pattern, int i);
 
-// Run a timelapse capture loop: `count` shots at `intervalSec` apart (0 = infinite),
-// saving each to a filename derived from `pattern` via formatTimelapseName().
-// If `captureDir` is non-empty and not ".", the formatted filename is joined
-// with the directory and validated with isFilePathInsideDir() to ensure the
-// final path stays within the capture directory.
-// The camera must already be init()'d and configure()'d by the caller.
-// SIGINT/SIGTERM stops gracefully after the current shot completes.
+// Run a timelapse capture loop: `count` shots at `intervalSec` apart (0 =
+// infinite), saving each to a filename derived from `pattern` via
+// formatTimelapseName(). If `captureDir` is non-empty and not ".", the
+// formatted filename is joined with the directory and validated with
+// isFilePathInsideDir() to ensure the final path stays within the capture
+// directory. The camera must already be init()'d and configure()'d by the
+// caller. SIGINT/SIGTERM stops gracefully after the current shot completes.
 // Returns true if all shots succeeded (or the loop was interrupted cleanly),
 // false on a capture or pattern error.
 bool runTimelapse(CameraApp &app, int intervalSec, int count,

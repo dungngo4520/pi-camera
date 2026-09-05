@@ -12,4 +12,4 @@ bool commitFd(int fd, const std::string &path, std::string_view label,
               std::string *actualPath);
 void discardFd(int fd, const std::string &path);
 
-}
+} // namespace picamera

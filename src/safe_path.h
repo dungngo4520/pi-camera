@@ -1,6 +1,7 @@
 #pragma once
 
-// Safe path construction utilities to prevent path traversal and symlink attacks.
+// Safe path construction utilities to prevent path traversal and symlink
+// attacks.
 //
 // All capture file paths are built through these helpers so that a malicious
 // or malformed --capture-dir / --capture-prefix / --capture-file cannot escape
@@ -18,7 +19,7 @@ namespace picamera {
 // (static buffer); std::system_category().message() is thread-safe and
 // returns a std::string. Used in all error logging paths.
 inline std::string errnoString(int err) {
-    return std::system_category().message(err);
+  return std::system_category().message(err);
 }
 
 // Reject a path component if it contains "..", absolute paths, or control
@@ -29,10 +30,8 @@ bool isSafePathComponent(std::string_view component);
 // Build a capture filename safely: rootDir/prefix_timestamp.ext
 // Rejects if rootDir is empty, prefix is unsafe, or the resulting path
 // would be unreasonably long (> 4096 chars). Returns empty string on failure.
-std::string safeCapturePath(std::string_view rootDir,
-                            std::string_view prefix,
-                            std::string_view timestamp,
-                            std::string_view ext);
+std::string safeCapturePath(std::string_view rootDir, std::string_view prefix,
+                            std::string_view timestamp, std::string_view ext);
 
 // Check that a resolved path is inside the given root directory.
 // Both should be absolute or relative; uses simple lexical containment
@@ -72,21 +71,25 @@ bool isCanonicalPathInside(const std::string &path, const std::string &root);
 // subdirectories from escaping the capture directory.
 // Both rootDir and filePath should be canonical (from canonicalizeDir).
 // Returns true if the file path is safely contained within rootDir.
-bool isFilePathInsideDir(const std::string &filePath, const std::string &rootDir);
+bool isFilePathInsideDir(const std::string &filePath,
+                         const std::string &rootDir);
 
 // Split a path into stem and extension for suffix-retry logic. The
 // extension is the last dot-suffix that appears after the final slash, so
 // "/a/b.c/d" has no extension (stem="/a/b.c/d", ext="") while
 // "/a/b/img.jpg" → stem="/a/b/img", ext=".jpg". Shared by safeFileOpenFd
 // and the encoder safe-open helpers to avoid duplicating the dot/slash split.
-struct PathStemExt { std::string stem; std::string ext; };
+struct PathStemExt {
+  std::string stem;
+  std::string ext;
+};
 PathStemExt splitPathStemExt(const std::string &path);
 
 // Build the i-th suffix-retry candidate: i == 1 returns the original
 // `path`; i >= 2 returns stem + "_" + i + ext. Used by the atomic
 // open(O_EXCL) retry loops in safeFileOpenFd and the encoder helpers.
-std::string suffixedCandidate(const PathStemExt &se,
-                              const std::string &path, int i);
+std::string suffixedCandidate(const PathStemExt &se, const std::string &path,
+                              int i);
 
 // Atomically open a file for writing with O_CREAT|O_EXCL|O_NOFOLLOW, retrying
 // with _2, _3, ... suffixes on EEXIST (no lstat probe, so no TOCTOU race).
@@ -98,17 +101,22 @@ int safeFileOpenFd(const std::string &path, std::string &outPath);
 
 // Checked multiplication for size_t — returns false on overflow.
 inline bool checkedMul(size_t a, size_t b, size_t &result) {
-    if (a == 0 || b == 0) { result = 0; return true; }
-    if (a > SIZE_MAX / b) return false;
-    result = a * b;
+  if (a == 0 || b == 0) {
+    result = 0;
     return true;
+  }
+  if (a > SIZE_MAX / b)
+    return false;
+  result = a * b;
+  return true;
 }
 
 // Checked addition for size_t — returns false on overflow.
 inline bool checkedAdd(size_t a, size_t b, size_t &result) {
-    if (a > SIZE_MAX - b) return false;
-    result = a + b;
-    return true;
+  if (a > SIZE_MAX - b)
+    return false;
+  result = a + b;
+  return true;
 }
 
 // Checked multiplication for uint64_t — returns false on overflow.
@@ -116,17 +124,22 @@ inline bool checkedAdd(size_t a, size_t b, size_t &result) {
 // overload above already handles uint64_t arguments.
 #if SIZE_MAX != UINT64_MAX
 inline bool checkedMul(uint64_t a, uint64_t b, uint64_t &result) {
-    if (a == 0 || b == 0) { result = 0; return true; }
-    if (a > UINT64_MAX / b) return false;
-    result = a * b;
+  if (a == 0 || b == 0) {
+    result = 0;
     return true;
+  }
+  if (a > UINT64_MAX / b)
+    return false;
+  result = a * b;
+  return true;
 }
 
 // Checked addition for uint64_t — returns false on overflow.
 inline bool checkedAdd(uint64_t a, uint64_t b, uint64_t &result) {
-    if (a > UINT64_MAX - b) return false;
-    result = a + b;
-    return true;
+  if (a > UINT64_MAX - b)
+    return false;
+  result = a + b;
+  return true;
 }
 #endif
 

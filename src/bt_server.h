@@ -15,19 +15,19 @@ namespace picamera {
 // --- Pure-logic helpers (unit-testable, no socket dependency) ---
 
 enum class BtCommandType {
-    Unknown,
-    Capture,
-    Status,
-    Settings,
-    Set,
-    List,
-    Quit,
+  Unknown,
+  Capture,
+  Status,
+  Settings,
+  Set,
+  List,
+  Quit,
 };
 
 struct BtCommand {
-    BtCommandType type = BtCommandType::Unknown;
-    std::string key;   // for SET
-    std::string value; // for SET
+  BtCommandType type = BtCommandType::Unknown;
+  std::string key;   // for SET
+  std::string value; // for SET
 };
 
 // Parse a single line of the Bluetooth serial protocol.
@@ -49,36 +49,36 @@ std::string btSetToJson(std::string_view key, std::string_view value);
 // a stub is compiled that always returns false from start().
 class BtServer {
 public:
-    BtServer();
-    ~BtServer();
-    BtServer(const BtServer &) = delete;
-    BtServer &operator=(const BtServer &) = delete;
+  BtServer();
+  ~BtServer();
+  BtServer(const BtServer &) = delete;
+  BtServer &operator=(const BtServer &) = delete;
 
-    bool start(int channel, const std::string &captureDir,
-               CameraSettings &settings, std::mutex &settingsMtx,
-               std::atomic<bool> &captureRequest,
-               const std::atomic<int> &batteryPercent,
-               const std::atomic<uint32_t> &captureCount);
+  bool start(int channel, const std::string &captureDir,
+             CameraSettings &settings, std::mutex &settingsMtx,
+             std::atomic<bool> &captureRequest,
+             const std::atomic<int> &batteryPercent,
+             const std::atomic<uint32_t> &captureCount);
 
-    void stop();
+  void stop();
 
-    bool isRunning() const { return running_.load(std::memory_order_acquire); }
+  bool isRunning() const { return running_.load(std::memory_order_acquire); }
 
 private:
-    void serverLoop();
-    void handleConnection(int clientFd);
+  void serverLoop();
+  void handleConnection(int clientFd);
 
-    std::atomic<bool> running_{false};
-    std::atomic<bool> stopFlag_{false};
-    int channel_ = 0;
-    int listenFd_ = -1;
-    std::string captureDir_;
-    std::thread thread_;
-    CameraSettings *settings_ = nullptr;
-    std::mutex *settingsMtx_ = nullptr;
-    std::atomic<bool> *captureRequest_ = nullptr;
-    const std::atomic<int> *batteryPercent_ = nullptr;
-    const std::atomic<uint32_t> *captureCount_ = nullptr;
+  std::atomic<bool> running_{false};
+  std::atomic<bool> stopFlag_{false};
+  int channel_ = 0;
+  int listenFd_ = -1;
+  std::string captureDir_;
+  std::thread thread_;
+  CameraSettings *settings_ = nullptr;
+  std::mutex *settingsMtx_ = nullptr;
+  std::atomic<bool> *captureRequest_ = nullptr;
+  const std::atomic<int> *batteryPercent_ = nullptr;
+  const std::atomic<uint32_t> *captureCount_ = nullptr;
 };
 
 } // namespace picamera

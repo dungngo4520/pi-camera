@@ -25,32 +25,32 @@ namespace picamera {
 // shared_ptr copy and reset is a data race (CWE-362).
 class CameraHandle {
 public:
-    CameraHandle() = default;
-    ~CameraHandle() noexcept { shutdown(); }
-    CameraHandle(const CameraHandle &) = delete;
-    CameraHandle &operator=(const CameraHandle &) = delete;
+  CameraHandle() = default;
+  ~CameraHandle() noexcept { shutdown(); }
+  CameraHandle(const CameraHandle &) = delete;
+  CameraHandle &operator=(const CameraHandle &) = delete;
 
-    // Start CameraManager and acquire camera[0]. `logPrefix` is prepended
-    // to error messages (e.g. "Camera:" or "Stream:"). Returns false on
-    // any failure (cleans up partial state before returning).
-    bool init(std::string_view logPrefix = "Camera");
+  // Start CameraManager and acquire camera[0]. `logPrefix` is prepended
+  // to error messages (e.g. "Camera:" or "Stream:"). Returns false on
+  // any failure (cleans up partial state before returning).
+  bool init(std::string_view logPrefix = "Camera");
 
-    // Release the camera and stop the CameraManager. Idempotent.
-    // noexcept: wraps libcamera calls in try/catch to prevent
-    // std::terminate if called from the destructor.
-    void shutdown() noexcept;
+  // Release the camera and stop the CameraManager. Idempotent.
+  // noexcept: wraps libcamera calls in try/catch to prevent
+  // std::terminate if called from the destructor.
+  void shutdown() noexcept;
 
-    // The acquired camera. nullptr if not initialized or after shutdown().
-    // Returns a snapshot under the mutex for thread-safe access.
-    std::shared_ptr<libcamera::Camera> camera() const {
-        std::lock_guard<std::mutex> lk(mtx_);
-        return cam_;
-    }
+  // The acquired camera. nullptr if not initialized or after shutdown().
+  // Returns a snapshot under the mutex for thread-safe access.
+  std::shared_ptr<libcamera::Camera> camera() const {
+    std::lock_guard<std::mutex> lk(mtx_);
+    return cam_;
+  }
 
 private:
-    mutable std::mutex mtx_;
-    std::shared_ptr<libcamera::CameraManager> cm_;
-    std::shared_ptr<libcamera::Camera> cam_;
+  mutable std::mutex mtx_;
+  std::shared_ptr<libcamera::CameraManager> cm_;
+  std::shared_ptr<libcamera::Camera> cam_;
 };
 
 } // namespace picamera

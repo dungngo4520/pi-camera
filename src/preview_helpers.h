@@ -18,16 +18,15 @@ namespace picamera {
 // EEXIST failures) when two captures happen within the same second —
 // normal for burst/bracket shooting. The millisecond suffix is zero-padded
 // to 3 digits so filenames sort lexicographically by time.
-// Uses safeCapturePath to prevent path traversal via malicious --capture-dir/prefix.
+// Uses safeCapturePath to prevent path traversal via malicious
+// --capture-dir/prefix.
 std::string makeCaptureFilename(const std::string &dir,
-                                const std::string &prefix,
-                                OutputFormat fmt);
+                                const std::string &prefix, OutputFormat fmt);
 
 // Generate a sequentially-numbered filename: prefix_IMGXXXX.ext
 // Finds the highest existing IMG number in the directory and increments.
 std::string makeSequentialFilename(const std::string &dir,
-                                   const std::string &prefix,
-                                   OutputFormat fmt);
+                                   const std::string &prefix, OutputFormat fmt);
 
 // Create a date-based subfolder (YYYY-MM-DD) under dir if useDateSubfolders
 // is true. Returns the (possibly new) directory path. If false, returns dir

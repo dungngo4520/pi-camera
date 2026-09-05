@@ -14,13 +14,13 @@ namespace picamera {
 // Two-plane NV12 sets plane0 (Y) and plane1 (UV).
 // Pointers are valid only for the duration of the write() call.
 struct FrameView {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t stride = 0;
-    const uint8_t *plane0 = nullptr;  // Y (NV12) or raw/JPEG bitstream
-    size_t plane0Size = 0;
-    const uint8_t *plane1 = nullptr;  // UV (NV12 only)
-    size_t plane1Size = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t stride = 0;
+  const uint8_t *plane0 = nullptr; // Y (NV12) or raw/JPEG bitstream
+  size_t plane0Size = 0;
+  const uint8_t *plane1 = nullptr; // UV (NV12 only)
+  size_t plane1Size = 0;
 };
 
 // Abstract output writer. Each subclass handles one capture format,
@@ -28,20 +28,21 @@ struct FrameView {
 // This lets the writers be unit-tested with synthetic FrameViews on x86.
 class OutputWriter {
 public:
-    virtual ~OutputWriter() = default;
-    // Encode the frame and write to `filename`. Returns true on success.
-    // On success, if `actualPath` is non-null it is set to the path actually
-    // written to (may differ from `filename` if a uniqueness suffix was needed).
-    [[nodiscard]] virtual bool write(const FrameView &frame, const std::string &filename,
-                       std::string *actualPath = nullptr) = 0;
+  virtual ~OutputWriter() = default;
+  // Encode the frame and write to `filename`. Returns true on success.
+  // On success, if `actualPath` is non-null it is set to the path actually
+  // written to (may differ from `filename` if a uniqueness suffix was needed).
+  [[nodiscard]] virtual bool write(const FrameView &frame,
+                                   const std::string &filename,
+                                   std::string *actualPath = nullptr) = 0;
 };
 
 // Factory: pick the writer for the configured format.
 // swJpegEncode disambiguates JPEG (HW MJPEG buffer vs software libjpeg encode
 // from RGB); it is determined at camera-configure time by CameraApp.
 // Returns nullptr for an unknown/invalid format — callers must check.
-[[nodiscard]] std::unique_ptr<OutputWriter> makeOutputWriter(OutputFormat fmt,
-                                               const CameraConfig &cfg,
-                                               bool swJpegEncode = false);
+[[nodiscard]] std::unique_ptr<OutputWriter>
+makeOutputWriter(OutputFormat fmt, const CameraConfig &cfg,
+                 bool swJpegEncode = false);
 
 } // namespace picamera

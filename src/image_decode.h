@@ -16,6 +16,6 @@ namespace picamera {
 // Callers MUST pass a path produced by safeCapturePath() (or otherwise
 // validated) to prevent path traversal. All current callers do this.
 std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
-                                          uint32_t dispW, uint32_t dispH);
+                                         uint32_t dispW, uint32_t dispH);
 
 } // namespace picamera
