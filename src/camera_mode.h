@@ -26,12 +26,21 @@ enum class DriveMode {
     SelfTimer,
     Bracket,
     Timelapse,
+    Continuous,
+    Bulb,
 };
 
 enum class GridType {
     Off,
     Thirds,
     Square,
+    Diagonal,
+    GoldenRatio,
+};
+
+enum class FileNamingMode {
+    Timestamp = 0,
+    Sequential = 1,
 };
 
 enum class ZebraMode {
@@ -39,13 +48,6 @@ enum class ZebraMode {
     Threshold70,
     Threshold80,
     Threshold100,
-};
-
-enum class AspectRatio {
-    Native,
-    Ratio43,
-    Ratio169,
-    Ratio11,
 };
 
 enum class SettingsTab {
@@ -56,14 +58,45 @@ enum class SettingsTab {
 };
 constexpr int kSettingsTabCount = 4;
 
+enum class ExposureMode {
+    Program = 0,
+    Shutter = 1,
+    Manual = 2,
+    Auto = 3,
+};
+
+enum class BracketType {
+    AE = 0,
+    WB = 1,
+    ISO = 2,
+};
+
+enum class PictureStyle {
+    Standard = 0,
+    Vivid = 1,
+    Neutral = 2,
+    Monochrome = 3,
+    Portrait = 4,
+    Landscape = 5,
+};
+
 struct CameraSettings {
     DriveMode driveMode = DriveMode::Single;
 
+    ExposureMode exposureMode = ExposureMode::Program;
     bool aeEnable = true;
     uint64_t shutterUs = 0;
     float analogueGain = 0;
     float digitalGain = 0;
     float exposureValue = 0;
+    // Auto-ISO range (min/max ISO). libcamera does not expose
+    // AeAnalogueGainMin/Max controls, so these cannot constrain the AE
+    // algorithm's auto-gain selection. They ARE applied in Manual exposure
+    // mode: when the user sets a manual analogueGain, it is clamped to
+    // [isoMin/100.0, isoMax/100.0] in applyControls()/applyCameraControls()
+    // (ISO = gain * 100). See clampGainToIsoRange() in camera_config.h.
+    int isoMin = 100;
+    int isoMax = 3200;
 
     MeteringMode meteringMode = MeteringMode::Matrix;
     AeExposureMode aeExposureMode = AeExposureMode::Normal;
@@ -74,12 +107,14 @@ struct CameraSettings {
 
     uint32_t timerDuration = 0;
     std::vector<float> bracketEv;
+    BracketType bracketType = BracketType::AE;
     int timelapseInterval = 5;
     int timelapseCount = 10;
 
     OutputFormat captureFormat = OutputFormat::JPEG;
     int jpegQuality = 90;
     int pngLevel = 6;
+    ImageSize imageSize = ImageSize::Large;
 
     AspectRatio aspectRatio = AspectRatio::Native;
 
@@ -88,7 +123,11 @@ struct CameraSettings {
     int wbKelvin = 5500;
     float wbRedGain = 1.0;
     float wbBlueGain = 1.0;
+    // One-touch custom WB: armed by WBSET, consumed by the viewfinder to
+    // update wbRedGain/wbBlueGain from the live frame's chroma. Transient.
+    bool wbMeasurePending = false;
 
+    PictureStyle pictureStyle = PictureStyle::Standard;
     float brightness = 0;
     float contrast = 1.0;
     float saturation = 1.0;
@@ -101,9 +140,13 @@ struct CameraSettings {
     ZebraMode zebraMode = ZebraMode::Off;
     bool focusPeaking = false;
     int displayBrightness = 100;
+    int focusMagnify = 0;  // 0=off, 2=2x, 4=4x
 
     bool enableBattery = true;
     int powerSaveTimeout = 30;
+
+    FileNamingMode fileNamingMode = FileNamingMode::Timestamp;
+    bool useDateSubfolders = false;
 };
 
 struct OverlayState {
@@ -119,7 +162,13 @@ struct OverlayState {
     bool meteringLocked = false;
     uint32_t shutterMs = 0;
     uint32_t iso = 0;
+    // Bulb mode: seconds since exposure started (0 = inactive).
+    uint32_t bulbSeconds = 0;
     std::string errorMessage;
+    bool timelapseRunning = false;
+    int focusMagnify = 0;
+    bool wifiActive = false;
+    bool btActive = false;
 };
 
 void drawOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
@@ -140,6 +189,17 @@ void drawFocusPeaking(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       const uint8_t *yPlane, uint32_t w, uint32_t h,
                       uint32_t stride, size_t ySize);
 
+uint8_t zebraThreshold(ZebraMode mode);
+
+// One-touch custom WB: estimate R/B gains from an NV12 UV (CbCr) plane so a
+// neutral subject averages to equal RGB. NV12 chroma is 4:2:0. Out gains
+// clamped to [0.1, 8.0]. Pure logic (unit-testable on x86).
+bool computeWbGainsFromNv12(const uint8_t *uv, uint32_t w, uint32_t h,
+                            size_t uvSize, float &outRed, float &outBlue);
+
+void drawBulbTimer(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                   uint32_t seconds);
+
 void drawSplash(uint8_t *rgb565, uint32_t fbW, uint32_t fbH);
 
 void drawCaptureIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH);
@@ -148,6 +208,17 @@ void drawTimerCountdown(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                         uint32_t seconds);
 
 void drawGrid(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, GridType type);
+
+void drawAspectRatioMask(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                         AspectRatio ratio);
+
+void drawFocusMagnifyIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                               int magnify);
+
+void drawImageViewHistogramAndBlinkies(uint8_t *rgb565, uint32_t fbW,
+                                       uint32_t fbH, size_t rgb565Size);
+
+void drawProtectionIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH);
 
 void drawReviewScreen(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       size_t rgb565Size,
@@ -166,5 +237,14 @@ void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                    size_t rgb565Size,
                    const uint8_t *imageRgb565, size_t imageSize,
                    const std::string &path);
+
+// Zoomed image view (1x/2x/4x) with pan. Source is imageW x imageH RGB565;
+// visible region (panX, panY, fbW/zoom, fbH/zoom) is scaled to fill the FB.
+void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                         size_t rgb565Size,
+                         const uint8_t *imageRgb565, size_t imageSize,
+                         uint32_t imageW, uint32_t imageH,
+                         int zoom, int panX, int panY,
+                         const std::string &path);
 
 }
