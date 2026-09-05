@@ -47,6 +47,21 @@ enum class OutputFormat {
     PNG,
     JPEG,
     DNG,
+    RawJpeg,
+    DngJpeg,  // Sequential DNG + JPEG (true RAW+JPEG like a mirrorless camera)
+};
+
+enum class ImageSize {
+    Large = 0,
+    Medium = 1,
+    Small = 2,
+};
+
+enum class AspectRatio {
+    Native,
+    Ratio43,
+    Ratio169,
+    Ratio11,
 };
 
 inline std::optional<OutputFormat> parseOutputFormat(std::string_view name) {
@@ -63,6 +78,8 @@ inline std::optional<OutputFormat> parseOutputFormat(std::string_view name) {
     if (ieq(name, "png")) return OutputFormat::PNG;
     if (ieq(name, "jpeg") || ieq(name, "jpg")) return OutputFormat::JPEG;
     if (ieq(name, "dng")) return OutputFormat::DNG;
+    if (ieq(name, "raw+jpeg") || ieq(name, "rawjpeg")) return OutputFormat::RawJpeg;
+    if (ieq(name, "dng+jpeg") || ieq(name, "dngjpeg")) return OutputFormat::DngJpeg;
     return std::nullopt;
 }
 
@@ -73,13 +90,18 @@ inline std::string_view extensionFor(OutputFormat fmt) {
         case OutputFormat::PNG:      return "png";
         case OutputFormat::JPEG:     return "jpg";
         case OutputFormat::DNG:      return "dng";
+        case OutputFormat::RawJpeg:
+        case OutputFormat::DngJpeg:
+            // Both produce a JPEG primary file. RawJpeg also saves raw NV12;
+            // DngJpeg also saves a DNG (with a different stem extension).
+            return "jpg";
     }
     return "bin";
 }
 
 inline constexpr std::string_view kAwbModes[] = {
     "auto", "incandescent", "tungsten", "fluorescent",
-    "indoor", "daylight", "cloudy",
+    "indoor", "daylight", "cloudy", "shade", "flash",
 };
 
 inline bool isValidAwbMode(std::string_view name) {
@@ -114,7 +136,33 @@ struct CameraConfig {
     int flickerPeriodUs = 0;
     float wbRedGain = 1.0;
     float wbBlueGain = 1.0;
+    int wbKelvin = 0;
     NoiseReductionMode noiseReductionMode = NoiseReductionMode::Fast;
+    ImageSize imageSize = ImageSize::Large;
+    AspectRatio aspectRatio = AspectRatio::Native;
+
+    // Auto-ISO range (min/max ISO when AE is on). libcamera does not expose
+    // AeAnalogueGainMin/Max controls, so these cannot constrain the AE
+    // algorithm's gain selection directly. They ARE applied, however, when
+    // manual gain is set: analogueGain is clamped to
+    // [isoMin/100.0, isoMax/100.0] in applyControls()/applyCameraControls()
+    // (ISO = analogueGain * 100, so ISO 100 = 1.0x gain). This enforces the
+    // user's chosen range in Manual exposure mode. See clampGainToIsoRange().
+    int isoMin = 100;
+    int isoMax = 3200;
 };
+
+// Clamp a manual analogue gain to the [isoMin, isoMax] ISO range.
+// ISO = analogueGain * 100 (1.0x = ISO 100, 4.0x = ISO 400), so the gain
+// bounds are isoMin/100.0 and isoMax/100.0. A non-positive gain (meaning
+// "auto/unset") is returned unchanged — only explicit manual gains are
+// constrained. Pure logic (unit-testable, no libcamera dependency).
+inline float clampGainToIsoRange(float gain, int isoMin, int isoMax) {
+    if (gain <= 0.0f) return gain;
+    float lo = static_cast<float>(isoMin) / 100.0f;
+    float hi = static_cast<float>(isoMax) / 100.0f;
+    hi = std::max(hi, lo);  // defensive: ensure a valid range
+    return std::clamp(gain, lo, hi);
+}
 
 } // namespace picamera

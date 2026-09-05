@@ -28,6 +28,10 @@ struct CliOptions {
     bool enableBattery = false;
     std::string batteryI2cDevice = "/dev/i2c-1";
     uint8_t batteryI2cAddress = 0x48;
+    // Wi-Fi remote control / image transfer server (optional)
+    bool wifiEnabled = false;
+    // Bluetooth RFCOMM serial remote control server (optional)
+    bool btEnabled = false;
 };
 
 void printUsage(const char *prog);

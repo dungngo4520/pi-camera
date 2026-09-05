@@ -3,6 +3,7 @@
 #include "preview.h"
 #include "safe_path.h"
 #include "timelapse.h"
+#include "hardware_config.h"
 
 #include <cctype>
 #include <filesystem>
@@ -29,6 +30,25 @@ picamera::PreviewConfig defaultPreviewConfig() {
     // capture to a fixed, well-known directory that `make install-service`
     // creates and the service unit guards for (ExecStartPre test -d).
     pcfg.captureDir = kDefaultCaptureDir;
+
+    HardwareConfig hwCfg = loadHardwareConfig(kDefaultConfigPath);
+    if (hwCfg.loaded) {
+        std::cout << "Loaded hardware config from " << kDefaultConfigPath << "\n";
+        pcfg.displayCfg.spiDevice = hwCfg.spiDevice;
+        pcfg.displayCfg.rotation = hwCfg.displayRotation;
+        pcfg.enableBattery = hwCfg.enableBattery;
+        pcfg.batteryCfg.i2cDevice = hwCfg.batteryI2cDevice;
+        pcfg.batteryCfg.i2cAddress = hwCfg.batteryI2cAddress;
+        if (!hwCfg.captureDir.empty()) pcfg.captureDir = hwCfg.captureDir;
+        if (!hwCfg.capturePrefix.empty()) pcfg.capturePrefix = hwCfg.capturePrefix;
+        if (hwCfg.previewWidth > 0) pcfg.previewWidth = hwCfg.previewWidth;
+        if (hwCfg.previewHeight > 0) pcfg.previewHeight = hwCfg.previewHeight;
+        if (hwCfg.maxFps > 0) pcfg.maxFps = hwCfg.maxFps;
+        if (hwCfg.captureWidth > 0) pcfg.captureWidth = hwCfg.captureWidth;
+        if (hwCfg.captureHeight > 0) pcfg.captureHeight = hwCfg.captureHeight;
+        if (hwCfg.wifiEnabled) pcfg.wifiEnabled = true;
+    }
+
     return pcfg;
 }
 

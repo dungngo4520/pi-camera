@@ -79,6 +79,18 @@ std::optional<int> parseRotation(std::string_view v) {
 
 void applyHardwareKey(HardwareConfig &cfg, std::string_view key,
                       std::string_view val, const std::string &path, int lineNum) {
+    auto boolKey = [&](const char *name, bool &field) {
+        auto b = parseBool(val);
+        if (b) field = *b;
+        else std::cerr << path << ":" << lineNum
+                      << ": invalid " << name << " (true/false)\n";
+    };
+    auto uintKey = [&](const char *name, uint32_t &field, uint32_t lo, uint32_t hi) {
+        auto u = parseUint32(val);
+        if (u && *u >= lo && *u <= hi) field = *u;
+        else std::cerr << path << ":" << lineNum << ": invalid " << name << "\n";
+    };
+
     if (key == "spi_device") {
         cfg.spiDevice = std::string(val);
     } else if (key == "display_rotate") {
@@ -91,42 +103,30 @@ void applyHardwareKey(HardwareConfig &cfg, std::string_view key,
     } else if (key == "battery_addr") {
         auto a = parseAddr(val);
         if (a) cfg.batteryI2cAddress = *a;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid battery_addr\n";
+        else std::cerr << path << ":" << lineNum << ": invalid battery_addr\n";
     } else if (key == "capture_dir") {
         cfg.captureDir = std::string(val);
     } else if (key == "capture_prefix") {
         cfg.capturePrefix = std::string(val);
     } else if (key == "preview_width") {
-        auto w = parseUint32(val);
-        if (w && *w > 0 && *w <= kMaxSensorWidth) cfg.previewWidth = *w;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid preview_width\n";
+        uintKey("preview_width", cfg.previewWidth, 1, kMaxSensorWidth);
     } else if (key == "preview_height") {
-        auto h = parseUint32(val);
-        if (h && *h > 0 && *h <= kMaxSensorHeight) cfg.previewHeight = *h;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid preview_height\n";
-    } else if (key == "preview_fps") {
+        uintKey("preview_height", cfg.previewHeight, 1, kMaxSensorHeight);
+    } else if (key == "preview_fps" || key == "max_fps") {
         auto fps = parseUint32(val);
-        if (fps && *fps >= 1 && *fps <= 120) cfg.previewFps = *fps;
+        if (fps && *fps >= 1 && *fps <= 120) cfg.maxFps = *fps;
         else std::cerr << path << ":" << lineNum
                       << ": invalid preview_fps (1-120)\n";
     } else if (key == "capture_width") {
-        auto w = parseUint32(val);
-        if (w && *w > 0 && *w <= kMaxSensorWidth) cfg.captureWidth = *w;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid capture_width\n";
+        uintKey("capture_width", cfg.captureWidth, 1, kMaxSensorWidth);
     } else if (key == "capture_height") {
-        auto h = parseUint32(val);
-        if (h && *h > 0 && *h <= kMaxSensorHeight) cfg.captureHeight = *h;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid capture_height\n";
+        uintKey("capture_height", cfg.captureHeight, 1, kMaxSensorHeight);
     } else if (key == "enable_battery") {
-        auto b = parseBool(val);
-        if (b) cfg.enableBattery = *b;
-        else std::cerr << path << ":" << lineNum
-                      << ": invalid enable_battery (true/false)\n";
+        boolKey("enable_battery", cfg.enableBattery);
+    } else if (key == "wifi_enabled") {
+        boolKey("wifi_enabled", cfg.wifiEnabled);
+    } else if (key == "bt_enabled") {
+        boolKey("bt_enabled", cfg.btEnabled);
     }
 }
 
@@ -144,21 +144,26 @@ bool loadHardwareConfig(const std::string &path, HardwareConfig &cfg) {
 
         auto eq = sv.find('=');
         if (eq == std::string_view::npos) {
-            std::cerr << path << ":" << lineNum
-                      << ": missing '=' — skipping line\n";
+            std::cerr << path << ":" << lineNum << ": missing '=' — skipping line\n";
             continue;
         }
         std::string_view key = trim(sv.substr(0, eq));
         std::string_view val = trim(sv.substr(eq + 1));
         if (key.empty() || val.empty()) {
-            std::cerr << path << ":" << lineNum
-                      << ": empty key or value — skipping line\n";
+            std::cerr << path << ":" << lineNum << ": empty key or value — skipping line\n";
             continue;
         }
 
         applyHardwareKey(cfg, key, val, path, lineNum);
     }
+    cfg.loaded = true;
     return true;
+}
+
+HardwareConfig loadHardwareConfig(const std::string &path) {
+    HardwareConfig cfg;
+    loadHardwareConfig(path, cfg);
+    return cfg;
 }
 
 }

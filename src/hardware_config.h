@@ -8,6 +8,7 @@
 namespace picamera {
 
 struct HardwareConfig {
+    bool loaded = false;
     std::string spiDevice = "/dev/spidev0.0";
     int displayRotation = 90;
 
@@ -20,13 +21,19 @@ struct HardwareConfig {
 
     uint32_t previewWidth = 320;
     uint32_t previewHeight = 240;
-    uint32_t previewFps = 20;
+    uint32_t maxFps = 20;
 
     uint32_t captureWidth = kMaxSensorWidth;
     uint32_t captureHeight = kMaxSensorHeight;
+
+    bool wifiEnabled = false;
+    bool btEnabled = false;
 };
 
 bool loadHardwareConfig(const std::string &path, HardwareConfig &cfg);
+
+// Convenience overload: returns a HardwareConfig with `loaded=true` if parsed.
+HardwareConfig loadHardwareConfig(const std::string &path);
 
 inline constexpr const char *kDefaultConfigPath = "/etc/picamera.conf";
 

@@ -147,10 +147,12 @@ void printUsage(const char *prog) {
               << "  " << prog << " --timelapse <sec> [options]   Timelapse mode\n"
               << "  " << prog << " --preview [options]           Live preview to SPI LCD (Waveshare 1.44\" HAT)\n\n"
               << "Options:\n"
-              << "  --format <type>         Output format for --capture/--timelapse: ppm, raw, png, jpeg, dng\n"
-              << "                          (default: ppm). For --preview stills, use --capture-format.\n"
+              << "  --format <type>         Output format for --capture/--timelapse: ppm, raw, png, jpeg, dng,\n"
+              << "                          dng+jpeg, raw+jpeg (default: ppm). For --preview stills, use --capture-format.\n"
               << "                          jpeg = ISP hardware-encoded (Pi only), ~10x faster\n"
               << "                          dng  = raw Bayer DNG (10-bit, for raw development)\n"
+              << "                          dng+jpeg = DNG + JPEG pair (sequential capture)\n"
+              << "                          raw+jpeg = NV12 raw + JPEG pair\n"
               << "  --png-level <0-9>       PNG compression level (0=none, 1=fast, 6=default, 9=best)\n"
               << "  --jpeg-quality <1-100>  JPEG quality for software encode (default: 90)\n"
               << "  --bracket <n,ev...>     HDR bracketing: capture N frames at EV offsets\n"
@@ -173,14 +175,18 @@ void printUsage(const char *prog) {
               << "  --preview-fps <n>       Preview max frame rate (default: 20)\n"
               << "  --capture-w <px>        Still capture width (default: 4056)\n"
               << "  --capture-h <px>        Still capture height (default: 3040)\n"
-              << "  --capture-format <type> Still capture format: jpeg, png, ppm, dng (default: jpeg)\n"
+              << "  --capture-format <type> Still capture format: jpeg, png, ppm, dng, dng+jpeg, raw+jpeg (default: jpeg)\n"
               << "  --capture-dir <path>    Directory for captured images (default: .)\n"
               << "  --capture-prefix <str>  Filename prefix for captures (default: capture)\n"
               << "  --spi-device <path>     SPI device for display (default: /dev/spidev0.0)\n"
               << "  --display-rotate <deg>  Display rotation: 0, 90, 180, 270 (default: 90)\n"
               << "  --battery               Show battery level overlay on preview (ADS1115 ADC)\n"
               << "  --battery-i2c <path>    I2C device for ADS1115 (default: /dev/i2c-1)\n"
-              << "  --battery-addr <hex>    ADS1115 I2C address (default: 0x48)\n\n"
+              << "  --battery-addr <hex>    ADS1115 I2C address (default: 0x48)\n"
+              << "  --wifi                  Enable Wi-Fi HTTP server (port 8080) for remote control\n"
+              << "                          and image transfer (GET / lists files, POST /capture triggers shot)\n"
+              << "  --bt                    Enable Bluetooth RFCOMM serial remote control (channel 1)\n"
+              << "                          Text commands: CAPTURE, STATUS, SETTINGS, SET key=val, LIST, QUIT\n\n"
               << "Examples:\n"
               << "  " << prog << " --capture photo.png --format png\n"
               << "  " << prog << " --capture photo.jpg --format jpeg       (ISP hardware encode, ~10x faster)\n"
@@ -277,7 +283,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             if (!parseStrArg(argc, argv, i, "--format", fmt)) return false;
             auto parsed = parseOutputFormat(fmt);
             if (!parsed) {
-                std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg, dng)\n";
+                std::cerr << "Unknown format: " << fmt << " (options: ppm, raw, png, jpeg, dng, dng+jpeg, raw+jpeg)\n";
                 return false;
             }
             cfg.format = *parsed;
@@ -309,7 +315,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
                 return false;
             }
             std::string spec = argv[++i];
-            // Parse comma-separated values: first is count, rest are EV offsets.
             std::vector<float> evs;
             size_t pos = 0;
             int count = 0;
@@ -371,7 +376,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
             if (!parseStrArg(argc, argv, i, "--capture-format", fmt)) return false;
             if (!parseOutputFormat(fmt)) {
                 std::cerr << "Unknown --capture-format: " << fmt
-                          << " (options: jpeg, png, ppm, raw, dng)\n";
+                          << " (options: jpeg, png, ppm, raw, dng, dng+jpeg, raw+jpeg)\n";
                 return false;
             }
             opts.captureFormat = fmt;
@@ -395,6 +400,10 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         } else if (arg == "--battery-addr") {
             if (!parseIntArg(argc, argv, i, "--battery-addr", parseUint8Hex,
                              opts.batteryI2cAddress)) return false;
+        } else if (arg == "--wifi") {
+            opts.wifiEnabled = true;
+        } else if (arg == "--bt") {
+            opts.btEnabled = true;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             return false;
@@ -432,7 +441,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         return false;
     }
 
-    // Validate device paths
+    // Validate device paths for path safety
     if (!isSafeDevicePath(opts.spiDevice)) {
         std::cerr << "--spi-device must be a /dev/ path without '..'\n";
         return false;
@@ -456,7 +465,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         return false;
     }
 
-    // Validate timelapse parameters
     if (opts.mode == "timelapse") {
         if (opts.timelapseInterval <= 0) {
             std::cerr << "--timelapse must be > 0, got " << opts.timelapseInterval << "\n";
@@ -475,7 +483,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         }
     }
 
-    // Validate display rotation
     if (opts.displayRotation != 0 && opts.displayRotation != 90 &&
         opts.displayRotation != 180 && opts.displayRotation != 270) {
         std::cerr << "--display-rotate must be 0, 90, 180, or 270, got "
@@ -483,7 +490,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         return false;
     }
 
-    // Validate capture prefix for path safety
     if (!isSafePathComponent(opts.capturePrefix)) {
         std::cerr << "--capture-prefix contains unsafe characters (.., /, control chars)\n";
         return false;
@@ -504,7 +510,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
         return false;
     }
 
-    // Validate output pattern for path safety (timelapse filenames).
     if (!opts.outputPattern.empty() && !isSafeFilePath(opts.outputPattern)) {
         std::cerr << "--output contains unsafe path components (.., absolute, control chars)\n";
         return false;
