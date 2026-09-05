@@ -23,6 +23,10 @@ pkg_check_modules(LIBGPIOD QUIET IMPORTED_TARGET libgpiod>=2.0)
 # Optional — falls back to the bitmap font if not found.
 pkg_check_modules(FREETYPE QUIET IMPORTED_TARGET freetype2)
 
+# BlueZ for Bluetooth RFCOMM remote control (optional). When not found, a stub
+# BtServer is compiled that prints an error. Install libbluetooth-dev on the Pi.
+pkg_check_modules(BLUEZ QUIET IMPORTED_TARGET bluez)
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -69,6 +73,8 @@ add_library(picamera_core STATIC
     src/file_util.cpp
     src/hardware_config.cpp
     src/settings_menu.cpp
+    src/wifi_server.cpp
+    src/bt_server.cpp
 )
 target_compile_features(picamera_core PUBLIC cxx_std_20)
 target_include_directories(picamera_core PUBLIC src)
@@ -84,6 +90,10 @@ endif()
 if(FREETYPE_FOUND)
     target_compile_definitions(picamera_core PUBLIC HAVE_FREETYPE)
     target_link_libraries(picamera_core PUBLIC PkgConfig::FREETYPE)
+endif()
+if(BLUEZ_FOUND)
+    target_compile_definitions(picamera_core PUBLIC HAVE_BLUEZ)
+    target_link_libraries(picamera_core PUBLIC PkgConfig::BLUEZ)
 endif()
 
 # --------------------------------------------------------------------------- #
@@ -136,6 +146,10 @@ if(PICAMERA_BUILD_TESTS)
         tests/test_stop_flag.cpp
         tests/test_hardware_config.cpp
         tests/test_settings_menu.cpp
+        tests/test_wb_utils.cpp
+        tests/test_wifi_server.cpp
+        tests/test_bt_server.cpp
+        tests/test_encoders.cpp
     )
     target_compile_features(picamera_tests PRIVATE cxx_std_20)
     target_include_directories(picamera_tests PRIVATE tests)

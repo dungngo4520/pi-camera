@@ -70,8 +70,14 @@ CMake options:
   header warnings (`.clang-tidy` `HeaderFilterRegex: 'src/.*'`) are emitted but not
   enforced, to keep the gate focused on TU-local diagnostics.
 - No external test framework; `tests/test_runner.h` is a minimal TEST/CHECK/REQUIRE runner.
-- Pure-logic code (image, output, cli, timelapse, safe_path) is unit-tested; camera.cpp requires hardware.
+- Pure-logic code (image, output, cli, timelapse, safe_path, camera_mode,
+  settings_menu, preview_helpers, hardware_config, encoders, wb_utils,
+  wifi_server protocol, bt_server protocol) is unit-tested; camera.cpp,
+  preview.cpp, display, and battery I2C require hardware.
 - `formatTimelapseName` validates `--output` patterns to prevent format-string vulns (see test_timelapse.cpp).
+- Wi-Fi (`--wifi`) and Bluetooth (`--bt`) are optional remote-control transports,
+  gated by CMake `pkg_check_modules QUIET` (libbluetooth-dev for `--bt`).
+  Wire-protocol parsers are unit-tested; socket I/O needs hardware.
 
 ## Security hardening
 
@@ -90,49 +96,20 @@ CMake options:
   allowlist, `ProtectSystem=full`, `ProtectHome=read-only`, `MemoryDenyWriteExecute`,
   `SystemCallFilter=@system-service`, `NoNewPrivileges`, `UMask=0077`.
 
-## Preview mode (live LCD streaming)
+## Preview mode (build notes)
 
 `--preview` streams the camera to a Waveshare 1.44" LCD HAT (ST7735S, 128x128, SPI)
-and captures full-res JPEGs on joystick press — mirrorless-camera style.
+and captures full-res JPEGs on joystick press. Key build constraints:
 
-- **Display driver**: userspace ST7735S via `spidev` + `libgpiod` (no kernel overlay needed).
-  - SPI: `/dev/spidev0.0` at 16 MHz, mode 0
-  - GPIO: DC=BCM25, RST=BCM27, BL=BCM24
-  - SPI data is sent in 4096-byte chunks (optimized for throughput)
-  - Default rotation: 90 — panel is physically mounted rotated 90° CCW on the PCB.
-    Rotation is done entirely in software (90° CW pre-rotation of the framebuffer).
-    No MV bit is used (MADCTL=0x08, BGR only) because MV changes the controller's
-    auto-increment direction, which transposes pixel data and breaks text rendering.
-    Adjustable with `--display-rotate`
-  - Font: FreeType + DejaVu Sans Mono (8px, anti-aliased) when libfreetype6-dev
-    is installed; falls back to 5x7 bitmap font otherwise. Glyphs are cached
-    on first use. Install on Pi: `sudo apt install libfreetype6-dev`.
-  - `blitRegion()` for partial updates (overlay-only refresh without full redraw)
-- **DualStream** (`dual_stream.{h,cpp}`): runs Viewfinder + StillCapture streams
-  simultaneously on one camera. The Pi ISP drives both from the same sensor,
-  sharing AE/AWB. Still capture is a one-shot request queued on the still stream;
-  the viewfinder keeps streaming — no stop/restart, no 1s+ blackout.
-  - Viewfinder: NV12 at 320x240, 4 buffers, continuous re-queue
-  - Still: full-res (4056x3040), 1 buffer, queued on shutter press
-  - HW MJPEG fallback detection preserved (NV12 + libjpeg if MJPEG rejected)
-- **Mode state machine** (`camera_mode.{h,cpp}`): Viewfinder / Review / Playback /
-  Settings / Splash modes, navigated via buttons.
-  - Splash screen on boot (1.5s)
-  - Review: shows saved filename for 2s after capture
-  - Playback: browse captured images (Key1), joystick navigates
-  - Settings: JPEG quality, grid, brightness, self-timer (Key2)
-- **Button input**: `ButtonInput` class polls libgpiod edge events.
-  - Shutter (joystick press, BCM13): quick tap (<500ms) = capture;
-    long hold (>=500ms) = AE/AWB metering lock (half-press emulation)
-  - Key1 (BCM21): playback mode / exit playback
-  - Key2 (BCM20): settings mode / exit settings
-  - Key3 (BCM16): power toggle — enters sleep mode (display off, low power); any button press wakes the camera back up
-  - `ButtonEvent.pressDurationMs` tracks press duration for half-press logic
 - **libgpiod dependency**: optional at build time (CMake `pkg_check_modules QUIET`).
   Without it, `--preview` prints an error. Install `libgpiod-dev` on the Pi.
 - **Pi Zero 2 W memory**: 512MB RAM. Build with `-j1` to avoid OOM.
   Add swap (`sudo fallocate -l 512M /swapfile && mkswap /swapfile && swapon /swapfile`).
 - **Build on Pi**: `cmake -DPICAMERA_BUILD_TESTS=OFF .. && make -j1`
+- **DualStream**: Viewfinder + StillCapture streams run simultaneously on one
+  camera (no stop/restart on capture). HW MJPEG fallback detection preserved.
+- **Mode state machine**: Viewfinder / Review / Playback / Settings / Splash,
+  navigated via buttons (shutter=BCM13, Key1=BCM21, Key2=BCM20, Key3=BCM16).
 
 ## JPEG capture (software fallback)
 
@@ -143,39 +120,22 @@ JPEG in software via libjpeg-turbo.
 - **libjpeg dependency**: optional (CMake `pkg_check_modules QUIET libjpeg`).
   Install `libjpeg-dev` on the Pi. Without it, JPEG capture at full res will fail.
 - **Buffer count**: reduced to 1 for high-res NV12 (>2MP) to avoid V4L2 ENOMEM.
-- **Detection**: checks `sc.pixelFormat` after both `validate()` and `configure()`,
-  since the pipeline handler may change the format at either stage.
+- **Detection**: checks `sc.pixelFormat` after both `validate()` and `configure()`.
 
 ## Battery monitoring (ADS1115 ADC)
 
-The UPS-Lite V1.2's onboard MAX17040G fuel gauge is a **fake/clone** at I2C
-address 0x32 (genuine = 0x36). Its VCELL register always reads 0x0000 and SOC
-is garbage (counts down from arbitrary values). The power path works (cell
-powers the Pi), but the measurement path is broken.
+The UPS-Lite V1.2's onboard MAX17040G fuel gauge is a **fake/clone** (I2C 0x32,
+genuine = 0x36) — VCELL always reads 0x0000, SOC is garbage. An external
+**ADS1115** (16-bit I2C ADC at 0x48) reads the cell voltage directly instead.
+Voltage → LiPo SOC via a piecewise-linear discharge curve (±5-10% accuracy).
 
-To work around this, an external **ADS1115** (16-bit I2C ADC) reads the cell
-voltage directly. The voltage is converted to LiPo state-of-charge via a
-piecewise-linear discharge curve (±5-10% accuracy, vs ±2% for a real gauge).
-
-- **Wiring** (ADS1115 → Pi Zero 2 W):
-  - VDD  → Pi 5V (pin 2 or 4)
-  - GND  → Pi GND (pin 6)
-  - SDA  → Pi GPIO2/SDA1 (pin 3, i2c-1)
-  - SCL  → Pi GPIO3/SCL1 (pin 5, i2c-1)
-  - A0   → Battery + terminal (on UPS-Lite battery JST connector)
-  - ADDR → GND (sets I2C address to 0x48)
-  - No voltage divider needed: PGA gain ±6.144V covers LiPo 3.0-4.2V directly
-- **I2C address**: 0x48 (default, ADDR→GND)
-- **PGA gain**: ±6.144V (config 0x0000, LSB = 187.5µV)
-- **Sample rate**: 128 SPS (continuous mode)
-- **Battery read interval**: every 3 seconds during preview (I2C is slow)
-- **Display overlay**: battery icon (18x9px) + percentage text in top-right
-  corner of the Waveshare LCD during `--preview` mode
-- **CLI flags**: `--battery` (enable overlay), `--battery-i2c <path>`,
-  `--battery-addr <hex>`
+- **CLI flags**: `--battery`, `--battery-i2c <path>`, `--battery-addr <hex>`
 - **Code**: `src/battery.cpp` (ADS1115 I2C + LiPo SOC), `src/font.cpp`
-  (5x7 bitmap font + battery icon renderer), both unit-tested
-- **No new library dependency**: uses raw i2c-dev ioctl (kernel module)
+  (battery icon renderer), both unit-tested. No new library dependency
+  (raw i2c-dev ioctl).
+- **Wiring**: VDD→Pi 5V, GND→Pi GND, SDA→GPIO2, SCL→GPIO3,
+  A0→Battery +, ADDR→GND (sets address 0x48). No voltage divider needed
+  (PGA gain ±6.144V covers LiPo 3.0-4.2V).
 
 ---
 
@@ -246,7 +206,7 @@ in conflict. Keep them concise — see the Devin docs on
   this repo that means, at minimum:
   ```bash
   make build          # must compile clean (C++20, -Wall -Wextra -Wpedantic)
-  make test           # ctest must pass (269 pure-logic tests)
+  make test           # ctest must pass (668 pure-logic tests)
   make tidy           # clang-tidy: zero warnings on src/
   ```
   Run `make test-sanitize` for any change touching memory/buffer/CLI parsing.

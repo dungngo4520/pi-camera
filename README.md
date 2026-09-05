@@ -1,6 +1,6 @@
 # pi-camera
 
-A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, DNG, or raw NV12. A live `--preview` mode streams the viewfinder to a Waveshare 1.44" SPI LCD HAT and captures full-res stills on joystick press.
+A small, dependency-light C++20 libcamera front-end for the **Raspberry Pi HQ Camera (IMX477)** on a **Pi Zero 2 W**. Captures stills and timelapses at full sensor resolution (4056x3040) and saves them as PPM, PNG, JPEG, DNG, raw NV12, or simultaneous raw+JPEG / DNG+JPEG. A live `--preview` mode streams the viewfinder to a Waveshare 1.44" SPI LCD HAT and captures full-res stills on joystick press.
 
 **Appliance mode**: run with no arguments (or install as a systemd service) and the Pi becomes a mirrorless-style camera — power on, the viewfinder is live, joystick press captures a JPEG, battery overlay shows charge level. No CLI interaction needed.
 
@@ -17,7 +17,23 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 
 - **DNG raw capture**: `--format dng` captures raw Bayer data (SRGGB10_CSI2P from the Pi ISP) and writes a minimal DNG 1.6 file with CFA pattern, black/white levels, active area, and EXIF metadata (exposure time, ISO, timestamp). The 10-bit MIPI-packed samples are unpacked to 16-bit for compatibility with raw developers (Lightroom, RawTherapee, darktable).
 - **HDR bracketing**: `--bracket N,ev1,ev2,...` captures N frames at different EV offsets. For example, `--bracket 3,-2,0,+2` captures 3 frames at -2EV, 0EV, and +2EV. Each frame's exposure time is scaled by 2^ev. Filenames get an `_ev±N` suffix (e.g. `photo_ev-2.0.png`). Works best with manual exposure (`--shutter` + `--iso`).
-- **EXIF metadata**: DNG files embed exposure time (as a rational fraction), ISO speed (computed from analogue gain), and DateTimeOriginal (UTC). PNG and JPEG do not currently embed EXIF (the ISP JPEG may include it depending on the Pi firmware).
+- **EXIF metadata**: DNG files embed exposure time (as a rational fraction), ISO speed (computed from analogue gain), and DateTimeOriginal (UTC). JPEG files embed the same metadata in an APP1/EXIF segment, and PNG files embed it in tEXt chunks (ExposureTime, ISOSpeedRatings, DateTimeOriginal).
+
+## Camera features (settings menu)
+
+The in-app settings menu (accessible via Key2 in preview mode) exposes a full set of mirrorless-camera controls, organized into four tabs:
+
+- **Picture styles**: Film-simulation presets (Standard, Vivid, Neutral, Monochrome, Portrait, Landscape) that adjust brightness, contrast, saturation, and sharpness in one step.
+- **Focus magnifier**: 2x/4x focus assist zoom for manual focus confirmation.
+- **AE lock**: Long-press the shutter (joystick) to lock AE/AWB metering (half-press emulation) — useful for recomposing after metering.
+- **Custom white balance**: One-touch WBSET measures the live frame's chroma and computes custom R/B gains; Kelvin temperature and manual R/B gain sliders are also available.
+- **Date-based subfolders**: Captures can be organized into `YYYY/MM/DD/` date folders for easy archival.
+- **Histogram / Zebra / Focus peaking**: Live exposure overlays on the viewfinder — luminance histogram, over-exposure zebra stripes (70/80/100% thresholds), and focus-peaking highlight.
+- **Noise reduction**: Off / Fast / HQ / Minimal modes for the Pi ISP's noise reduction pipeline.
+- **AE modes**: Exposure mode (Program / Shutter-priority / Manual / Auto), AE exposure mode (Normal / Short / Long), and AE constraint mode (Normal / Highlight / Shadows).
+- **Power save**: Configurable auto-sleep timeout (30s / 60s / 300s / Off) to conserve battery.
+- **Wi-Fi** (`--wifi`): HTTP server on port 8080 for remote control and image transfer from a phone or laptop.
+- **Bluetooth** (`--bt`): RFCOMM serial remote control (channel 1, optional via BlueZ) for low-power wireless shutter release.
 
 ## Live preview (SPI LCD)
 
@@ -37,14 +53,7 @@ The capture pipeline is optimized for the Pi Zero 2 W's quad-core Cortex-A53:
 ./picamera --preview --battery
 ```
 
-The preview loop:
-
-1. Captures NV12 frames at the configured preview resolution (default 320x240) via a `CameraStream` (libcamera Viewfinder role, 4 buffers, continuous re-queue).
-2. Converts to RGB565 with center-crop + nearest-neighbor scaling (BT.601 limited-range).
-3. Optionally draws a battery icon + percentage overlay (read from an ADS1115 ADC every 3 s).
-4. Blits the RGB565 buffer to the ST7735S over SPI in 256-byte chunks.
-5. On joystick press (BCM13): stops the stream, waits 500 ms for V4L2 buffer release, captures a full-res still via `CameraApp`, then restarts the stream.
-6. Runs until Ctrl+C (SIGINT/SIGTERM).
+The preview loop captures NV12 frames at the configured preview resolution (default 320x240) via a `CameraStream` (libcamera Viewfinder role, 4 buffers, continuous re-queue), converts to RGB565 with center-crop + nearest-neighbor scaling (BT.601 limited-range), optionally draws a battery overlay (ADS1115 ADC, read every 3 s), and blits to the ST7735S over SPI. On joystick press (BCM13): stops the stream, waits 500 ms for V4L2 buffer release, captures a full-res still, then restarts the stream. Runs until Ctrl+C (SIGINT/SIGTERM).
 
 Frame rate is capped at `--preview-fps` (default 20) to avoid burning CPU on the Pi Zero. AE/AWB run continuously. SPI runs at 16 MHz, mode 0; GPIO DC=BCM25, RST=BCM27, BL=BCM24. Default rotation is 180 (MX|MY|BGR) to orient the Waveshare HAT right-way-up; adjust with `--display-rotate` (0/90/180/270).
 
@@ -74,10 +83,9 @@ sudo apt install build-essential cmake pkg-config \
 ```
 
 `libgpiod-dev` is required for `--preview` (SPI display + joystick). `libjpeg-dev`
-is required for software JPEG encoding when the Pi VC4 pipeline handler rejects
-HW MJPEG at full resolution (it falls back to NV12 + libjpeg encode). Both are
-optional at build time via CMake `pkg_check_modules QUIET` — without them the
-relevant feature prints an error at runtime instead of failing to build.
+is required for software JPEG encoding when the Pi VC4 pipeline rejects HW MJPEG
+at full resolution. Both are optional at build time via CMake `pkg_check_modules
+QUIET` — without them the relevant feature prints an error at runtime.
 
 Verified versions on the target board:
 
@@ -125,19 +133,16 @@ Requirements on the host:
   - Arch: `pacman -S qemu-user-static && sudo systemctl restart systemd-binfmt`
   - Verify: `cat /proc/sys/fs/binfmt_misc/qemu-aarch64` should say `enabled`
 
-The script builds the Docker image, extracts the binary, and verifies it with `file`. Output: `./picamera-arm64` (~90 KB, dynamically linked aarch64 ELF).
+The script builds the Docker image, extracts the binary, and verifies it with `file`. Output: `./picamera-arm64` (~90 KB, dynamically linked aarch64 ELF). First build takes ~3 min (downloads Debian base + apt packages); subsequent builds are cached (~20 s).
 
 Transfer to the Pi:
 
 ```bash
 make cross-deploy   # cross-build + scp to Pi in one step
-# or manually:
 scp picamera-arm64 pi@raspberrypi.local:~/camera/build/picamera
 ```
 
 The binary is dynamically linked against `libcamera.so.0.7`, `libpng16.so.16`, etc. — all present on the Pi from `apt install libcamera-dev libpng-dev`. No extra runtime deps need to be copied.
-
-First build takes ~3 min (downloads Debian base + apt packages). Subsequent builds are cached and take ~20 s (just the `cmake && make` step).
 
 ### 3. Remote build via SSH (deploy source, build on Pi)
 
@@ -178,6 +183,8 @@ Options:
 | `--battery` | off | Show battery level overlay on preview (ADS1115 ADC) |
 | `--battery-i2c <path>` | `/dev/i2c-1` | I2C device for the ADS1115 |
 | `--battery-addr <hex>` | `0x48` | ADS1115 I2C address |
+| `--wifi` | off | Enable Wi-Fi HTTP server (port 8080) for remote control + image transfer |
+| `--bt` | off | Enable Bluetooth RFCOMM serial remote control (channel 1, optional via BlueZ) |
 | `--output <pattern>` | `capture_%04d.ppm` | Timelapse filename pattern. `%04d` = sequence index, else `strftime` |
 | `--count <n>` | `1` | Number of timelapse shots (`0` = infinite) |
 | `--width <px>` | `4056` | Image width |
@@ -222,7 +229,7 @@ Options:
 
 ### Timelapse `--output` patterns
 
-The `--output` pattern is either a printf-style integer template (containing a `%d`/`%04d`-style conversion, substituted with the shot index) or a `strftime` template (expanded with the current local time). The two styles cannot be mixed in one pattern — a pattern with both `%04d` and `%Y` is rejected. Only integer printf conversions are allowed in the printf path (`%s`, `%n`, `%p`, etc. are rejected) so a user-supplied pattern can't read garbage off the stack.
+The `--output` pattern is either a printf-style integer template (containing `%d`/`%04d`, substituted with the shot index) or a `strftime` template (expanded with local time). The two styles cannot be mixed. Only integer printf conversions are allowed (`%s`, `%n`, `%p`, etc. are rejected) so a user-supplied pattern can't read garbage off the stack.
 
 Press `Ctrl-C` (SIGINT/SIGTERM) during a timelapse to stop gracefully after the current shot completes; the camera is released cleanly and no half-written frame is left behind.
 
@@ -234,30 +241,22 @@ Press `Ctrl-C` (SIGINT/SIGTERM) during a timelapse to stop gracefully after the 
 | PNG | `.png` | ~5-15 MB | Lossless, libpng. CPU-heavy on the Pi Zero (~40 s for 12 MP). |
 | JPEG | `.jpg` | ~2-6 MB | ISP hardware MJPEG (Pi only), ~10x faster than PNG. Falls back to software libjpeg encode if the VC4 pipeline rejects HW MJPEG at full res. |
 | DNG | `.dng` | ~24 MB | Raw Bayer (SRGGB10_CSI2P) unpacked to 16-bit, DNG 1.6 + EXIF. For raw development. |
+| Raw+JPEG | `.raw` + `.jpg` | ~20 MB | Simultaneous raw NV12 + JPEG capture. Best of both: instant preview JPEG + raw data for later processing. |
+| DNG+JPEG | `.dng` + `.jpg` | ~26 MB | Simultaneous DNG raw + JPEG capture. Raw for development + ready-to-share JPEG in one shot. |
 | Raw NV12 | `.raw` | ~18 MB | Y plane + UV plane as captured by the ISP. No color conversion. |
 
 ## Why warmup frames matter
 
-libcamera's auto-exposure (AE) and auto-white-balance (AWB) algorithms need **several frames to converge** — they measure the scene, then adjust exposure and gain over successive frames. If you capture a single frame with no warmup, AE hasn't measured anything yet and the ISP applies a near-zero exposure, producing a **black frame**.
-
-This was a real bug in earlier versions of this project: a 12 MP PNG came out at 36 KB because every pixel was `(0,0,0)` — PNG compresses uniform regions to almost nothing. The fix queues all available buffers, discards the first `--warmup` frames (re-queuing their buffers with `Request::ReuseBuffers`), and saves only the converged frame. Default is 8; bump to 15+ in low light.
-
-Reference: a real 12 MP photo is typically:
-
-- 2-6 MB as JPEG (lossy)
-- 10-25 MB as PNG (lossless)
-- ~37 MB as uncompressed RGB
+libcamera's auto-exposure (AE) and auto-white-balance (AWB) need **several frames to converge**. Capturing with no warmup produces a **black frame** — AE hasn't measured anything yet and the ISP applies near-zero exposure. The fix queues all available buffers, discards the first `--warmup` frames (default 8), and saves only the converged frame. Bump to 15+ in low light.
 
 If your PNG is suspiciously small (under ~1 MB at full res), it's almost certainly a black or near-uniform frame — increase `--warmup`.
 
 ## Headless one-button capture (`--preview`)
 
-The `--preview` mode is the headless capture path: the Waveshare HAT's joystick
-press (BCM13) triggers a full-res still capture without needing a separate
-daemon or SSH session. The display flashes white-then-black for visual feedback,
-the stream is briefly stopped to release the camera, the still is captured, and
-the stream restarts automatically. Captures are saved as
-`<prefix>_YYYYMMDD-HHMMSS.<ext>` in `--capture-dir`.
+In `--preview` mode, joystick press (BCM13) triggers a full-res still capture.
+The display flashes white-then-black for feedback, the stream briefly stops to
+release the camera, the still is captured, and the stream restarts. Captures
+are saved as `<prefix>_YYYYMMDD-HHMMSS.<ext>` in `--capture-dir`.
 
 ```bash
 ./picamera --preview --capture-format jpeg --capture-dir ~/photos
@@ -291,15 +290,11 @@ journalctl -u picamera -f
 
 This installs the binary to `/usr/local/bin/picamera`, the systemd unit to
 `/lib/systemd/system/picamera.service`, enables auto-start on boot, and creates
-`/home/pi/captures` (owned by the `pi` user) for captured images. The service
-runs as the `pi` user (not root) with restricted device access — the `pi` user
-must be in the `gpio`, `i2c`, `spi`, and `video` groups (default on Raspberry
-Pi OS). The unit uses `DevicePolicy=closed` with an allowlist covering the SPI
-display, I2C battery ADC, GPIO chip, DMA heap, and the V4L2/media/subdev nodes
-libcamera opens to drive the IMX477 pipeline. System binaries are protected
-read-only (`ProtectSystem=full`); `/home` stays writable for captures. The
-service auto-restarts on failure (3-second delay). Ctrl+C (or
-`systemctl stop picamera`) exits cleanly.
+`/home/pi/captures` for captured images. The service runs as the `pi` user (not
+root) with restricted device access — the `pi` user must be in the `gpio`, `i2c`,
+`spi`, and `video` groups (default on Raspberry Pi OS). The unit uses
+`DevicePolicy=closed` with an allowlist, `ProtectSystem=full`, and
+auto-restarts on failure (3-second delay).
 
 ## Flashing the Pi (first-time setup)
 
@@ -307,7 +302,7 @@ service auto-restarts on failure (3-second delay). Ctrl+C (or
 
 ## Testing
 
-Unit tests cover the pure-logic parts of the codebase (no camera hardware needed): NV12→RGB conversion, CLI argument parsing, the output writers (PPM/PNG/raw/JPEG/DNG round-trip), the DNG/TIFF writer, the LiPo battery SOC curve + ADS1115, the font renderer, and the timelapse filename-pattern validator (including the format-string-vulnerability rejections).
+Unit tests cover the pure-logic parts of the codebase (no camera hardware needed): NV12→RGB conversion, CLI parsing, output writers (PPM/PNG/raw/JPEG/DNG round-trip), DNG/TIFF writer, LiPo battery SOC + ADS1115, font renderer, timelapse filename validation, settings menu, camera mode state machine, safe-path construction, white-balance utilities, hardware config, image decode, preview helpers, and Wi-Fi/Bluetooth wire-protocol parsers. 668 tests total.
 
 ```bash
 make test             # build + run unit tests (ctest)
@@ -335,35 +330,61 @@ CI (`.github/workflows/ci.yml`) runs the native build + tests + sanitizers + cla
 ├── scripts/
 │   └── cross-build.sh     Docker + qemu-user-static aarch64 cross-build
 ├── tests/
-│   ├── test_runner.h      Minimal test framework (TEST/CHECK/REQUIRE, no deps)
-│   ├── test_main.cpp      Runner: executes all registered tests
-│   ├── test_image.cpp     NV12->RGB conversion tests
-│   ├── test_output.cpp    PPM / PNG / raw writer round-trip tests
+│   ├── test_runner.h           Minimal test framework (TEST/CHECK/REQUIRE, no deps)
+│   ├── test_main.cpp           Runner: executes all registered tests
+│   ├── test_image.cpp          NV12->RGB conversion tests
+│   ├── test_output.cpp         PPM / PNG / raw writer round-trip tests
 │   ├── test_output_writer.cpp  OutputWriter factory + per-format writer tests
-│   ├── test_cli.cpp       Argument parsing tests
-│   ├── test_timelapse.cpp Filename pattern validation tests
-│   ├── test_dng.cpp       DNG/TIFF writer tests
-│   └── test_battery.cpp   LiPo SOC curve + font renderer tests
+│   ├── test_encoders.cpp       Low-level encoder (writePng/writeJpeg/etc.) tests
+│   ├── test_cli.cpp            Argument parsing tests
+│   ├── test_timelapse.cpp      Filename pattern validation tests
+│   ├── test_dng.cpp            DNG/TIFF writer tests
+│   ├── test_battery.cpp        LiPo SOC curve + ADS1115 tests
+│   ├── test_font.cpp           Font renderer + battery icon tests
+│   ├── test_safe_path.cpp      Path traversal / symlink attack rejection tests
+│   ├── test_settings_menu.cpp  Settings menu adjust/label/value + save/load tests
+│   ├── test_camera_mode.cpp    Camera mode state machine tests
+│   ├── test_preview_helpers.cpp  Preview helper (filename, disk-space) tests
+│   ├── test_hardware_config.cpp  Hardware config detection tests
+│   ├── test_image_decode.cpp   JPEG/PNG decode-to-RGB565 tests
+│   ├── test_wb_utils.cpp       White-balance utility (AWB lookup, Kelvin) tests
+│   ├── test_stop_flag.cpp      Signal handler (stop_flag) tests
+│   ├── test_wifi_server.cpp    Wi-Fi server wire-protocol parser tests
+│   └── test_bt_server.cpp      Bluetooth server wire-protocol parser tests
 └── src/
     ├── main.cpp               Entry point: appliance mode (no args) or CLI dispatch
     ├── camera_config.h        OutputFormat enum + CameraConfig struct + format helpers
+    ├── camera_mode.{h,cpp}    CameraSettings struct + mode state machine (Viewfinder/Review/Playback/Settings)
     ├── camera.{h,cpp}         CameraApp: init/configure/capture/bracket/listControls
     ├── camera_handle.{h,cpp}  RAII wrapper for libcamera CameraManager + Camera lifecycle
+    ├── callback_guard.h       RAII guard for tracking in-flight libcamera request callbacks
+    ├── controls.{h,cpp}       libcamera control application (AWB lookup, exposure, gain, AE modes)
     ├── stop_flag.h            RAII SIGINT/SIGTERM handler for graceful shutdown
     ├── cli.{h,cpp}            Arg parsing with typed, exception-safe numeric conversion
     ├── image.{h,cpp}          NV12 -> RGB24 / RGB565 conversion (NEON SIMD + multi-threaded, BT.601)
+    ├── image_decode.{h,cpp}   JPEG/PNG decode to RGB565 for SPI display (center-crop + nearest-neighbor)
     ├── encoders.{h,cpp}       Low-level encoders: writePng/writePpm/writeRaw/writeJpeg/writeJpegRgb
     ├── output_writer.{h,cpp}  OutputWriter Strategy + factory (per-format writers)
     ├── mapped_plane.h         RAII wrapper for mmap'd dmabuf planes (used by camera + stream)
+    ├── dual_stream.{h,cpp}    DualStream: simultaneous viewfinder + still-capture on one camera
     ├── timelapse.{h,cpp}      Filename pattern formatting + validation
     ├── timelapse_runner.cpp   Timelapse capture loop (signal-aware, extracted from CameraApp)
     ├── dng.{h,cpp}            DNG/TIFF raw Bayer writer with EXIF metadata
     ├── preview.{h,cpp}        Live SPI LCD preview loop (ST7735S viewfinder + joystick capture)
+    ├── preview_helpers.{h,cpp}  Pure-logic helpers from preview.cpp (filename building, disk-space, dir listing)
     ├── stream.{h,cpp}         CameraStream: continuous Viewfinder-role NV12 streaming
     ├── display.{h,cpp}        ST7735S SPI display driver (spidev + libgpiod)
     ├── buttons.{h,cpp}        GPIO button/joystick input (libgpiod v2 edge events)
     ├── battery.{h,cpp}        ADS1115 I2C ADC battery monitor + LiPo SOC curve
-    └── font.{h,cpp}           5x7 bitmap font + battery icon renderer for RGB565 overlays
+    ├── font.{h,cpp}           5x7 bitmap font + battery icon renderer for RGB565 overlays
+    ├── hardware_config.{h,cpp}  Hardware config detection (Pi model, I2C/SPI/GPIO device paths)
+    ├── safe_path.{h,cpp}      Safe path construction (prevents traversal, symlink attacks, control chars)
+    ├── file_util.{h,cpp}      File utility helpers (safe open with O_CREAT|O_EXCL|O_NOFOLLOW)
+    ├── settings_menu.{h,cpp}  Settings menu (adjust/label/value for all camera settings, save/load)
+    ├── wb_utils.h             White-balance pure-logic helpers (AWB mode lookup, Kelvin-to-gains)
+    ├── util.h                 RAII malloc wrapper + misc utilities (setjmp-safe memory management)
+    ├── wifi_server.{h,cpp}    Wi-Fi HTTP server (port 8080) for remote control + image transfer
+    └── bt_server.{h,cpp}      Bluetooth RFCOMM serial remote control server (channel 1, optional via BlueZ)
 ```
 
 ## Troubleshooting
