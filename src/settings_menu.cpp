@@ -4,11 +4,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <span>
 #include <string>
 #include <string_view>
+#include <filesystem>
+#include <iostream>
 
 namespace picamera {
 
@@ -26,14 +30,19 @@ constexpr int kMaxKelvin = 10000;
 constexpr int kFlicker50HzPeriodUs = 10000;
 constexpr int kFlicker60HzPeriodUs = 8333;
 
-constexpr int kDriveModeCount = 4;
+constexpr int kDriveModeCount = 6;
 constexpr int kMeteringModeCount = 3;
 constexpr int kAeExposureModeCount = 3;
 constexpr int kAeConstraintModeCount = 3;
 constexpr int kNoiseReductionModeCount = 4;
 constexpr int kAspectRatioCount = 4;
-constexpr int kGridTypeCount = 3;
+constexpr int kGridTypeCount = 5;
 constexpr int kZebraModeCount = 4;
+constexpr int kImageSizeCount = 3;
+constexpr int kFileNamingCount = 2;
+constexpr int kExposureModeCount = 4;
+constexpr int kBracketTypeCount = 3;
+constexpr int kPictureStyleCount = 6;
 
 template <typename E>
 E cycleEnum(E value, int direction, int count) {
@@ -76,6 +85,7 @@ constexpr float kIsoSteps[] = {
     800,
     1600,
     3200,
+    6400,
 };
 constexpr int kIsoStepCount = static_cast<int>(std::size(kIsoSteps));
 
@@ -147,10 +157,12 @@ int findEvIdx(float ev) {
 
 const char *driveModeLabel(DriveMode d) {
     switch (d) {
-        case DriveMode::Single:    return "SINGLE";
-        case DriveMode::SelfTimer: return "SELF";
-        case DriveMode::Bracket:   return "BRACKET";
-        case DriveMode::Timelapse: return "LAPSE";
+        case DriveMode::Single:     return "SINGLE";
+        case DriveMode::SelfTimer:  return "SELF";
+        case DriveMode::Bracket:    return "BRACKET";
+        case DriveMode::Timelapse:  return "LAPSE";
+        case DriveMode::Continuous: return "CONT";
+        case DriveMode::Bulb:       return "BULB";
     }
     return "??";
 }
@@ -189,15 +201,19 @@ const char *formatLabel(OutputFormat fmt) {
         case OutputFormat::DNG:      return "DNG";
         case OutputFormat::RAW_NV12: return "RAW";
         case OutputFormat::PPM:      return "PPM";
+        case OutputFormat::RawJpeg:  return "JPG+RAW";
+        case OutputFormat::DngJpeg:  return "DNG+JPG";
     }
     return "??";
 }
 
 const char *gridLabel(GridType g) {
     switch (g) {
-        case GridType::Off:     return "OFF";
-        case GridType::Thirds:  return "3RD";
-        case GridType::Square:  return "SQ";
+        case GridType::Off:          return "OFF";
+        case GridType::Thirds:       return "3RD";
+        case GridType::Square:       return "SQ";
+        case GridType::Diagonal:     return "DIAG";
+        case GridType::GoldenRatio:  return "GOLD";
     }
     return "??";
 }
@@ -222,6 +238,23 @@ const char *aspectLabel(AspectRatio a) {
     return "??";
 }
 
+const char *imageSizeLabel(ImageSize s) {
+    switch (s) {
+        case ImageSize::Large:  return "L";
+        case ImageSize::Medium: return "M";
+        case ImageSize::Small:  return "S";
+    }
+    return "??";
+}
+
+const char *fileNamingLabel(FileNamingMode m) {
+    switch (m) {
+        case FileNamingMode::Timestamp:  return "TIME";
+        case FileNamingMode::Sequential: return "SEQ";
+    }
+    return "??";
+}
+
 const char *nrLabel(NoiseReductionMode n) {
     switch (n) {
         case NoiseReductionMode::Off:         return "OFF";
@@ -230,6 +263,46 @@ const char *nrLabel(NoiseReductionMode n) {
         case NoiseReductionMode::Minimal:     return "MIN";
     }
     return "??";
+}
+
+const char *exposureModeLabel(ExposureMode m) {
+    switch (m) {
+        case ExposureMode::Program:  return "P";
+        case ExposureMode::Shutter:  return "S";
+        case ExposureMode::Manual:   return "M";
+        case ExposureMode::Auto:     return "AUTO";
+    }
+    return "??";
+}
+
+const char *bracketTypeLabel(BracketType b) {
+    switch (b) {
+        case BracketType::AE: return "AE";
+        case BracketType::WB: return "WB";
+        case BracketType::ISO: return "ISO";
+    }
+    return "??";
+}
+
+const char *pictureStyleLabel(PictureStyle p) {
+    switch (p) {
+        case PictureStyle::Standard:  return "STD";
+        case PictureStyle::Vivid:     return "VIVID";
+        case PictureStyle::Neutral:   return "NEUT";
+        case PictureStyle::Monochrome:return "MONO";
+        case PictureStyle::Portrait:  return "PORTR";
+        case PictureStyle::Landscape: return "LAND";
+    }
+    return "??";
+}
+
+const char *focusMagnifyLabel(int m) {
+    switch (m) {
+        case 0: return "OFF";
+        case 2: return "2X";
+        case 4: return "4X";
+        default: return "??";
+    }
 }
 
 void adjustDrive(CameraSettings &s, int direction) {
@@ -250,6 +323,27 @@ void adjustIso(CameraSettings &s, int direction) {
     if (newIdx >= 0 && newIdx < kIsoStepCount)
         s.analogueGain = kIsoSteps[newIdx] / kIsoScaleFactor;
     s.aeEnable = (s.shutterUs == 0 && s.analogueGain == 0.0f);
+}
+
+// Auto-ISO bounds. No "0" sentinel (unlike kIsoSteps) — min/max are real values.
+constexpr int kIsoBoundValues[] = {100, 200, 400, 800, 1600, 3200, 6400};
+
+int cycleIsoBound(int current, int direction) {
+    constexpr int n = static_cast<int>(std::size(kIsoBoundValues));
+    int idx = 0;
+    for (int i = 0; i < n; ++i)
+        if (current == kIsoBoundValues[i]) { idx = i; break; }
+    return kIsoBoundValues[std::clamp(idx + direction, 0, n - 1)];
+}
+
+void adjustIsoMin(CameraSettings &s, int direction) {
+    s.isoMin = cycleIsoBound(s.isoMin, direction);
+    s.isoMax = std::max(s.isoMin, s.isoMax);
+}
+
+void adjustIsoMax(CameraSettings &s, int direction) {
+    s.isoMax = cycleIsoBound(s.isoMax, direction);
+    s.isoMin = std::min(s.isoMax, s.isoMin);
 }
 
 void adjustEv(CameraSettings &s, int direction) {
@@ -281,8 +375,12 @@ void adjustFlicker(CameraSettings &s, int direction) {
 }
 
 void adjustTimer(CameraSettings &s, int direction) {
-    if (direction > 0) { if (s.timerDuration < 10) ++s.timerDuration; }
-    else { if (s.timerDuration > 0) --s.timerDuration; }
+    static constexpr int kTimerPresets[] = {0, 2, 5, 10};
+    constexpr int n = static_cast<int>(std::size(kTimerPresets));
+    int idx = 0;
+    for (int i = 0; i < n; ++i)
+        if (static_cast<int>(s.timerDuration) == kTimerPresets[i]) { idx = i; break; }
+    s.timerDuration = kTimerPresets[(idx + direction + n) % n];
 }
 
 void adjustBracket(CameraSettings &s, int direction) {
@@ -321,8 +419,9 @@ void adjustCount(CameraSettings &s, int direction) {
 
 void adjustImgFormat(CameraSettings &s, int direction) {
     static constexpr OutputFormat kFmtOrder[] = {
-        OutputFormat::JPEG, OutputFormat::DNG, OutputFormat::PNG,
-        OutputFormat::PPM, OutputFormat::RAW_NV12
+        OutputFormat::JPEG, OutputFormat::DNG, OutputFormat::DngJpeg,
+        OutputFormat::RawJpeg, OutputFormat::PNG, OutputFormat::PPM,
+        OutputFormat::RAW_NV12
     };
     constexpr int n = static_cast<int>(std::size(kFmtOrder));
     int idx = 0;
@@ -340,10 +439,22 @@ void adjustImgAspect(CameraSettings &s, int direction) {
     s.aspectRatio = cycleEnum(s.aspectRatio, direction, kAspectRatioCount);
 }
 
+void adjustImgSize(CameraSettings &s, int direction) {
+    s.imageSize = cycleEnum(s.imageSize, direction, kImageSizeCount);
+}
+
+void adjustImgFileNaming(CameraSettings &s, int direction) {
+    s.fileNamingMode = cycleEnum(s.fileNamingMode, direction, kFileNamingCount);
+}
+
+void adjustImgDateSubfolders(CameraSettings &s, int direction) {
+    s.useDateSubfolders = (direction > 0);
+}
+
 void adjustImgAwb(CameraSettings &s, int direction) {
     static constexpr std::string_view modes[] = {
         "auto", "daylight", "cloudy", "incandescent",
-        "tungsten", "fluorescent", "indoor"
+        "tungsten", "fluorescent", "indoor", "shade", "flash"
     };
     constexpr int n = static_cast<int>(std::size(modes));
     if (!s.awbEnable) {
@@ -376,6 +487,14 @@ void adjustImgWbRed(CameraSettings &s, int direction) {
 
 void adjustImgWbBlue(CameraSettings &s, int direction) {
     s.wbBlueGain = std::clamp(s.wbBlueGain + direction * kFineStep, 0.1f, 8.0f);
+}
+
+void adjustImgWbSet(CameraSettings &s, int /*direction*/) {
+    // One-touch custom white balance: arm the measure flag (consumed by the
+    // viewfinder, which reads the live frame's chroma) and switch to manual
+    // R/B gain mode so the computed gains take effect.
+    s.wbMeasurePending = true;
+    s.awbEnable = false;
 }
 
 void adjustImgBrightness(CameraSettings &s, int direction) {
@@ -435,6 +554,53 @@ void adjustSysPowerSave(CameraSettings &s, int direction) {
         s.powerSaveTimeout = steps[(idx + 1) % n];
 }
 
+void adjustExpMode(CameraSettings &s, int direction) {
+    s.exposureMode = cycleEnum(s.exposureMode, direction, kExposureModeCount);
+    // Apply exposure mode semantics:
+    // P/Auto: AE on, shutter+ISO auto
+    // S: AE on, shutter manual, ISO auto (shutter priority)
+    // M: AE off, shutter+ISO manual
+    switch (s.exposureMode) {
+        case ExposureMode::Program:
+        case ExposureMode::Auto:
+            s.aeEnable = true;
+            s.shutterUs = 0;
+            s.analogueGain = 0;
+            break;
+        case ExposureMode::Shutter:
+            s.aeEnable = true;  // AE still handles ISO
+            if (s.shutterUs == 0) s.shutterUs = 1000;  // default 1/1000
+            break;
+        case ExposureMode::Manual:
+            s.aeEnable = false;
+            if (s.shutterUs == 0) s.shutterUs = 1000;
+            if (s.analogueGain == 0) s.analogueGain = 1.0f;
+            break;
+    }
+}
+
+void adjustBracketType(CameraSettings &s, int direction) {
+    s.bracketType = cycleEnum(s.bracketType, direction, kBracketTypeCount);
+}
+
+void adjustPictureStyle(CameraSettings &s, int direction) {
+    s.pictureStyle = cycleEnum(s.pictureStyle, direction, kPictureStyleCount);
+    auto p = pictureStyleParams(s.pictureStyle);
+    s.brightness = p.brightness;
+    s.contrast = p.contrast;
+    s.saturation = p.saturation;
+    s.sharpness = p.sharpness;
+}
+
+void adjustFocusMagnify(CameraSettings &s, int direction) {
+    static constexpr int kValues[] = {0, 2, 4};
+    constexpr int n = static_cast<int>(std::size(kValues));
+    int idx = 0;
+    for (int i = 0; i < n; ++i)
+        if (s.focusMagnify == kValues[i]) { idx = i; break; }
+    s.focusMagnify = kValues[(idx + direction + n) % n];
+}
+
 std::string_view valDrive(const CameraSettings &s, std::string &) {
     return driveModeLabel(s.driveMode);
 }
@@ -447,6 +613,16 @@ std::string_view valShutter(const CameraSettings &s, std::string &buf) {
 std::string_view valIso(const CameraSettings &s, std::string &buf) {
     if (s.analogueGain == 0) return "AUTO";
     buf = std::to_string(static_cast<int>(s.analogueGain * kIsoScaleFactor));
+    return buf;
+}
+
+std::string_view valIsoMin(const CameraSettings &s, std::string &buf) {
+    buf = std::to_string(s.isoMin);
+    return buf;
+}
+
+std::string_view valIsoMax(const CameraSettings &s, std::string &buf) {
+    buf = std::to_string(s.isoMax);
     return buf;
 }
 
@@ -511,6 +687,18 @@ std::string_view valAspect(const CameraSettings &s, std::string &) {
     return aspectLabel(s.aspectRatio);
 }
 
+std::string_view valImgSize(const CameraSettings &s, std::string &) {
+    return imageSizeLabel(s.imageSize);
+}
+
+std::string_view valFileNaming(const CameraSettings &s, std::string &) {
+    return fileNamingLabel(s.fileNamingMode);
+}
+
+std::string_view valDateSubfolders(const CameraSettings &s, std::string &) {
+    return s.useDateSubfolders ? "ON" : "OFF";
+}
+
 std::string_view valAwb(const CameraSettings &s, std::string &) {
     return s.awbEnable ? std::string_view(s.awbMode) : std::string_view("OFF");
 }
@@ -528,6 +716,12 @@ std::string_view valWbRed(const CameraSettings &s, std::string &buf) {
 std::string_view valWbBlue(const CameraSettings &s, std::string &buf) {
     buf = fmt1(s.wbBlueGain);
     return buf;
+}
+
+std::string_view valWbSet(const CameraSettings &s, std::string &) {
+    // "SET" while a measurement is pending (armed in settings, awaiting the
+    // next viewfinder frame); "OFF" once consumed.
+    return s.wbMeasurePending ? "SET" : "OFF";
 }
 
 std::string_view valBrightness(const CameraSettings &s, std::string &buf) {
@@ -589,16 +783,34 @@ std::string_view valExit(const CameraSettings &, std::string &) {
     return "";
 }
 
+std::string_view valExpMode(const CameraSettings &s, std::string &) {
+    return exposureModeLabel(s.exposureMode);
+}
+
+std::string_view valBracketType(const CameraSettings &s, std::string &) {
+    return bracketTypeLabel(s.bracketType);
+}
+
+std::string_view valPictureStyle(const CameraSettings &s, std::string &) {
+    return pictureStyleLabel(s.pictureStyle);
+}
+
+std::string_view valFocusMagnify(const CameraSettings &s, std::string &) {
+    return focusMagnifyLabel(s.focusMagnify);
+}
+
 struct SettingItem {
     std::string_view label;
     std::string_view (*valueFn)(const CameraSettings &, std::string &buf);
     void (*adjustFn)(CameraSettings &, int);
 };
 
-constexpr std::array<SettingItem, 12> kShootTab = {{
+constexpr std::array<SettingItem, 16> kShootTab = {{
     {"DRIVE",    valDrive,    adjustDrive},
     {"SHUTTER",  valShutter,  adjustShutter},
     {"ISO",      valIso,      adjustIso},
+    {"ISO MIN",  valIsoMin,   adjustIsoMin},
+    {"ISO MAX",  valIsoMax,   adjustIsoMax},
     {"EV",       valEv,       adjustEv},
     {"METER",    valMeter,    adjustMeter},
     {"AEMODE",   valAeMode,   adjustAeMode},
@@ -608,29 +820,37 @@ constexpr std::array<SettingItem, 12> kShootTab = {{
     {"BRACKET",  valBracket,  adjustBracket},
     {"INTERVAL", valInterval, adjustInterval},
     {"COUNT",    valCount,    adjustCount},
+    {"EXPMODE",  valExpMode,  adjustExpMode},
+    {"BRKTYPE",  valBracketType, adjustBracketType},
 }};
 
-constexpr std::array<SettingItem, 12> kImgTab = {{
-    {"FORMAT",   valFormat,     adjustImgFormat},
-    {"QUALITY",  valQuality,    adjustImgQuality},
-    {"ASPECT",   valAspect,     adjustImgAspect},
-    {"AWB",      valAwb,        adjustImgAwb},
-    {"KELVIN",   valKelvin,     adjustImgKelvin},
-    {"WBRED",    valWbRed,      adjustImgWbRed},
-    {"WBBLUE",   valWbBlue,     adjustImgWbBlue},
-    {"BRIGHT",   valBrightness, adjustImgBrightness},
-    {"CONTRAST", valContrast,   adjustImgContrast},
-    {"SAT",      valSaturation, adjustImgSaturation},
-    {"SHARP",    valSharpness,  adjustImgSharpness},
-    {"NR",       valNr,         adjustImgNr},
+constexpr std::array<SettingItem, 17> kImgTab = {{
+    {"FORMAT",   valFormat,        adjustImgFormat},
+    {"QUALITY",  valQuality,       adjustImgQuality},
+    {"SIZE",     valImgSize,       adjustImgSize},
+    {"ASPECT",   valAspect,        adjustImgAspect},
+    {"AWB",      valAwb,           adjustImgAwb},
+    {"KELVIN",   valKelvin,        adjustImgKelvin},
+    {"WBRED",    valWbRed,         adjustImgWbRed},
+    {"WBBLUE",   valWbBlue,        adjustImgWbBlue},
+    {"BRIGHT",   valBrightness,    adjustImgBrightness},
+    {"CONTRAST", valContrast,      adjustImgContrast},
+    {"SAT",      valSaturation,    adjustImgSaturation},
+    {"SHARP",    valSharpness,     adjustImgSharpness},
+    {"NR",       valNr,            adjustImgNr},
+    {"FILENAME", valFileNaming,    adjustImgFileNaming},
+    {"DATEFOLD", valDateSubfolders,adjustImgDateSubfolders},
+    {"PSTYLE",   valPictureStyle,  adjustPictureStyle},
+    {"WBSET",    valWbSet,         adjustImgWbSet},
 }};
 
-constexpr std::array<SettingItem, 5> kDispTab = {{
+constexpr std::array<SettingItem, 6> kDispTab = {{
     {"GRID",   valDispGrid,   adjustDispGrid},
     {"HIST",   valDispHist,   adjustDispHist},
     {"ZEBRA",  valDispZebra,  adjustDispZebra},
     {"PEAK",   valDispPeak,   adjustDispPeak},
     {"BRIGHT", valDispBright, adjustDispBright},
+    {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify},
 }};
 
 constexpr std::array<SettingItem, 3> kSysTab = {{
@@ -721,9 +941,289 @@ CameraConfig settingsToCameraConfig(const CameraSettings &s,
         (s.flickerHz == 50 ? kFlicker50HzPeriodUs : kFlicker60HzPeriodUs) : 0;
     cfg.wbRedGain = s.wbRedGain;
     cfg.wbBlueGain = s.wbBlueGain;
+    cfg.wbKelvin = s.wbKelvin;
     cfg.noiseReductionMode = s.noiseReduction;
+    cfg.imageSize = s.imageSize;
+    cfg.aspectRatio = s.aspectRatio;
+    cfg.isoMin = s.isoMin;
+    cfg.isoMax = s.isoMax;
+
+    // Apply exposure mode semantics to the config.
+    // P/Auto: AE on, shutter+ISO auto (already defaults).
+    // S: AE on, shutter manual, ISO auto (shutter priority).
+    // M: AE off, shutter+ISO manual.
+    switch (s.exposureMode) {
+        case ExposureMode::Program:
+        case ExposureMode::Auto:
+            break;
+        case ExposureMode::Shutter:
+            cfg.aeEnable = true;  // AE handles ISO
+            if (s.shutterUs > 0) cfg.exposureTime = s.shutterUs;
+            break;
+        case ExposureMode::Manual:
+            cfg.aeEnable = false;
+            if (s.shutterUs > 0) cfg.exposureTime = s.shutterUs;
+            if (s.analogueGain > 0) cfg.analogueGain = s.analogueGain;
+            break;
+    }
 
     return cfg;
+}
+
+PictureStyleParams pictureStyleParams(PictureStyle style) {
+    switch (style) {
+        case PictureStyle::Standard:  return {0.0f, 1.0f, 1.0f, 1.0f};
+        case PictureStyle::Vivid:     return {0.0f, 1.2f, 1.3f, 1.2f};
+        case PictureStyle::Neutral:   return {0.0f, 0.9f, 0.8f, 0.8f};
+        case PictureStyle::Monochrome:return {0.0f, 1.1f, 0.0f, 1.0f};
+        case PictureStyle::Portrait:  return {0.1f, 0.95f, 0.9f, 0.8f};
+        case PictureStyle::Landscape: return {0.0f, 1.15f, 1.2f, 1.3f};
+    }
+    return {0.0f, 1.0f, 1.0f, 1.0f};
+}
+
+CropRegion aspectRatioCrop(uint32_t srcW, uint32_t srcH, AspectRatio ratio) {
+    CropRegion r{0, 0, srcW, srcH};
+    if (srcW == 0 || srcH == 0) return r;
+    switch (ratio) {
+        case AspectRatio::Native:
+            // IMX477 native is 4056x3040 = 1.336 ≈ 4:3. Keep as-is.
+            break;
+        case AspectRatio::Ratio43: {
+            float target = static_cast<float>(srcW) / srcH;
+            if (target > 1.333f) {
+                uint32_t cw = static_cast<uint32_t>(srcH * 4.0f / 3.0f) & ~1u;
+                r.w = std::min(cw, srcW);
+                r.h = srcH;
+                r.x = ((srcW - r.w) / 2) & ~1u;
+                r.y = 0;
+            } else {
+                uint32_t ch = static_cast<uint32_t>(srcW * 3.0f / 4.0f) & ~1u;
+                r.h = std::min(ch, srcH);
+                r.w = srcW;
+                r.x = 0;
+                r.y = ((srcH - r.h) / 2) & ~1u;
+            }
+            break;
+        }
+        case AspectRatio::Ratio169: {
+            uint32_t ch = static_cast<uint32_t>(static_cast<float>(srcW) * 9.0f / 16.0f) & ~1u;
+            r.h = std::min(ch, srcH);
+            r.w = srcW;
+            r.x = 0;
+            r.y = ((srcH - r.h) / 2) & ~1u;
+            break;
+        }
+        case AspectRatio::Ratio11: {
+            uint32_t cw = srcH & ~1u;
+            r.w = std::min(cw, srcW);
+            r.h = srcH;
+            r.x = ((srcW - r.w) / 2) & ~1u;
+            r.y = 0;
+            break;
+        }
+    }
+    return r;
+}
+
+namespace {
+
+std::string_view trimSv(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
+           s.front() == '\r' || s.front() == '\n'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' ||
+           s.back() == '\r' || s.back() == '\n'))
+        s.remove_suffix(1);
+    return s;
+}
+
+void writeKey(std::ofstream &f, std::string_view key, std::string_view val) {
+    f << key << "=" << val << "\n";
+}
+
+void writeKeyInt(std::ofstream &f, std::string_view key, long long val) {
+    f << key << "=" << val << "\n";
+}
+
+void writeKeyFloat(std::ofstream &f, std::string_view key, float val) {
+    f << key << "=" << val << "\n";
+}
+
+void writeKeyBool(std::ofstream &f, std::string_view key, bool val) {
+    f << key << "=" << (val ? "true" : "false") << "\n";
+}
+
+void applySettingsKey(CameraSettings &s, std::string_view key,
+                      std::string_view val) {
+    auto toInt = [](std::string_view v) -> long long {
+        try { return std::stoll(std::string(v)); } catch (...) { return 0; }
+    };
+    auto toFloat = [](std::string_view v) -> float {
+        try { return std::stof(std::string(v)); } catch (...) { return 0; }
+    };
+    auto toBool = [](std::string_view v) -> bool {
+        return v == "true" || v == "1" || v == "yes" || v == "on";
+    };
+    if (key == "driveMode") s.driveMode = static_cast<DriveMode>(toInt(val));
+    else if (key == "aeEnable") s.aeEnable = toBool(val);
+    else if (key == "shutterUs") s.shutterUs = static_cast<uint64_t>(toInt(val));
+    else if (key == "analogueGain") s.analogueGain = toFloat(val);
+    else if (key == "digitalGain") s.digitalGain = toFloat(val);
+    else if (key == "exposureValue") s.exposureValue = toFloat(val);
+    else if (key == "isoMin") s.isoMin = static_cast<int>(toInt(val));
+    else if (key == "isoMax") s.isoMax = static_cast<int>(toInt(val));
+    else if (key == "meteringMode") s.meteringMode = static_cast<MeteringMode>(toInt(val));
+    else if (key == "aeExposureMode") s.aeExposureMode = static_cast<AeExposureMode>(toInt(val));
+    else if (key == "aeConstraintMode") s.aeConstraintMode = static_cast<AeConstraintMode>(toInt(val));
+    else if (key == "antiFlicker") s.antiFlicker = toBool(val);
+    else if (key == "flickerHz") s.flickerHz = static_cast<int>(toInt(val));
+    else if (key == "timerDuration") s.timerDuration = static_cast<uint32_t>(toInt(val));
+    else if (key == "timelapseInterval") s.timelapseInterval = static_cast<int>(toInt(val));
+    else if (key == "timelapseCount") s.timelapseCount = static_cast<int>(toInt(val));
+    else if (key == "captureFormat") s.captureFormat = static_cast<OutputFormat>(toInt(val));
+    else if (key == "jpegQuality") s.jpegQuality = static_cast<int>(toInt(val));
+    else if (key == "pngLevel") s.pngLevel = static_cast<int>(toInt(val));
+    else if (key == "imageSize") s.imageSize = static_cast<ImageSize>(toInt(val));
+    else if (key == "aspectRatio") s.aspectRatio = static_cast<AspectRatio>(toInt(val));
+    else if (key == "awbEnable") s.awbEnable = toBool(val);
+    else if (key == "awbMode") s.awbMode = std::string(val);
+    else if (key == "wbKelvin") s.wbKelvin = static_cast<int>(toInt(val));
+    else if (key == "wbRedGain") s.wbRedGain = toFloat(val);
+    else if (key == "wbBlueGain") s.wbBlueGain = toFloat(val);
+    else if (key == "brightness") s.brightness = toFloat(val);
+    else if (key == "contrast") s.contrast = toFloat(val);
+    else if (key == "saturation") s.saturation = toFloat(val);
+    else if (key == "sharpness") s.sharpness = toFloat(val);
+    else if (key == "noiseReduction") s.noiseReduction = static_cast<NoiseReductionMode>(toInt(val));
+    else if (key == "gridType") s.gridType = static_cast<GridType>(toInt(val));
+    else if (key == "showHistogram") s.showHistogram = toBool(val);
+    else if (key == "zebraMode") s.zebraMode = static_cast<ZebraMode>(toInt(val));
+    else if (key == "focusPeaking") s.focusPeaking = toBool(val);
+    else if (key == "displayBrightness") s.displayBrightness = static_cast<int>(toInt(val));
+    else if (key == "enableBattery") s.enableBattery = toBool(val);
+    else if (key == "powerSaveTimeout") s.powerSaveTimeout = static_cast<int>(toInt(val));
+    else if (key == "fileNamingMode") s.fileNamingMode = static_cast<FileNamingMode>(toInt(val));
+    else if (key == "useDateSubfolders") s.useDateSubfolders = toBool(val);
+    else if (key == "focusMagnify") s.focusMagnify = static_cast<int>(toInt(val));
+    else if (key == "exposureMode") s.exposureMode = static_cast<ExposureMode>(toInt(val));
+    else if (key == "bracketType") s.bracketType = static_cast<BracketType>(toInt(val));
+    else if (key == "pictureStyle") s.pictureStyle = static_cast<PictureStyle>(toInt(val));
+}
+
+} // namespace
+
+bool saveSettings(const CameraSettings &s, const std::string &path) {
+    namespace fs = std::filesystem;
+    try {
+        fs::path p(path);
+        fs::create_directories(p.parent_path());
+    } catch (const std::exception &e) {
+        std::cerr << "saveSettings: cannot create config dir: " << e.what() << "\n";
+        return false;
+    }
+    std::ofstream f(path);
+    if (!f.is_open()) return false;
+    f << "# picamera settings\n";
+    writeKeyInt(f, "driveMode", static_cast<int>(s.driveMode));
+    writeKeyBool(f, "aeEnable", s.aeEnable);
+    writeKeyInt(f, "shutterUs", static_cast<long long>(s.shutterUs));
+    writeKeyFloat(f, "analogueGain", s.analogueGain);
+    writeKeyFloat(f, "digitalGain", s.digitalGain);
+    writeKeyFloat(f, "exposureValue", s.exposureValue);
+    writeKeyInt(f, "isoMin", s.isoMin);
+    writeKeyInt(f, "isoMax", s.isoMax);
+    writeKeyInt(f, "meteringMode", static_cast<int>(s.meteringMode));
+    writeKeyInt(f, "aeExposureMode", static_cast<int>(s.aeExposureMode));
+    writeKeyInt(f, "aeConstraintMode", static_cast<int>(s.aeConstraintMode));
+    writeKeyBool(f, "antiFlicker", s.antiFlicker);
+    writeKeyInt(f, "flickerHz", s.flickerHz);
+    writeKeyInt(f, "timerDuration", s.timerDuration);
+    writeKeyInt(f, "timelapseInterval", s.timelapseInterval);
+    writeKeyInt(f, "timelapseCount", s.timelapseCount);
+    writeKeyInt(f, "captureFormat", static_cast<int>(s.captureFormat));
+    writeKeyInt(f, "jpegQuality", s.jpegQuality);
+    writeKeyInt(f, "pngLevel", s.pngLevel);
+    writeKeyInt(f, "imageSize", static_cast<int>(s.imageSize));
+    writeKeyInt(f, "aspectRatio", static_cast<int>(s.aspectRatio));
+    writeKeyBool(f, "awbEnable", s.awbEnable);
+    writeKey(f, "awbMode", s.awbMode);
+    writeKeyInt(f, "wbKelvin", s.wbKelvin);
+    writeKeyFloat(f, "wbRedGain", s.wbRedGain);
+    writeKeyFloat(f, "wbBlueGain", s.wbBlueGain);
+    writeKeyFloat(f, "brightness", s.brightness);
+    writeKeyFloat(f, "contrast", s.contrast);
+    writeKeyFloat(f, "saturation", s.saturation);
+    writeKeyFloat(f, "sharpness", s.sharpness);
+    writeKeyInt(f, "noiseReduction", static_cast<int>(s.noiseReduction));
+    writeKeyInt(f, "gridType", static_cast<int>(s.gridType));
+    writeKeyBool(f, "showHistogram", s.showHistogram);
+    writeKeyInt(f, "zebraMode", static_cast<int>(s.zebraMode));
+    writeKeyBool(f, "focusPeaking", s.focusPeaking);
+    writeKeyInt(f, "displayBrightness", s.displayBrightness);
+    writeKeyBool(f, "enableBattery", s.enableBattery);
+    writeKeyInt(f, "powerSaveTimeout", s.powerSaveTimeout);
+    writeKeyInt(f, "fileNamingMode", static_cast<int>(s.fileNamingMode));
+    writeKeyBool(f, "useDateSubfolders", s.useDateSubfolders);
+    writeKeyInt(f, "focusMagnify", s.focusMagnify);
+    writeKeyInt(f, "exposureMode", static_cast<int>(s.exposureMode));
+    writeKeyInt(f, "bracketType", static_cast<int>(s.bracketType));
+    writeKeyInt(f, "pictureStyle", static_cast<int>(s.pictureStyle));
+    // bracketEv is a vector — serialize as a comma-separated list
+    f << "bracketEv=";
+    for (size_t i = 0; i < s.bracketEv.size(); ++i) {
+        if (i > 0) f << ",";
+        f << s.bracketEv[i];
+    }
+    f << "\n";
+    return f.good();
+}
+
+bool loadSettings(CameraSettings &s, const std::string &path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        std::string_view sv(line);
+        sv = trimSv(sv);
+        if (sv.empty() || sv.front() == '#') continue;
+        auto eq = sv.find('=');
+        if (eq == std::string_view::npos) continue;
+        std::string_view key = trimSv(sv.substr(0, eq));
+        std::string_view val = trimSv(sv.substr(eq + 1));
+        if (key.empty()) continue;
+        if (key == "bracketEv") {
+            s.bracketEv.clear();
+            size_t start = 0;
+            while (start <= val.size()) {
+                auto comma = val.find(',', start);
+                std::string_view tok = (comma == std::string_view::npos)
+                    ? val.substr(start) : val.substr(start, comma - start);
+                if (!tok.empty()) {
+                    try { s.bracketEv.push_back(std::stof(std::string(tok))); }
+                    catch (...) { continue; } // skip unparseable token
+                }
+                if (comma == std::string_view::npos) break;
+                start = comma + 1;
+            }
+        } else {
+            applySettingsKey(s, key, val);
+        }
+    }
+    // Re-apply picture style preset to B/C/S/Sharp — selecting a style resets
+    // those values to the style defaults, matching real camera behavior.
+    auto params = pictureStyleParams(s.pictureStyle);
+    s.brightness = params.brightness;
+    s.contrast = params.contrast;
+    s.saturation = params.saturation;
+    s.sharpness = params.sharpness;
+    return true;
+}
+
+std::string defaultSettingsPath() {
+    const char *home = std::getenv("HOME");
+    if (!home) home = "/tmp";
+    return std::string(home) + "/.config/picamera/settings.conf";
 }
 
 }
