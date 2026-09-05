@@ -15,6 +15,7 @@ using picamera::DriveMode;
 using picamera::ExposureMode;
 using picamera::extractFileName;
 using picamera::fileListingHtml;
+using picamera::FileNamingMode;
 using picamera::GridType;
 using picamera::HttpRequest;
 using picamera::ImageSize;
@@ -713,4 +714,83 @@ TEST(apply_settings_json_invalid_bracket_ev_ignored) {
   CHECK(s.bracketEv.size() == 2);
   CHECK(s.bracketEv[0] == -1.0f);
   CHECK(s.bracketEv[1] == 1.0f);
+}
+
+// --- fileNamingMode and useDateSubfolders ---
+
+TEST(settings_json_contains_file_naming_mode) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Sequential;
+  std::string json = settingsToJson(s);
+  CHECK(json.find("\"fileNamingMode\":1") != std::string::npos);
+}
+
+TEST(settings_json_contains_file_naming_mode_timestamp) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Timestamp;
+  std::string json = settingsToJson(s);
+  CHECK(json.find("\"fileNamingMode\":0") != std::string::npos);
+}
+
+TEST(apply_settings_json_valid_file_naming_mode_sequential) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Timestamp;
+  applySettingsJson("{\"fileNamingMode\":1}", s);
+  CHECK(s.fileNamingMode == FileNamingMode::Sequential);
+}
+
+TEST(apply_settings_json_valid_file_naming_mode_timestamp) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Sequential;
+  applySettingsJson("{\"fileNamingMode\":0}", s);
+  CHECK(s.fileNamingMode == FileNamingMode::Timestamp);
+}
+
+TEST(apply_settings_json_invalid_file_naming_mode_ignored) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Timestamp;
+  applySettingsJson("{\"fileNamingMode\":99}", s);
+  CHECK(s.fileNamingMode == FileNamingMode::Timestamp);
+}
+
+TEST(apply_settings_json_negative_file_naming_mode_ignored) {
+  CameraSettings s;
+  s.fileNamingMode = FileNamingMode::Sequential;
+  applySettingsJson("{\"fileNamingMode\":-1}", s);
+  CHECK(s.fileNamingMode == FileNamingMode::Sequential);
+}
+
+TEST(settings_json_contains_use_date_subfolders) {
+  CameraSettings s;
+  s.useDateSubfolders = true;
+  std::string json = settingsToJson(s);
+  CHECK(json.find("\"useDateSubfolders\":true") != std::string::npos);
+}
+
+TEST(settings_json_contains_use_date_subfolders_false) {
+  CameraSettings s;
+  s.useDateSubfolders = false;
+  std::string json = settingsToJson(s);
+  CHECK(json.find("\"useDateSubfolders\":false") != std::string::npos);
+}
+
+TEST(apply_settings_json_valid_use_date_subfolders_true) {
+  CameraSettings s;
+  s.useDateSubfolders = false;
+  applySettingsJson("{\"useDateSubfolders\":true}", s);
+  CHECK(s.useDateSubfolders == true);
+}
+
+TEST(apply_settings_json_valid_use_date_subfolders_false) {
+  CameraSettings s;
+  s.useDateSubfolders = true;
+  applySettingsJson("{\"useDateSubfolders\":false}", s);
+  CHECK(s.useDateSubfolders == false);
+}
+
+TEST(apply_settings_json_invalid_use_date_subfolders_ignored) {
+  CameraSettings s;
+  s.useDateSubfolders = true;
+  applySettingsJson("{\"useDateSubfolders\":\"yes\"}", s);
+  CHECK(s.useDateSubfolders == true);
 }

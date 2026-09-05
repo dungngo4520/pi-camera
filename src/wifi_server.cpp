@@ -586,7 +586,9 @@ std::string settingsToJson(const CameraSettings &s) {
   oss << jsonNum("zebraMode", static_cast<int>(s.zebraMode)) << ',';
   oss << jsonBool("focusPeaking", s.focusPeaking) << ',';
   oss << jsonStr("bracketEv", bracketEvStr(s.bracketEv)) << ',';
-  oss << jsonNum("menuMode", static_cast<int>(s.menuMode));
+  oss << jsonNum("menuMode", static_cast<int>(s.menuMode)) << ',';
+  oss << jsonNum("fileNamingMode", static_cast<int>(s.fileNamingMode)) << ',';
+  oss << jsonBool("useDateSubfolders", s.useDateSubfolders);
   oss << '}';
   return oss.str();
 }
@@ -812,6 +814,13 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
           jsonNumValue<int>(jsonFindValue(json, "menuMode").value_or("")))
     if (*v >= 0 && *v <= 1)
       s.menuMode = static_cast<MenuMode>(*v);
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "fileNamingMode").value_or("")))
+    if (*v >= 0 && *v <= static_cast<int>(FileNamingMode::Sequential))
+      s.fileNamingMode = static_cast<FileNamingMode>(*v);
+  if (auto v = jsonBoolValue(
+          jsonFindValue(json, "useDateSubfolders").value_or("")))
+    s.useDateSubfolders = *v;
 }
 
 std::string urlDecode(std::string_view s) {
