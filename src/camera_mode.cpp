@@ -1,11 +1,13 @@
 #include "camera_mode.h"
 #include "font.h"
+#include "image_effects.h"
 #include "settings_menu.h"
 #include "util.h"
 
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -102,6 +104,20 @@ void drawCenteredBottomHint(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
   int w = static_cast<int>(text.size()) * kTextWidth;
   drawTextWithBg(rgb565, fbW, fbH, (static_cast<int>(fbW) - w) / 2,
                  static_cast<int>(fbH) - kTextHeight - 4, text, kColorGray,
+                 kColorBlack);
+}
+
+// Draw 0-5 rating stars at the top-right of the screen.
+void drawRatingStars(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                     int rating) {
+  if (rating <= 0)
+    return;
+  rating = std::clamp(rating, 0, 5);
+  std::string stars(static_cast<size_t>(rating), '*');
+  int starW = static_cast<int>(stars.size()) * kTextWidth;
+  drawTextWithBg(rgb565, fbW, fbH,
+                 static_cast<int>(fbW) - starW - kMargin,
+                 kMargin + kTextHeight + 2, stars, kColorYellow,
                  kColorBlack);
 }
 
@@ -567,13 +583,24 @@ void drawPlaybackBrowser(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                    size_t rgb565Size, const uint8_t *imageRgb565,
-                   size_t imageSize, const std::string &path) {
+                   size_t imageSize, const std::string &path,
+                   bool rotateTall, int rating) {
   size_t totalBytes = 0;
   if (!checkedMul(static_cast<size_t>(fbW), fbH, totalBytes) ||
       !checkedMul(totalBytes, 2, totalBytes))
     return;
   if (totalBytes > rgb565Size)
     return;
+  // Rotate-tall: when enabled and the source image is portrait, rotate
+  // the RGB565 buffer 90° CW so it displays upright.
+  std::vector<uint8_t> rotated;
+  if (rotateTall && imageRgb565 && imageSize >= totalBytes) {
+    if (isPortrait(fbW, fbH)) {
+      rotated = rotateRgb565Cw(imageRgb565, fbW, fbH);
+      if (rotated.size() >= totalBytes)
+        imageRgb565 = rotated.data();
+    }
+  }
   if (imageSize >= totalBytes && imageRgb565) {
     std::memcpy(rgb565, imageRgb565, totalBytes);
   } else {
@@ -587,6 +614,7 @@ void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
   if (imageSize >= totalBytes && imageRgb565)
     drawImageViewHistogramAndBlinkies(rgb565, fbW, fbH, rgb565Size);
 
+  drawRatingStars(rgb565, fbW, fbH, rating);
   drawCenteredBottomHint(rgb565, fbW, fbH, "OK=BACK K1=LOCK K3=DEL");
 }
 
@@ -594,7 +622,8 @@ void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                          size_t rgb565Size, const uint8_t *imageRgb565,
                          size_t imageSize, uint32_t imageW, uint32_t imageH,
                          int zoom, int panX, int panY,
-                         const std::string &path) {
+                         const std::string &path, bool rotateTall,
+                         int rating) {
   size_t totalBytes = 0;
   if (!checkedMul(static_cast<size_t>(fbW), fbH, totalBytes) ||
       !checkedMul(totalBytes, 2, totalBytes))
@@ -604,6 +633,23 @@ void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
   zoom = std::max(zoom, 1);
   zoom = std::min(zoom, 4);
+
+  // Rotate-tall: when enabled and the source image is portrait, rotate
+  // the RGB565 buffer 90° CW so it displays upright. The rotated buffer
+  // becomes the source for both 1x and zoomed rendering.
+  std::vector<uint8_t> rotated;
+  if (rotateTall && imageRgb565 && imageW > 0 && imageH > 0 &&
+      isPortrait(imageW, imageH)) {
+    size_t needSrc = 0;
+    if (checkedMul(static_cast<size_t>(imageW), imageH, needSrc) &&
+        checkedMul(needSrc, 2, needSrc) && imageSize >= needSrc) {
+      rotated = rotateRgb565Cw(imageRgb565, imageW, imageH);
+      if (rotated.size() >= needSrc) {
+        imageRgb565 = rotated.data();
+        std::swap(imageW, imageH);
+      }
+    }
+  }
 
   if (imageSize >= totalBytes && imageRgb565 && imageW > 0 && imageH > 0) {
     if (zoom == 1) {
@@ -657,6 +703,7 @@ void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
   if (zoom == 1 && imageSize >= totalBytes && imageRgb565)
     drawImageViewHistogramAndBlinkies(rgb565, fbW, fbH, rgb565Size);
 
+  drawRatingStars(rgb565, fbW, fbH, rating);
   drawCenteredBottomHint(rgb565, fbW, fbH,
                          zoom > 1 ? "OK=BACK K1=LOCK K3=DEL JOY=PAN"
                                   : "OK=BACK K1=LOCK K3=DEL");
@@ -941,6 +988,78 @@ void drawProtectionIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH) {
   int x = static_cast<int>(fbW) - textW - kMargin - 2;
   int y = kMargin + 2 * (kTextHeight + 3);
   drawTextOutlined(rgb565, fbW, fbH, x, y, text, kColorAmber);
+}
+
+void drawCopyrightEditOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                              const std::string &buf, int cursor) {
+  // Semi-transparent dark background for the edit area.
+  int boxY = static_cast<int>(fbH) / 2 - kRowStep * 2;
+  int boxH = kRowStep * 4;
+  fillRect(rgb565, fbW, fbH, 0, boxY, static_cast<int>(fbW), boxH,
+           kColorBlack);
+  rectOutline(rgb565, fbW, fbH, 0, boxY, static_cast<int>(fbW), boxH,
+              kColorWhite);
+  // Title
+  drawTextWithBg(rgb565, fbW, fbH, kMargin, boxY + 2, "COPYRIGHT",
+                 kColorYellow, kColorBlack);
+  // Edit buffer text
+  int textY = boxY + kRowStep + 2;
+  std::string display = buf;
+  // Pad with spaces to show full width.
+  while (display.size() < 20)
+    display += ' ';
+  drawTextWithBg(rgb565, fbW, fbH, kMargin, textY, display, kColorWhite,
+                 kColorBlack);
+  // Cursor indicator (inverse video block under the current char)
+  if (cursor >= 0 && cursor < static_cast<int>(display.size())) {
+    int cx = kMargin + cursor * kTextWidth;
+    fillRect(rgb565, fbW, fbH, cx - 1, textY - 1, kTextWidth + 2, kRowStep,
+             kColorWhite);
+    drawChar(rgb565, fbW, fbH, cx, textY, display[cursor], kColorBlack,
+             kColorWhite, false);
+  }
+  // Hints
+  drawTextWithBg(rgb565, fbW, fbH, kMargin, textY + kRowStep,
+                 "U/D=CHAR L/R=MOVE OK=SAVE", kColorGray, kColorBlack);
+}
+
+void drawQuickFnOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                        const std::vector<std::string> &labels,
+                        const std::vector<std::string> &values,
+                        int selectedIdx) {
+  if (labels.empty())
+    return;
+  int count = static_cast<int>(std::min(labels.size(), values.size()));
+  int rowH = kRowStep;
+  int boxH = rowH * count + kRowStep + 4;
+  int boxY = static_cast<int>(fbH) / 2 - boxH / 2;
+  int boxW = static_cast<int>(fbW) - 2 * kMargin;
+  int boxX = kMargin;
+  fillRect(rgb565, fbW, fbH, boxX, boxY, boxW, boxH, kColorBlack);
+  rectOutline(rgb565, fbW, fbH, boxX, boxY, boxW, boxH, kColorWhite);
+  // Title
+  drawTextWithBg(rgb565, fbW, fbH, boxX + 2, boxY + 2, "FN", kColorYellow,
+                 kColorBlack);
+  // Items
+  for (int i = 0; i < count; ++i) {
+    int y = boxY + kRowStep + 2 + i * rowH;
+    uint16_t fg = (i == selectedIdx) ? kColorBlack : kColorWhite;
+    uint16_t bg = (i == selectedIdx) ? kColorGreen : kColorBlack;
+    std::string line = labels[i] + " " + values[i];
+    drawTextWithBg(rgb565, fbW, fbH, boxX + 2, y, line, fg, bg);
+  }
+}
+
+void drawRecIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                      uint32_t seconds) {
+  // Red REC dot + timer at top-left.
+  fillRect(rgb565, fbW, fbH, kMargin, kMargin, 6, 6, kColorRed);
+  char timer[16];
+  uint32_t mm = seconds / 60;
+  uint32_t ss = seconds % 60;
+  std::snprintf(timer, sizeof(timer), "%02u:%02u", mm, ss);
+  drawTextWithBg(rgb565, fbW, fbH, kMargin + 10, kMargin, timer,
+                 kColorRed, kColorBlack);
 }
 
 } // namespace picamera

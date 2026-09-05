@@ -136,22 +136,31 @@ TEST(settings_adjust_drive_mode_cycles) {
   // Continuous -> Bulb
   settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
   CHECK(s.driveMode == DriveMode::Bulb);
-  // Bulb -> Single (wrap)
+  // Bulb -> Video
+  settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
+  CHECK(s.driveMode == DriveMode::Video);
+  // Video -> Single (wrap)
   settingsItemAdjustRight(SettingsTab::Shooting, 0, s);
   CHECK(s.driveMode == DriveMode::Single);
 }
 
 TEST(settings_adjust_drive_mode_left_cycles) {
   CameraSettings s;
-  // Single -> Bulb (wrap backward)
+  // Single -> Video (wrap backward)
   settingsItemAdjustLeft(SettingsTab::Shooting, 0, s);
-  CHECK(s.driveMode == DriveMode::Bulb);
+  CHECK(s.driveMode == DriveMode::Video);
 }
 
 TEST(settings_value_drive_mode_bulb_label) {
   CameraSettings s;
   s.driveMode = DriveMode::Bulb;
   CHECK(settingsItemValue(SettingsTab::Shooting, 0, s) == "BULB");
+}
+
+TEST(settings_value_drive_mode_video_label) {
+  CameraSettings s;
+  s.driveMode = DriveMode::Video;
+  CHECK(settingsItemValue(SettingsTab::Shooting, 0, s) == "VIDEO");
 }
 
 TEST(settings_adjust_shutter_increases) {

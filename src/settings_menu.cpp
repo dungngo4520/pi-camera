@@ -30,7 +30,7 @@ constexpr int kMaxKelvin = 10000;
 constexpr int kFlicker50HzPeriodUs = 10000;
 constexpr int kFlicker60HzPeriodUs = 8333;
 
-constexpr int kDriveModeCount = 6;
+constexpr int kDriveModeCount = 7;
 constexpr int kMeteringModeCount = 3;
 constexpr int kAeExposureModeCount = 3;
 constexpr int kAeConstraintModeCount = 3;
@@ -150,6 +150,8 @@ const char *driveModeLabel(DriveMode d) {
     return "CONT";
   case DriveMode::Bulb:
     return "BULB";
+  case DriveMode::Video:
+    return "VIDEO";
   }
   return "??";
 }
@@ -965,6 +967,10 @@ std::string_view valPowerSave(const CameraSettings &s, std::string &buf) {
 
 std::string_view valExit(const CameraSettings &, std::string &) { return ""; }
 
+std::string_view valVideo(const CameraSettings &s, std::string &) {
+  return s.driveMode == DriveMode::Video ? "ON" : "OFF";
+}
+
 std::string_view valExpMode(const CameraSettings &s, std::string &) {
   return exposureModeLabel(s.exposureMode);
 }
@@ -1107,7 +1113,7 @@ constexpr std::array<SettingItem, 10> kSysTab = {{
     {"FORMAT", valExit, nullptr},
     {"RESET", valExit, nullptr},
     {"DATE", valExit, nullptr},
-    {"VIDEO", valExit, nullptr},
+    {"VIDEO", valVideo, nullptr},
     {"EXIT", valExit, nullptr},
 }};
 
@@ -1212,6 +1218,7 @@ CameraConfig settingsToCameraConfig(const CameraSettings &s,
   cfg.copyright = s.copyright;
   cfg.minShutterUs = s.minShutterUs;
   cfg.wbGmShift = s.wbGmShift;
+  cfg.grainEffect = s.grainEffect;
 
   // Apply exposure mode semantics to the config.
   // P/Auto: AE on, shutter+ISO auto (already defaults).

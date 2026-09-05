@@ -339,6 +339,36 @@ uint8_t *decodeJpegToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
 
 } // namespace
 
+std::vector<uint8_t> decodeJpegFileToRgb24(const std::string &path,
+                                           uint32_t &w, uint32_t &h) {
+  int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW);
+  if (fd < 0)
+    return {};
+  struct stat st;
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    ::close(fd);
+    return {};
+  }
+  FILE *fp = ::fdopen(fd, "rb");
+  if (!fp) {
+    ::close(fd);
+    return {};
+  }
+  w = 0;
+  h = 0;
+  uint8_t *rgb = decodeJpegToRgb24(fp, w, h);
+  ::fclose(fp);
+  if (!rgb)
+    return {};
+  MallocGuard guard{rgb};
+  size_t expected = 0;
+  if (!checkedMul(static_cast<size_t>(w), h, expected) ||
+      !checkedMul(expected, 3, expected)) {
+    return {};
+  }
+  return std::vector<uint8_t>(rgb, rgb + expected);
+}
+
 std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
                                          uint32_t dispW, uint32_t dispH) {
   // Determine format by file signature (magic bytes), not extension.

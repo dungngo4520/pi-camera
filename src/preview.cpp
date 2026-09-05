@@ -4,6 +4,7 @@
 #include "camera_mode.h"
 #include "cli.h"
 #include "dual_stream.h"
+#include "encoders.h"
 #include "hardware_config.h"
 #include "image.h"
 #include "image_decode.h"
@@ -21,9 +22,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -540,6 +543,21 @@ struct PreviewState {
   // Dark frame capture state for long-exposure NR.
   std::string darkFramePath;
   bool darkFramePending = false;
+
+  // Copyright text entry state (Settings mode).
+  bool copyrightEditing = false;
+  std::string copyrightBuffer;
+  int copyrightCursor = 0;
+
+  // Quick/Fn overlay state (Viewfinder mode).
+  bool quickFnActive = false;
+  int quickFnIdx = 0;
+
+  // Video recording state (Viewfinder mode, Video drive mode).
+  bool videoRecording = false;
+  std::chrono::steady_clock::time_point videoStartTime;
+  std::string videoPath;
+  int videoFrameCount = 0;
 };
 
 struct BracketOverride {
@@ -683,9 +701,170 @@ void applyBrightnessDimming(uint8_t *rgb565, size_t dispPixels,
   }
 }
 
+// Merge bracket frame JPEGs into a single HDR JPEG. Decodes each bracket
+// frame to RGB24, extracts Y-planes, merges with hdrMergeY, reconstructs
+// RGB from merged Y + chroma from the middle frame, and saves as an
+// additional _HDR.jpg file. Returns the saved path on success.
+void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
+  auto &paths = s.bracketCapturePaths;
+  if (paths.size() < 2)
+    return;
+  // Decode all bracket frames to RGB24 and extract Y-planes.
+  std::vector<std::vector<uint8_t>> rgbFrames;
+  std::vector<std::vector<uint8_t>> yPlanes;
+  std::vector<const uint8_t *> yPtrs;
+  uint32_t w = 0;
+  uint32_t h = 0;
+  for (const auto &p : paths) {
+    uint32_t fw = 0;
+    uint32_t fh = 0;
+    auto rgb = decodeJpegFileToRgb24(p, fw, fh);
+    if (rgb.empty()) {
+      std::cerr << "Preview: HDR merge — failed to decode " << p << "\n";
+      return;
+    }
+    if (w == 0) {
+      w = fw;
+      h = fh;
+    } else if (fw != w || fh != h) {
+      std::cerr << "Preview: HDR merge — dimension mismatch\n";
+      return;
+    }
+    // Align width to even for NV12 chroma.
+    uint32_t alignedW = (w + 1) & ~1u;
+    auto yPlane = rgb24ToY(rgb.data(), w, h, alignedW);
+    if (yPlane.empty()) {
+      std::cerr << "Preview: HDR merge — Y extraction failed\n";
+      return;
+    }
+    rgbFrames.push_back(std::move(rgb));
+    yPlanes.push_back(std::move(yPlane));
+    yPtrs.push_back(yPlanes.back().data());
+  }
+  uint32_t alignedW = (w + 1) & ~1u;
+  auto mergedY = hdrMergeY(yPtrs, alignedW, h, alignedW);
+  if (mergedY.empty()) {
+    std::cerr << "Preview: HDR merge — merge failed\n";
+    return;
+  }
+  // Reconstruct RGB from merged Y using a neutral chroma (no color shift).
+  // Build a neutral UV plane (128 = no chroma offset) for the merged frame.
+  std::vector<uint8_t> uv(static_cast<size_t>(alignedW) * (h / 2), 128);
+  auto mergedRgb = yuvToRgb24(mergedY.data(), uv.data(), w, h, alignedW);
+  if (mergedRgb.empty()) {
+    std::cerr << "Preview: HDR merge — RGB reconstruction failed\n";
+    return;
+  }
+  // Save as additional HDR JPEG alongside the bracket frames.
+  std::string capDir =
+      ensureDateSubfolder(pcfg.captureDir, s.overlay.settings.useDateSubfolders);
+  std::string hdrName;
+  if (s.overlay.settings.fileNamingMode == FileNamingMode::Sequential) {
+    hdrName = makeSequentialFilename(capDir, pcfg.capturePrefix,
+                                     OutputFormat::JPEG);
+  } else {
+    hdrName = makeCaptureFilename(capDir, pcfg.capturePrefix, OutputFormat::JPEG);
+  }
+  // Insert _HDR before the extension.
+  auto dot = hdrName.rfind('.');
+  if (dot != std::string::npos)
+    hdrName.insert(dot, "_HDR");
+  else
+    hdrName += "_HDR";
+  CameraConfig cfg =
+      settingsToCameraConfig(s.overlay.settings, pcfg.captureWidth,
+                             pcfg.captureHeight);
+  std::string savedPath;
+  if (writeJpegRgb(mergedRgb.data(), w, h, hdrName, cfg.jpegQuality,
+                   &savedPath)) {
+    std::cout << "Preview: HDR merge saved " << savedPath << "\n";
+    s.lastCapturePath = savedPath;
+  } else {
+    std::cerr << "Preview: HDR merge — JPEG encode failed\n";
+  }
+}
+
+// Long-exposure noise reduction: after a long-exposure capture (>1s) with
+// LENR enabled, capture a dark frame with the same exposure, then subtract
+// the dark frame's Y-plane from the main frame's Y-plane. The result is
+// re-encoded and overwrites the original JPEG. This removes fixed-pattern
+// sensor noise that accumulates during long exposures.
+void performLenr(PreviewState &s, DualStream &cam,
+                 const std::string &mainPath, const PreviewConfig &pcfg) {
+  // Capture a dark frame with the same exposure settings.
+  std::string darkDir =
+      ensureDateSubfolder(pcfg.captureDir, s.overlay.settings.useDateSubfolders);
+  std::string darkName;
+  if (s.overlay.settings.fileNamingMode == FileNamingMode::Sequential) {
+    darkName = makeSequentialFilename(darkDir, pcfg.capturePrefix,
+                                      OutputFormat::JPEG);
+  } else {
+    darkName = makeCaptureFilename(darkDir, pcfg.capturePrefix,
+                                   OutputFormat::JPEG);
+  }
+  auto dot = darkName.rfind('.');
+  if (dot != std::string::npos)
+    darkName.insert(dot, "_DARK");
+  else
+    darkName += "_DARK";
+  if (!cam.captureStill(darkName)) {
+    std::cerr << "Preview: LENR — dark frame capture failed\n";
+    return;
+  }
+  std::string darkSaved;
+  cam.waitCaptureDone(10000, &darkSaved);
+  if (darkSaved.empty())
+    darkSaved = darkName;
+  // Decode both frames to RGB24.
+  uint32_t mw = 0;
+  uint32_t mh = 0;
+  uint32_t dw = 0;
+  uint32_t dh = 0;
+  auto mainRgb = decodeJpegFileToRgb24(mainPath, mw, mh);
+  auto darkRgb = decodeJpegFileToRgb24(darkSaved, dw, dh);
+  if (mainRgb.empty() || darkRgb.empty() || mw != dw || mh != dh) {
+    std::cerr << "Preview: LENR — decode failed or dimension mismatch\n";
+    return;
+  }
+  uint32_t alignedW = (mw + 1) & ~1u;
+  auto mainY = rgb24ToY(mainRgb.data(), mw, mh, alignedW);
+  auto darkY = rgb24ToY(darkRgb.data(), dw, dh, alignedW);
+  if (mainY.empty() || darkY.empty()) {
+    std::cerr << "Preview: LENR — Y extraction failed\n";
+    return;
+  }
+  auto correctedY = darkFrameSubtract(mainY.data(), darkY.data(), alignedW,
+                                      mh, alignedW);
+  if (correctedY.empty()) {
+    std::cerr << "Preview: LENR — subtraction failed\n";
+    return;
+  }
+  // Reconstruct RGB from corrected Y + neutral chroma.
+  std::vector<uint8_t> uv(static_cast<size_t>(alignedW) * (mh / 2), 128);
+  auto correctedRgb = yuvToRgb24(correctedY.data(), uv.data(), mw, mh,
+                                  alignedW);
+  if (correctedRgb.empty()) {
+    std::cerr << "Preview: LENR — RGB reconstruction failed\n";
+    return;
+  }
+  // Overwrite the main JPEG with the corrected version.
+  CameraConfig cfg =
+      settingsToCameraConfig(s.overlay.settings, pcfg.captureWidth,
+                             pcfg.captureHeight);
+  std::string newPath;
+  if (writeJpegRgb(correctedRgb.data(), mw, mh, mainPath, cfg.jpegQuality,
+                   &newPath)) {
+    std::cout << "Preview: LENR — corrected " << newPath << "\n";
+  } else {
+    std::cerr << "Preview: LENR — re-encode failed\n";
+  }
+}
+
 // Join a completed capture worker and transition to review/error state.
 // The acquire load synchronizes with the worker's release store of captureDone.
-void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
+void checkCaptureCompletion(PreviewState &s, DualStream &cam,
+                           St7735Display &display,
+                           const PreviewConfig &pcfg) {
   if (!s.captureDone.load(std::memory_order_acquire))
     return;
   if (s.captureThread.joinable())
@@ -702,9 +881,35 @@ void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
   if (s.captureSuccess.load(std::memory_order_acquire)) {
     s.lastCapturePath = savedPath;
     ++s.captureCount; // increment only on successful capture
+    // Collect bracket frame paths for HDR merge.
+    if (s.bracketMergePending &&
+        s.overlay.settings.driveMode == DriveMode::Bracket)
+      s.bracketCapturePaths.push_back(savedPath);
     // Decode for review screen (like a real camera)
     s.reviewPixels =
         decodeImageToRgb565(savedPath, display.width(), display.height());
+    // HDR merge: when all bracket frames are captured and merge is pending.
+    if (s.bracketMergePending && s.burstRemaining <= 0 &&
+        !s.overlay.settings.bracketEv.empty() &&
+        s.bracketCapturePaths.size() ==
+            s.overlay.settings.bracketEv.size()) {
+      performHdrMerge(s, pcfg);
+      s.bracketMergePending = false;
+      s.bracketCapturePaths.clear();
+    }
+    // Long-exposure NR: for single captures (not bracket/burst) with LENR
+    // enabled and shutter > 1s, capture a dark frame and subtract.
+    if (s.overlay.settings.longExposureNr && s.burstRemaining <= 0 &&
+        !s.overlay.timelapseRunning &&
+        s.overlay.settings.driveMode != DriveMode::Bracket) {
+      uint64_t shutterUs = s.overlay.settings.shutterUs;
+      if (shutterUs == 0)
+        shutterUs = static_cast<uint64_t>(cam.lastShutterMs()) * 1000;
+      if (shutterUs > 1000000) {
+        std::cout << "Preview: LENR — capturing dark frame\n";
+        performLenr(s, cam, savedPath, pcfg);
+      }
+    }
     // Only switch to Review if we're in Viewfinder and not in a burst/timelapse
     if (s.mode == CameraMode::Viewfinder && s.burstRemaining <= 0 &&
         !s.overlay.timelapseRunning) {
@@ -721,6 +926,8 @@ void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
     // On error, cancel any remaining burst/timelapse
     s.burstRemaining = 0;
     s.overlay.timelapseRunning = false;
+    s.bracketMergePending = false;
+    s.bracketCapturePaths.clear();
   }
   // Reset captureDone so the completion handler doesn't re-trigger next frame.
   s.captureDone.store(false, std::memory_order_release);
@@ -821,6 +1028,12 @@ void handleTimelapse(PreviewState &s, DualStream &cam,
 // Render one viewfinder frame: grab, convert, dim, overlay, histogram, blit.
 // Returns true if the main loop should `continue` (stop requested mid-grab),
 // preserving the original early-`continue` on stop during a frame timeout.
+// Forward declarations for functions defined after renderViewfinder.
+void adjustQuickFnItem(PreviewState &s, int idx, int direction);
+void buildQuickFnItems(const CameraSettings &s,
+                       std::vector<std::string> &labels,
+                       std::vector<std::string> &values);
+
 bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                       const PreviewConfig &pcfg, const StopFlag &stop) {
   auto frame = cam.grabFrame(kFrameTimeoutMs);
@@ -904,7 +1117,7 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
 
   // Check capture completion BEFORE building the overlay state, so
   // overlay.captureInProgress reflects the up-to-date value this frame.
-  checkCaptureCompletion(s, display);
+  checkCaptureCompletion(s, cam, display, pcfg);
 
   // If capture completion switched us out of Viewfinder mode (e.g. to
   // Review), return without blitting — the main loop will render the
@@ -1004,6 +1217,54 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                      frame.stride, frame.yData.size());
   }
 
+  // Quick/Fn overlay (drawn on top of everything else when active).
+  if (s.quickFnActive) {
+    std::vector<std::string> labels;
+    std::vector<std::string> values;
+    buildQuickFnItems(s.overlay.settings, labels, values);
+    drawQuickFnOverlay(s.rgb565.data(), display.width(), display.height(),
+                       labels, values, s.quickFnIdx);
+  }
+
+  // Video recording: encode current frame as JPEG and append to MJPEG file.
+  if (s.videoRecording && !s.videoPath.empty()) {
+    uint32_t vw = frame.width;
+    uint32_t vh = frame.height;
+    uint32_t vStride = frame.stride;
+    if (vw > 0 && vh > 0 && frame.y() && frame.uv()) {
+      uint32_t alignedW = (vw + 1) & ~1u;
+      std::vector<uint8_t> yCopy(
+          frame.y(),
+          frame.y() + static_cast<size_t>(vStride) * vh);
+      std::vector<uint8_t> uvCopy(
+          frame.uv(),
+          frame.uv() + static_cast<size_t>(alignedW) * (vh / 2));
+      auto rgb = yuvToRgb24(yCopy.data(), uvCopy.data(), vw, vh, vStride);
+      if (!rgb.empty()) {
+        std::string tmpPath = s.videoPath + ".tmp.jpg";
+        if (writeJpegRgb(rgb.data(), vw, vh, tmpPath, 85, nullptr)) {
+          std::ifstream jf(tmpPath, std::ios::binary);
+          if (jf) {
+            std::ofstream ofs(s.videoPath, std::ios::binary | std::ios::app);
+            ofs << jf.rdbuf();
+            ++s.videoFrameCount;
+          }
+          std::error_code ec;
+          std::filesystem::remove(tmpPath, ec);
+        }
+      }
+    }
+  }
+
+  // Video recording indicator.
+  if (s.videoRecording) {
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                       std::chrono::steady_clock::now() - s.videoStartTime)
+                       .count();
+    drawRecIndicator(s.rgb565.data(), display.width(), display.height(),
+                     static_cast<uint32_t>(elapsed));
+  }
+
   if (!display.blit(s.rgb565.data())) {
     std::cerr << "Preview: VF blit failed (SPI error)\n";
   }
@@ -1080,7 +1341,8 @@ void renderImageViewMode(PreviewState &s, St7735Display &display) {
                         s.rgb565.size(), s.imageViewPixels.data(),
                         s.imageViewPixels.size(), display.width(),
                         display.height(), s.imageViewZoom, s.imageViewPanX,
-                        s.imageViewPanY, s.imageViewPath);
+                        s.imageViewPanY, s.imageViewPath,
+                        s.overlay.settings.rotateTall, s.fileRating);
     // Show protection indicator if the file is protected.
     if (s.fileProtected) {
       drawProtectionIndicator(s.rgb565.data(), display.width(),
@@ -1099,6 +1361,11 @@ void renderSettingsMode(PreviewState &s, St7735Display &display) {
   if (s.screenDirty || s.mode != s.lastRenderedMode) {
     drawSettingsMenu(s.rgb565.data(), display.width(), display.height(),
                      s.overlay.settings, s.settingsTab, s.settingsIdx);
+    if (s.copyrightEditing) {
+      drawCopyrightEditOverlay(s.rgb565.data(), display.width(),
+                               display.height(), s.copyrightBuffer,
+                               s.copyrightCursor);
+    }
     if (!display.blit(s.rgb565.data())) {
       std::cerr << "Preview: settings blit failed (SPI error)\n";
     }
@@ -1127,6 +1394,44 @@ void checkSleepTimeout(PreviewState &s, St7735Display &display,
 void handleShutterRelease(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, St7735Display &display,
                           const ButtonEvent &evt) {
+  // Video mode: shutter toggles recording.
+  if (s.overlay.settings.driveMode == DriveMode::Video) {
+    if (s.videoRecording) {
+      // Stop recording.
+      s.videoRecording = false;
+      std::cout << "Preview: video recording stopped (" << s.videoFrameCount
+                << " frames, " << s.videoPath << ")\n";
+      s.persistentError = "REC STOP";
+      s.errorExpiry = std::chrono::steady_clock::now() +
+                      std::chrono::seconds(2);
+    } else {
+      // Start recording — create MJPEG file in capture directory.
+      std::string capDir = ensureDateSubfolder(
+          pcfg.captureDir, s.overlay.settings.useDateSubfolders);
+      std::string vidName;
+      if (s.overlay.settings.fileNamingMode == FileNamingMode::Sequential) {
+        vidName = makeSequentialFilename(capDir, pcfg.capturePrefix,
+                                         OutputFormat::JPEG);
+      } else {
+        vidName = makeCaptureFilename(capDir, pcfg.capturePrefix,
+                                      OutputFormat::JPEG);
+      }
+      // Replace .jpg extension with .mjpeg
+      auto dot = vidName.rfind('.');
+      if (dot != std::string::npos)
+        vidName = vidName.substr(0, dot) + ".mjpeg";
+      else
+        vidName += ".mjpeg";
+      s.videoPath = vidName;
+      s.videoFrameCount = 0;
+      s.videoRecording = true;
+      s.videoStartTime = std::chrono::steady_clock::now();
+      std::cout << "Preview: video recording started (" << s.videoPath
+                << ")\n";
+    }
+    s.screenDirty = true;
+    return;
+  }
   if (evt.pressDurationMs >= 0 && evt.pressDurationMs < kShutterHoldMs) {
     // Re-entry guard: ignore the shutter while a capture is already in
     // flight (the worker thread is still saving the previous shot).
@@ -1161,6 +1466,10 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
                   << s.overlay.settings.bracketEv.size() << " frames)\n";
         s.bracketIndex = 0;
         s.bracketMode = s.overlay.settings.bracketType;
+        // Track bracket paths for HDR merge (AE bracket only).
+        s.bracketCapturePaths.clear();
+        s.bracketMergePending = s.overlay.settings.hdrMerge &&
+                                s.bracketMode == BracketType::AE;
         auto bo = computeBracketOverride(s, 0);
         s.bracketIndex = 1; // next frame uses index 1
         launchCapture(s, cam, pcfg, display, bo.ev, bo.wbRed, bo.wbBlue, 0,
@@ -1218,6 +1527,97 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
 }
 
 // Dispatch a button event in Viewfinder mode.
+// Adjust a Quick/Fn overlay item by direction (+1 or -1).
+// Items: 0=ISO, 1=WB, 2=EV, 3=Drive, 4=Format, 5=PictureStyle.
+void adjustQuickFnItem(PreviewState &s, int idx, int direction) {
+  switch (idx) {
+  case 0: // ISO → Shooting tab idx 2
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Shooting, 2, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Shooting, 2, s.overlay.settings);
+    break;
+  case 1: // WB → Image tab idx 5
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Image, 5, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Image, 5, s.overlay.settings);
+    break;
+  case 2: // EV → Shooting tab idx 6
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Shooting, 6, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Shooting, 6, s.overlay.settings);
+    break;
+  case 3: // Drive → Shooting tab idx 0
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Shooting, 0, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Shooting, 0, s.overlay.settings);
+    break;
+  case 4: // Format → Image tab idx 0
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Image, 0, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Image, 0, s.overlay.settings);
+    break;
+  case 5: // PictureStyle → Image tab idx 17
+    if (direction > 0)
+      settingsItemAdjustRight(SettingsTab::Image, 17, s.overlay.settings);
+    else
+      settingsItemAdjustLeft(SettingsTab::Image, 17, s.overlay.settings);
+    break;
+  default:
+    break;
+  }
+}
+
+// Build the Quick/Fn overlay labels and values.
+void buildQuickFnItems(const CameraSettings &s,
+                       std::vector<std::string> &labels,
+                       std::vector<std::string> &values) {
+  labels = {"ISO", "WB", "EV", "DRIVE", "FMT", "PSTYLE"};
+  // ISO
+  if (s.analogueGain <= 0)
+    values.push_back("AUTO");
+  else
+    values.push_back(std::to_string(static_cast<int>(s.analogueGain * 100)));
+  // WB
+  values.push_back(s.awbMode == "auto" ? "AUTO" : s.awbMode.substr(0, 4));
+  // EV
+  {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%+.1f", s.exposureValue);
+    values.push_back(buf);
+  }
+  // Drive
+  switch (s.driveMode) {
+  case DriveMode::Single: values.push_back("SINGLE"); break;
+  case DriveMode::SelfTimer: values.push_back("TIMER"); break;
+  case DriveMode::Bracket: values.push_back("BRACKET"); break;
+  case DriveMode::Timelapse: values.push_back("INTERVAL"); break;
+  case DriveMode::Continuous: values.push_back("CONT"); break;
+  case DriveMode::Bulb: values.push_back("BULB"); break;
+  case DriveMode::Video: values.push_back("VIDEO"); break;
+  }
+  // Format
+  values.push_back(std::string(extensionFor(s.captureFormat)));
+  // PictureStyle
+  switch (s.pictureStyle) {
+  case PictureStyle::Standard: values.push_back("STD"); break;
+  case PictureStyle::Vivid: values.push_back("VIVID"); break;
+  case PictureStyle::Natural: values.push_back("NAT"); break;
+  case PictureStyle::Monochrome: values.push_back("MONO"); break;
+  case PictureStyle::Portrait: values.push_back("PORTRAIT"); break;
+  case PictureStyle::Landscape: values.push_back("LAND"); break;
+  case PictureStyle::Sepia: values.push_back("SEPIA"); break;
+  case PictureStyle::Cool: values.push_back("COOL"); break;
+  case PictureStyle::Warm: values.push_back("WARM"); break;
+  case PictureStyle::Film: values.push_back("FILM"); break;
+  case PictureStyle::HDR: values.push_back("HDR"); break;
+  }
+}
+
 void handleViewfinderButton(PreviewState &s, DualStream &cam,
                             const PreviewConfig &pcfg, St7735Display &display,
                             const ButtonEvent &evt) {
@@ -1246,6 +1646,29 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
     s.sleeping = true;
     display.setBacklight(false);
     std::cout << "Preview: power-off (sleep mode)\n";
+  } else if (!evt.pressed && evt.id == ButtonId::Key3 &&
+             evt.pressDurationMs >= 1000) {
+    // Long Key3 press: toggle Quick/Fn overlay.
+    s.quickFnActive = !s.quickFnActive;
+    s.quickFnIdx = 0;
+    s.screenDirty = true;
+  } else if (evt.pressed && s.quickFnActive &&
+             (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
+              evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
+    // Quick/Fn overlay navigation: Up/Down select item, Left/Right adjust.
+    constexpr int kQuickFnCount = 6;
+    if (evt.id == ButtonId::JoyUp) {
+      if (s.quickFnIdx > 0)
+        --s.quickFnIdx;
+    } else if (evt.id == ButtonId::JoyDown) {
+      if (s.quickFnIdx < kQuickFnCount - 1)
+        ++s.quickFnIdx;
+    } else if (evt.id == ButtonId::JoyLeft) {
+      adjustQuickFnItem(s, s.quickFnIdx, -1);
+    } else if (evt.id == ButtonId::JoyRight) {
+      adjustQuickFnItem(s, s.quickFnIdx, 1);
+    }
+    s.screenDirty = true;
   } else if (evt.pressed && s.overlay.settings.focusMagnify > 0 &&
              (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
               evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
@@ -1481,6 +1904,33 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
 void handleSettingsButton(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, StopFlag &stop,
                           const ButtonEvent &evt) {
+  // Copyright text entry mode: intercept all buttons while editing.
+  if (s.copyrightEditing) {
+    if (!evt.pressed)
+      return;
+    if (evt.id == ButtonId::Key2 || evt.id == ButtonId::Shutter) {
+      // Confirm: save the buffer (trim trailing spaces) and exit edit mode.
+      std::string trimmed = s.copyrightBuffer;
+      while (!trimmed.empty() && trimmed.back() == ' ')
+        trimmed.pop_back();
+      s.overlay.settings.copyright = trimmed;
+      s.copyrightEditing = false;
+      saveSettings(s.overlay.settings, defaultSettingsPath());
+      std::cout << "Preview: copyright set to '" << trimmed << "'\n";
+    } else if (evt.id == ButtonId::JoyUp) {
+      copyrightCycleChar(s.copyrightBuffer, s.copyrightCursor, 1);
+    } else if (evt.id == ButtonId::JoyDown) {
+      copyrightCycleChar(s.copyrightBuffer, s.copyrightCursor, -1);
+    } else if (evt.id == ButtonId::JoyLeft) {
+      if (s.copyrightCursor > 0)
+        --s.copyrightCursor;
+    } else if (evt.id == ButtonId::JoyRight) {
+      if (s.copyrightCursor < 19)
+        ++s.copyrightCursor;
+    }
+    s.screenDirty = true;
+    return;
+  }
   if (evt.pressed && evt.id == ButtonId::Key2) {
     // Exit settings — reconfigure camera if capture format changed.
     if (s.overlay.settings.captureFormat != s.capFmt) {
@@ -1619,11 +2069,33 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.screenDirty = true;
       return;
     }
-    // VIDEO (System idx 8): stub — coming soon.
+    // VIDEO (System idx 8): toggle Video drive mode.
     if (s.settingsTab == SettingsTab::System && s.settingsIdx == 8) {
-      s.persistentError = "COMING SOON";
+      if (s.overlay.settings.driveMode == DriveMode::Video) {
+        s.overlay.settings.driveMode = DriveMode::Single;
+        s.persistentError = "VIDEO OFF";
+      } else {
+        s.overlay.settings.driveMode = DriveMode::Video;
+        s.persistentError = "VIDEO ON";
+      }
       s.errorExpiry = std::chrono::steady_clock::now() +
-                      std::chrono::seconds(3);
+                      std::chrono::seconds(2);
+      s.screenDirty = true;
+      return;
+    }
+    // COPYRIGHT (Image idx 19): enter text entry mode on JoyRight.
+    if (s.settingsTab == SettingsTab::Image && s.settingsIdx == 19) {
+      if (evt.id == ButtonId::JoyRight) {
+        s.copyrightEditing = true;
+        s.copyrightBuffer = s.overlay.settings.copyright;
+        // Pad to 20 chars with spaces for editing.
+        while (s.copyrightBuffer.size() < 20)
+          s.copyrightBuffer += ' ';
+        if (s.copyrightBuffer.size() > 20)
+          s.copyrightBuffer.resize(20);
+        s.copyrightCursor = 0;
+        std::cout << "Preview: entering copyright edit mode\n";
+      }
       s.screenDirty = true;
       return;
     }

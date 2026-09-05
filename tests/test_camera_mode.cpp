@@ -18,12 +18,15 @@ using picamera::drawFocusMagnifyIndicator;
 using picamera::drawFocusPeaking;
 using picamera::drawGrid;
 using picamera::drawHistogram;
+using picamera::drawCopyrightEditOverlay;
 using picamera::drawImageView;
 using picamera::drawImageViewHistogramAndBlinkies;
 using picamera::drawImageViewZoomed;
 using picamera::drawOverlay;
 using picamera::drawPlaybackBrowser;
 using picamera::drawProtectionIndicator;
+using picamera::drawQuickFnOverlay;
+using picamera::drawRecIndicator;
 using picamera::drawReviewScreen;
 using picamera::drawSettingsMenu;
 using picamera::drawSplash;
@@ -1001,6 +1004,127 @@ TEST(draw_image_view_zoomed_no_crash_small_buffer) {
   std::vector<uint8_t> img(fb.size(), 0x55);
   drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
                       fb.w, fb.h, 4, 8, 8, "/x.jpg");
+  CHECK(fb.anyNonZero());
+}
+
+// --- drawImageViewZoomed with rotateTall tests ---
+
+TEST(draw_image_view_zoomed_rotate_tall_portrait_rotates) {
+  // Portrait image (taller than wide) with rotateTall should rotate 90 CW.
+  // Source: 4 wide x 8 tall. After rotation: 8 wide x 4 tall.
+  Framebuffer fb(8, 4);
+  std::vector<uint8_t> img(4 * 8 * 2, 0);
+  // Set a marker pixel at (0,0) in the source with mid-gray.
+  // After 90 CW rotation, it should appear at (7,0) in the output.
+  img[0] = 0x84;
+  img[1] = 0x21;
+  drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
+                      4, 8, 1, 0, 0, "/x.jpg", true, 0);
+  CHECK(fb.pixel(7, 0) == static_cast<uint16_t>((0x84 << 8) | 0x21));
+}
+
+TEST(draw_image_view_zoomed_rotate_tall_landscape_no_rotation) {
+  // Landscape image (wider than tall) with rotateTall should NOT rotate.
+  // Use a 128x64 landscape image with a 128x64 framebuffer.
+  Framebuffer fb(128, 64);
+  std::vector<uint8_t> img(128 * 64 * 2, 0);
+  // Set marker at (10, 15) with mid-gray — above the histogram area.
+  size_t idx = (15 * 128 + 10) * 2;
+  img[idx] = 0x84;
+  img[idx + 1] = 0x21; // ~128 gray in RGB565
+  drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
+                      128, 64, 1, 0, 0, "/x.jpg", true, 0);
+  CHECK(fb.pixel(10, 15) == static_cast<uint16_t>((0x84 << 8) | 0x21));
+}
+
+TEST(draw_image_view_zoomed_rotate_tall_disabled_no_rotation) {
+  // Portrait image with rotateTall=false should NOT rotate.
+  // Use a 64x128 portrait image with a 64x128 framebuffer.
+  Framebuffer fb(64, 128);
+  std::vector<uint8_t> img(64 * 128 * 2, 0);
+  // Set marker at (30, 60) with mid-gray (below blinkie threshold).
+  size_t idx = (60 * 64 + 30) * 2;
+  img[idx] = 0x84;
+  img[idx + 1] = 0x21; // ~128 gray in RGB565
+  drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
+                      64, 128, 1, 0, 0, "/x.jpg", false, 0);
+  CHECK(fb.pixel(30, 60) == static_cast<uint16_t>((0x84 << 8) | 0x21));
+}
+
+// --- drawImageViewZoomed with rating tests ---
+
+TEST(draw_image_view_zoomed_rating_draws_stars) {
+  Framebuffer fb(128, 128);
+  std::vector<uint8_t> img(fb.size(), 0);
+  drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
+                      fb.w, fb.h, 1, 0, 0, "/x.jpg", false, 3);
+  // With rating=3, three '*' characters should be drawn at top-right.
+  // The text area should have non-black pixels in the top-right region.
+  bool foundYellow = false;
+  for (uint32_t y = 0; y < 20; ++y)
+    for (uint32_t x = 100; x < fb.w; ++x)
+      if (fb.pixel(x, y) != 0)
+        foundYellow = true;
+  CHECK(foundYellow);
+}
+
+TEST(draw_image_view_zoomed_rating_zero_no_stars) {
+  Framebuffer fb(128, 128);
+  std::vector<uint8_t> img(fb.size(), 0);
+  drawImageViewZoomed(fb.ptr(), fb.w, fb.h, fb.size(), img.data(), img.size(),
+                      fb.w, fb.h, 1, 0, 0, "/x.jpg", false, 0);
+  // With rating=0, no stars should be drawn. The top-right area should
+  // be black (no text overlay there).
+  CHECK(fb.pixel(120, 20) == 0);
+}
+
+// --- drawCopyrightEditOverlay tests ---
+
+TEST(draw_copyright_edit_overlay_renders_without_crash) {
+  Framebuffer fb(128, 128);
+  std::string buf = "HELLO";
+  drawCopyrightEditOverlay(fb.ptr(), fb.w, fb.h, buf, 0);
+  // Should have drawn some non-black pixels (text).
+  CHECK(fb.anyNonZero());
+}
+
+TEST(draw_copyright_edit_overlay_shows_buffer_text) {
+  Framebuffer fb(128, 128);
+  std::string buf = "TEST";
+  drawCopyrightEditOverlay(fb.ptr(), fb.w, fb.h, buf, 0);
+  CHECK(fb.anyNonZero());
+}
+
+// --- drawQuickFnOverlay tests ---
+
+TEST(draw_quick_fn_overlay_renders_items) {
+  Framebuffer fb(128, 128);
+  std::vector<std::string> labels = {"ISO", "WB", "EV"};
+  std::vector<std::string> values = {"100", "AUTO", "+1.0"};
+  drawQuickFnOverlay(fb.ptr(), fb.w, fb.h, labels, values, 1);
+  CHECK(fb.anyNonZero());
+}
+
+TEST(draw_quick_fn_overlay_empty_labels_no_crash) {
+  Framebuffer fb(128, 128);
+  std::vector<std::string> labels, values;
+  drawQuickFnOverlay(fb.ptr(), fb.w, fb.h, labels, values, 0);
+  // No items → no overlay drawn, framebuffer stays black.
+  CHECK(!fb.anyNonZero());
+}
+
+// --- drawRecIndicator tests ---
+
+TEST(draw_rec_indicator_renders) {
+  Framebuffer fb(128, 128);
+  drawRecIndicator(fb.ptr(), fb.w, fb.h, 5);
+  // REC dot at top-left and timer text should produce non-black pixels.
+  CHECK(fb.anyNonZero());
+}
+
+TEST(draw_rec_indicator_zero_seconds) {
+  Framebuffer fb(128, 128);
+  drawRecIndicator(fb.ptr(), fb.w, fb.h, 0);
   CHECK(fb.anyNonZero());
 }
 

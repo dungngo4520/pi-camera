@@ -92,4 +92,84 @@ void applyNightBoost(uint8_t *yPlane, uint32_t width, uint32_t height,
   }
 }
 
+std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
+                              uint32_t height, uint32_t stride) {
+  if (!rgb || width == 0 || height == 0 || stride < width)
+    return {};
+  std::vector<uint8_t> y(static_cast<size_t>(stride) * height);
+  for (uint32_t row = 0; row < height; ++row) {
+    for (uint32_t col = 0; col < width; ++col) {
+      size_t rgbIdx = (static_cast<size_t>(row) * width + col) * 3;
+      int r = rgb[rgbIdx];
+      int g = rgb[rgbIdx + 1];
+      int b = rgb[rgbIdx + 2];
+      y[static_cast<size_t>(row) * stride + col] =
+          static_cast<uint8_t>((77 * r + 150 * g + 29 * b) / 256);
+    }
+  }
+  return y;
+}
+
+std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
+                                uint32_t width, uint32_t height,
+                                uint32_t stride) {
+  if (!y || !uv || width == 0 || height == 0 || stride < width)
+    return {};
+  std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
+  for (uint32_t row = 0; row < height; ++row) {
+    for (uint32_t col = 0; col < width; ++col) {
+      size_t yIdx = static_cast<size_t>(row) * stride + col;
+      int yVal = y[yIdx];
+      size_t uvIdx = (static_cast<size_t>(row / 2) * (width / 2) + col / 2) * 2;
+      int uVal = uv[uvIdx] - 128;
+      int vVal = uv[uvIdx + 1] - 128;
+      int r = yVal + static_cast<int>(1.402f * vVal);
+      int g = yVal - static_cast<int>(0.344f * uVal + 0.714f * vVal);
+      int b = yVal + static_cast<int>(1.772f * uVal);
+      size_t rgbIdx = (static_cast<size_t>(row) * width + col) * 3;
+      rgb[rgbIdx] = static_cast<uint8_t>(std::clamp(r, 0, 255));
+      rgb[rgbIdx + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
+      rgb[rgbIdx + 2] = static_cast<uint8_t>(std::clamp(b, 0, 255));
+    }
+  }
+  return rgb;
+}
+
+// Copyright text entry character set.
+// Index 0-25: A-Z, 26-35: 0-9, 36: space, 37: '-', 38: '.'
+static constexpr char kCopyrightChars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -.";
+
+char copyrightCharAt(int index) {
+  constexpr int n = sizeof(kCopyrightChars) - 1; // exclude null terminator
+  if (n == 0)
+    return ' ';
+  index = ((index % n) + n) % n; // wrap to [0, n)
+  return kCopyrightChars[index];
+}
+
+int copyrightCharCount() {
+  return static_cast<int>(sizeof(kCopyrightChars) - 1);
+}
+
+void copyrightCycleChar(std::string &buf, int pos, int direction) {
+  if (pos < 0 || pos >= static_cast<int>(buf.size()))
+    return;
+  // Find current character index in the set. Default to 0 if not found.
+  char current = buf[pos];
+  int idx = 0;
+  bool found = false;
+  for (int i = 0; i < copyrightCharCount(); ++i) {
+    if (kCopyrightChars[i] == current) {
+      idx = i;
+      found = true;
+      break;
+    }
+  }
+  if (!found)
+    idx = 0;
+  idx += direction;
+  buf[pos] = copyrightCharAt(idx);
+}
+
 } // namespace picamera

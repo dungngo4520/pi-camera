@@ -28,6 +28,7 @@ enum class DriveMode {
   Timelapse,
   Continuous,
   Bulb,
+  Video,
 };
 
 enum class GridType {
@@ -262,13 +263,34 @@ void drawPlaybackBrowser(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                    size_t rgb565Size, const uint8_t *imageRgb565,
-                   size_t imageSize, const std::string &path);
+                   size_t imageSize, const std::string &path,
+                   bool rotateTall = false, int rating = 0);
 
 // Zoomed image view (1x/2x/4x) with pan. Source is imageW x imageH RGB565;
 // visible region (panX, panY, fbW/zoom, fbH/zoom) is scaled to fill the FB.
 void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                          size_t rgb565Size, const uint8_t *imageRgb565,
                          size_t imageSize, uint32_t imageW, uint32_t imageH,
-                         int zoom, int panX, int panY, const std::string &path);
+                         int zoom, int panX, int panY,
+                         const std::string &path, bool rotateTall = false,
+                         int rating = 0);
+
+// Draw the copyright text entry overlay on top of the settings menu.
+// Shows the edit buffer with a cursor, and hints for joystick controls.
+// cursor is the index of the character being edited.
+void drawCopyrightEditOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                              const std::string &buf, int cursor);
+
+// Draw the Quick/Fn settings overlay on the viewfinder. Shows up to
+// `count` quick settings with their current values. `selectedIdx` is the
+// highlighted item (0-based). `labels` and `values` are parallel arrays.
+void drawQuickFnOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                        const std::vector<std::string> &labels,
+                        const std::vector<std::string> &values,
+                        int selectedIdx);
+
+// Draw a REC indicator and recording timer on the viewfinder.
+void drawRecIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                      uint32_t seconds);
 
 } // namespace picamera

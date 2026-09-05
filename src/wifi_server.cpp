@@ -112,6 +112,8 @@ const char *driveModeStr(DriveMode d) {
     return "continuous";
   case DriveMode::Bulb:
     return "bulb";
+  case DriveMode::Video:
+    return "video";
   }
   return "unknown";
 }
@@ -320,6 +322,8 @@ std::optional<DriveMode> parseDriveModeJson(std::string_view s) {
     return DriveMode::Continuous;
   if (s == "bulb")
     return DriveMode::Bulb;
+  if (s == "video")
+    return DriveMode::Video;
   return std::nullopt;
 }
 

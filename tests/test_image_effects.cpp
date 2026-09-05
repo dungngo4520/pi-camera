@@ -7,12 +7,17 @@
 
 using picamera::applyGrainEffect;
 using picamera::applyNightBoost;
+using picamera::copyrightCharAt;
+using picamera::copyrightCharCount;
+using picamera::copyrightCycleChar;
 using picamera::darkFrameSubtract;
 using picamera::hdrMergeY;
 using picamera::isPortrait;
 using picamera::readFileRating;
+using picamera::rgb24ToY;
 using picamera::rotateRgb565Cw;
 using picamera::writeFileRating;
+using picamera::yuvToRgb24;
 
 // --- HDR merge tests ---
 
@@ -248,4 +253,135 @@ TEST(rating_zero_deletes_sidecar) {
   CHECK(readFileRating(dir, file) == 4);
   CHECK(writeFileRating(dir, file, 0));
   CHECK(readFileRating(dir, file) == 0);
+}
+
+// --- rgb24ToY tests ---
+
+TEST(rgb24_to_y_null_input_returns_empty) {
+  auto result = rgb24ToY(nullptr, 4, 4, 4);
+  CHECK(result.empty());
+}
+
+TEST(rgb24_to_y_basic_white_pixel) {
+  // White pixel (255,255,255) should give Y=255.
+  std::vector<uint8_t> rgb = {255, 255, 255};
+  auto y = rgb24ToY(rgb.data(), 1, 1, 1);
+  CHECK(y.size() == 1);
+  CHECK(y[0] == 255);
+}
+
+TEST(rgb24_to_y_basic_black_pixel) {
+  // Black pixel (0,0,0) should give Y=0.
+  std::vector<uint8_t> rgb = {0, 0, 0};
+  auto y = rgb24ToY(rgb.data(), 1, 1, 1);
+  CHECK(y.size() == 1);
+  CHECK(y[0] == 0);
+}
+
+TEST(rgb24_to_y_stride_padding) {
+  // 2x1 image with stride 4: Y values at positions 0 and 1, padding at 2-3.
+  std::vector<uint8_t> rgb = {100, 100, 100, 200, 200, 200};
+  auto y = rgb24ToY(rgb.data(), 2, 1, 4);
+  CHECK(y.size() == 4);
+  CHECK(y[0] > 0);
+  CHECK(y[1] > y[0]); // brighter pixel
+}
+
+// --- yuvToRgb24 tests ---
+
+TEST(yuv_to_rgb24_null_input_returns_empty) {
+  auto result = yuvToRgb24(nullptr, nullptr, 4, 4, 4);
+  CHECK(result.empty());
+}
+
+TEST(yuv_to_rgb24_basic_white) {
+  // Y=255, U=128, V=128 (neutral chroma) → white (255,255,255).
+  std::vector<uint8_t> y = {255};
+  std::vector<uint8_t> uv = {128, 128};
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1);
+  CHECK(rgb.size() == 3);
+  CHECK(rgb[0] == 255);
+  CHECK(rgb[1] == 255);
+  CHECK(rgb[2] == 255);
+}
+
+TEST(yuv_to_rgb24_basic_black) {
+  // Y=0, U=128, V=128 → black (0,0,0).
+  std::vector<uint8_t> y = {0};
+  std::vector<uint8_t> uv = {128, 128};
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 1, 1, 1);
+  CHECK(rgb.size() == 3);
+  CHECK(rgb[0] == 0);
+  CHECK(rgb[1] == 0);
+  CHECK(rgb[2] == 0);
+}
+
+TEST(yuv_to_rgb24_2x2_image) {
+  // 2x2 image: all Y=128, neutral chroma → gray.
+  std::vector<uint8_t> y = {128, 128, 128, 128};
+  std::vector<uint8_t> uv = {128, 128}; // 1 chroma sample for 2x2
+  auto rgb = yuvToRgb24(y.data(), uv.data(), 2, 2, 2);
+  CHECK(rgb.size() == 12); // 2*2*3
+  for (size_t i = 0; i < 12; ++i)
+    CHECK(rgb[i] == 128);
+}
+
+// --- Copyright character entry tests ---
+
+TEST(copyright_char_count_is_39) {
+  // A-Z (26) + 0-9 (10) + space + '-' + '.' = 39
+  CHECK(copyrightCharCount() == 39);
+}
+
+TEST(copyright_char_at_first_is_A) {
+  CHECK(copyrightCharAt(0) == 'A');
+}
+
+TEST(copyright_char_at_26_is_0) {
+  CHECK(copyrightCharAt(26) == '0');
+}
+
+TEST(copyright_char_at_36_is_space) {
+  CHECK(copyrightCharAt(36) == ' ');
+}
+
+TEST(copyright_char_at_wraps_negative) {
+  // -1 should wrap to last char ('.')
+  CHECK(copyrightCharAt(-1) == '.');
+}
+
+TEST(copyright_char_at_wraps_past_end) {
+  // 39 should wrap to 0 ('A')
+  CHECK(copyrightCharAt(39) == 'A');
+}
+
+TEST(copyright_cycle_char_advances) {
+  std::string buf = "A";
+  copyrightCycleChar(buf, 0, 1);
+  CHECK(buf == "B");
+}
+
+TEST(copyright_cycle_char_decreases) {
+  std::string buf = "B";
+  copyrightCycleChar(buf, 0, -1);
+  CHECK(buf == "A");
+}
+
+TEST(copyright_cycle_char_wraps_forward) {
+  std::string buf = ".";
+  copyrightCycleChar(buf, 0, 1);
+  CHECK(buf == "A");
+}
+
+TEST(copyright_cycle_char_wraps_backward) {
+  std::string buf = "A";
+  copyrightCycleChar(buf, 0, -1);
+  CHECK(buf == ".");
+}
+
+TEST(copyright_cycle_char_invalid_pos_noop) {
+  std::string buf = "ABC";
+  copyrightCycleChar(buf, -1, 1);
+  copyrightCycleChar(buf, 3, 1);
+  CHECK(buf == "ABC");
 }

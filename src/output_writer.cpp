@@ -3,6 +3,7 @@
 #include "dng.h"
 #include "encoders.h"
 #include "image.h"
+#include "image_effects.h"
 #include "safe_path.h"
 #include "settings_menu.h"
 
@@ -379,6 +380,13 @@ public:
                            std::string *actualPath) override {
     std::vector<uint8_t> processed;
     FrameView pf = processNv12Frame(f, cfg_, processed);
+    std::vector<uint8_t> grainY;
+    if (cfg_.grainEffect && pf.plane0 && pf.width > 0 && pf.height > 0) {
+      grainY.assign(pf.plane0, pf.plane0 + pf.plane0Size);
+      applyGrainEffect(grainY.data(), pf.width, pf.height, pf.stride, 25,
+                       pf.width * pf.height);
+      pf.plane0 = grainY.data();
+    }
     auto rgb = nv12ToRgb(pf.plane0, pf.plane1, pf.width, pf.height, pf.stride,
                          pf.plane0Size, pf.plane1Size);
     if (rgb.empty())
@@ -412,6 +420,17 @@ public:
                            std::string *actualPath) override {
     std::vector<uint8_t> processed;
     FrameView pf = processNv12Frame(f, cfg_, processed);
+    // Apply film grain to the Y-plane before RGB conversion when enabled.
+    // The Y-plane in pf may point into processedData (owned by us) or the
+    // original frame buffer (read-only). Make a mutable copy, apply grain,
+    // and redirect pf.plane0 to it.
+    std::vector<uint8_t> grainY;
+    if (cfg_.grainEffect && pf.plane0 && pf.width > 0 && pf.height > 0) {
+      grainY.assign(pf.plane0, pf.plane0 + pf.plane0Size);
+      applyGrainEffect(grainY.data(), pf.width, pf.height, pf.stride, 25,
+                       pf.width * pf.height);
+      pf.plane0 = grainY.data();
+    }
     auto rgb = nv12ToRgb(pf.plane0, pf.plane1, pf.width, pf.height, pf.stride,
                          pf.plane0Size, pf.plane1Size);
     if (rgb.empty())

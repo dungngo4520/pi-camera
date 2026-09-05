@@ -5,6 +5,7 @@
 // rotation. These are unit-testable on x86 (no camera/display dependency).
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace picamera {
@@ -42,5 +43,31 @@ std::vector<uint8_t> rotateRgb565Cw(const uint8_t *src, uint32_t srcW,
 // the buffer in place.
 void applyNightBoost(uint8_t *yPlane, uint32_t width, uint32_t height,
                      uint32_t stride, float factor);
+
+// Extract a Y-plane (luminance) from an RGB24 buffer using the BT.601
+// formula: Y = (77*R + 150*G + 29*B) / 256. The output Y-plane has the
+// given stride (>= width). Returns empty on invalid input.
+std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
+                              uint32_t height, uint32_t stride);
+
+// Build an RGB24 buffer from a Y-plane and a UV (NV12 chroma) plane.
+// This is used by HDR merge to reconstruct RGB from a merged Y-plane and
+// the chroma from one of the original frames. Returns empty on failure.
+std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
+                                uint32_t width, uint32_t height,
+                                uint32_t stride);
+
+// Copyright text entry character set: A-Z, 0-9, space, '-', '.', and
+// special control markers '<' (backspace) and '>' (done). Returns the
+// character at the given index (wrapping). Pure logic for unit testing.
+char copyrightCharAt(int index);
+
+// Number of characters in the copyright entry character set.
+int copyrightCharCount();
+
+// Cycle the character at the given position in the buffer. If direction
+// is +1, advance to the next character; if -1, go to the previous.
+// The buffer character at `pos` is replaced. Pure logic for unit testing.
+void copyrightCycleChar(std::string &buf, int pos, int direction);
 
 } // namespace picamera
