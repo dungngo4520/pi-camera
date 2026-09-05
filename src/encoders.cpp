@@ -18,10 +18,8 @@
 #include <vector>
 
 #include <png.h>
-#ifdef HAVE_JPEG
 #include <csetjmp>
 #include <jpeglib.h>
-#endif
 
 namespace picamera {
 
@@ -215,7 +213,6 @@ int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
   return 0;
 }
 
-#ifdef HAVE_JPEG
 // JPEG error handler context — must outlive the jpeg_compress_struct
 // because jpeg_destroy_compress may access cinfo->err.
 struct JpegErrCtx {
@@ -299,7 +296,6 @@ int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr,
   *outRowPtrs = nullptr;
   return compressOk ? 0 : -1;
 }
-#endif
 
 // Open a file for writing with O_CREAT|O_EXCL|O_NOFOLLOW to prevent
 // symlink attacks and accidental overwrites. On EEXIST (race with another
@@ -861,7 +857,6 @@ bool writeJpeg(const uint8_t *data, size_t size, const std::string &path,
 bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
                   const std::string &path, int quality, std::string *actualPath,
                   const ExifMetadata *meta) {
-#ifdef HAVE_JPEG
   if (w == 0 || h == 0)
     return false;
   if (!rgb)
@@ -919,16 +914,6 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
   if (actualPath)
     *actualPath = localPath;
   return true;
-#else
-  (void)rgb;
-  (void)w;
-  (void)h;
-  (void)path;
-  (void)quality;
-  (void)actualPath;
-  std::cerr << "writeJpegRgb: libjpeg not available at build time\n";
-  return false;
-#endif
 }
 
 } // namespace picamera

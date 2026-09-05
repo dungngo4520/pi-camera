@@ -11,25 +11,23 @@ find_package(Threads REQUIRED)
 # Dependencies via pkg-config IMPORTED_TARGET. Linking PkgConfig::<prefix>
 # carries the include dirs, compile options, and link flags automatically —
 # no manual ${..._INCLUDE_DIRS} / ${..._LIBRARIES} plumbing needed.
-pkg_check_modules(LIBCAMERA QUIET IMPORTED_TARGET libcamera)
+pkg_check_modules(LIBCAMERA REQUIRED IMPORTED_TARGET libcamera)
 pkg_check_modules(PNG REQUIRED IMPORTED_TARGET libpng)
 
 # libjpeg-turbo for software JPEG encoding (fallback when Pi HW MJPEG
-# is unavailable at high resolutions). Optional — if missing, JPEG
-# capture will only work with HW MJPEG.
-pkg_check_modules(JPEG QUIET IMPORTED_TARGET libjpeg)
+# is unavailable at high resolutions).
+pkg_check_modules(JPEG REQUIRED IMPORTED_TARGET libjpeg)
 
-# libgpiod is required for SPI display + button input (preview mode).
-# Optional on x86 dev builds — preview will print an error if not built with it.
-pkg_check_modules(LIBGPIOD QUIET IMPORTED_TARGET libgpiod>=2.0)
+# libgpiod for SPI display + button input (preview mode).
+# Available on x86 via libgpiod-dev — compiles fine, just finds no GPIO
+# chips at runtime, which the display/buttons code handles gracefully.
+pkg_check_modules(LIBGPIOD REQUIRED IMPORTED_TARGET libgpiod>=2.0)
 
 # FreeType2 for TrueType font rendering (DejaVu Sans Mono) on the LCD overlay.
-# Optional — falls back to the bitmap font if not found.
-pkg_check_modules(FREETYPE QUIET IMPORTED_TARGET freetype2)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 
-# BlueZ for Bluetooth RFCOMM remote control (optional). When not found, a stub
-# BtServer is compiled that prints an error. Install libbluetooth-dev on the Pi.
-pkg_check_modules(BLUEZ QUIET IMPORTED_TARGET bluez)
+# BlueZ for Bluetooth RFCOMM remote control.
+pkg_check_modules(BLUEZ REQUIRED IMPORTED_TARGET bluez)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE
@@ -59,10 +57,9 @@ option(PICAMERA_ENABLE_SANITIZERS "Enable ASan+UBSan for the test build" OFF)
 #
 # Built once as a STATIC library so the source list lives in exactly one
 # place; both the picamera executable and the picamera_tests executable link
-# it. libpng is used directly by encoders.cpp. libjpeg is optional
-# (HAVE_JPEG gates the software encode path in encoders.cpp). pthread is
-# for image.cpp's std::thread workers. libcamera is NOT needed here —
-# camera_config.h is a plain data header with no libcamera dependency.
+# it. libpng, libjpeg, freetype2, and bluez are used directly by core TUs.
+# pthread is for image.cpp's std::thread workers. libcamera is NOT needed
+# here — camera_config.h is a plain data header with no libcamera dependency.
 # --------------------------------------------------------------------------- #
 add_library(
   picamera_core STATIC
@@ -86,48 +83,33 @@ add_library(
 )
 target_compile_features(picamera_core PUBLIC cxx_std_20)
 target_include_directories(picamera_core PUBLIC src)
-target_link_libraries(picamera_core PUBLIC PkgConfig::PNG Threads::Threads)
-if(JPEG_FOUND)
-  target_compile_definitions(picamera_core PUBLIC HAVE_JPEG)
-  target_link_libraries(picamera_core PUBLIC PkgConfig::JPEG)
-endif()
-if(FREETYPE_FOUND)
-  target_compile_definitions(picamera_core PUBLIC HAVE_FREETYPE)
-  target_link_libraries(picamera_core PUBLIC PkgConfig::FREETYPE)
-endif()
-if(BLUEZ_FOUND)
-  target_compile_definitions(picamera_core PUBLIC HAVE_BLUEZ)
-  target_link_libraries(picamera_core PUBLIC PkgConfig::BLUEZ)
-endif()
+target_link_libraries(
+  picamera_core
+  PUBLIC PkgConfig::PNG PkgConfig::JPEG PkgConfig::FREETYPE PkgConfig::BLUEZ
+         Threads::Threads
+)
 
 # --------------------------------------------------------------------------- #
 # picamera — the app. Hardware TUs (camera, preview, dual_stream, display,
-# buttons) live here; they are not unit-testable on x86. display.cpp/
-# buttons.cpp are gated on libgpiod. The entire executable requires libcamera.
+# buttons) live here; they are not unit-testable on x86.
 # --------------------------------------------------------------------------- #
-if(LIBCAMERA_FOUND)
-  add_executable(
-    picamera
-    src/main.cpp
-    src/camera.cpp
-    src/camera_handle.cpp
-    src/controls.cpp
-    src/preview.cpp
-    src/dual_stream.cpp
-    src/timelapse_runner.cpp
-  )
-  target_compile_features(picamera PRIVATE cxx_std_20)
-  target_link_libraries(picamera PRIVATE picamera_core PkgConfig::LIBCAMERA)
-  if(LIBGPIOD_FOUND)
-    target_sources(picamera PRIVATE src/display.cpp src/buttons.cpp)
-    target_compile_definitions(picamera PRIVATE HAVE_GPIOD)
-    target_link_libraries(picamera PRIVATE PkgConfig::LIBGPIOD)
-  endif()
-else()
-  message(
-    STATUS "libcamera not found — building tests only (no picamera executable)"
-  )
-endif()
+add_executable(
+  picamera
+  src/main.cpp
+  src/camera.cpp
+  src/camera_handle.cpp
+  src/controls.cpp
+  src/preview.cpp
+  src/dual_stream.cpp
+  src/timelapse_runner.cpp
+  src/display.cpp
+  src/buttons.cpp
+)
+target_compile_features(picamera PRIVATE cxx_std_20)
+target_link_libraries(
+  picamera
+  PRIVATE picamera_core PkgConfig::LIBCAMERA PkgConfig::LIBGPIOD
+)
 
 # --------------------------------------------------------------------------- #
 # Unit tests — pure-logic only (no camera hardware needed). Links picamera_core
@@ -187,7 +169,5 @@ endif()
 #   sudo systemctl enable picamera
 #   sudo systemctl start picamera
 # --------------------------------------------------------------------------- #
-if(LIBCAMERA_FOUND)
-  install(TARGETS picamera RUNTIME DESTINATION bin)
-  install(FILES config/systemd/picamera.service DESTINATION lib/systemd/system)
-endif()
+install(TARGETS picamera RUNTIME DESTINATION bin)
+install(FILES config/systemd/picamera.service DESTINATION lib/systemd/system)

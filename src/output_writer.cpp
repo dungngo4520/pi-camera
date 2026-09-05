@@ -398,11 +398,7 @@ private:
 // ---------------------------------------------------------------------------
 // Software JPEG writer: NV12 -> RGB24, then libjpeg-turbo encode.
 // Used when the Pi VC4 pipeline handler rejects HW MJPEG at high res.
-// Only compiled when libjpeg is available (HAVE_JPEG); otherwise
-// makeOutputWriter returns nullptr for the sw-encode path so the caller
-// fails fast without the expensive NV12→RGB conversion.
 // ---------------------------------------------------------------------------
-#ifdef HAVE_JPEG
 class SwJpegWriter : public OutputWriter {
 public:
   explicit SwJpegWriter(const CameraConfig &cfg)
@@ -433,7 +429,6 @@ private:
   CameraConfig cfg_;
   int quality_;
 };
-#endif // HAVE_JPEG
 
 // ---------------------------------------------------------------------------
 // PPM writer: NV12 -> RGB24, then uncompressed PPM write.
@@ -485,11 +480,7 @@ public:
     // _2/_3 suffix (O_EXCL collision), so deriving the .raw name from
     // the original `filename` would leave the pair mismatched.
     std::unique_ptr<OutputWriter> jpg;
-#ifdef HAVE_JPEG
     jpg = std::make_unique<SwJpegWriter>(cfg_);
-#else
-    jpg = std::make_unique<HwJpegWriter>();
-#endif
     bool jpgOk = jpg->write(f, filename, actualPath);
     if (!jpgOk)
       std::cerr << "RawJpegWriter: JPEG save failed\n";
@@ -519,19 +510,10 @@ private:
 };
 
 // Select a JPEG writer: software (libjpeg) when swJpegEncode, else HW.
-// Returns nullptr if sw-encode is requested but libjpeg wasn't compiled in.
 std::unique_ptr<OutputWriter>
-makeJpegWriter(const CameraConfig &cfg, bool swJpegEncode, const char *tag) {
-  (void)tag; // only used in the !HAVE_JPEG error path
+makeJpegWriter(const CameraConfig &cfg, bool swJpegEncode) {
   if (swJpegEncode) {
-#ifdef HAVE_JPEG
     return std::make_unique<SwJpegWriter>(cfg);
-#else
-    std::cerr << tag
-              << ": software JPEG encode requested"
-                 " but libjpeg was not compiled in\n";
-    return nullptr;
-#endif
   }
   return std::make_unique<HwJpegWriter>();
 }
@@ -544,7 +526,7 @@ makeOutputWriter(OutputFormat fmt, const CameraConfig &cfg, bool swJpegEncode) {
   case OutputFormat::DNG:
     return std::make_unique<DngWriter>(cfg);
   case OutputFormat::JPEG:
-    return makeJpegWriter(cfg, swJpegEncode, "makeOutputWriter");
+    return makeJpegWriter(cfg, swJpegEncode);
   case OutputFormat::RAW_NV12:
     return std::make_unique<RawNv12Writer>(cfg);
   case OutputFormat::PNG:
@@ -557,7 +539,7 @@ makeOutputWriter(OutputFormat fmt, const CameraConfig &cfg, bool swJpegEncode) {
   // handled by reconfiguring to OutputFormat::DNG (see preview.cpp
   // captureDngJpegAsync), which selects DngWriter via the DNG case.
   case OutputFormat::DngJpeg:
-    return makeJpegWriter(cfg, swJpegEncode, "makeOutputWriter: DngJpeg");
+    return makeJpegWriter(cfg, swJpegEncode);
   default:
     std::cerr << "makeOutputWriter: unknown format " << static_cast<int>(fmt)
               << "\n";

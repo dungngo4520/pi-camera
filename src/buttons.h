@@ -6,8 +6,9 @@
 #include <unordered_map>
 
 // Forward declarations of the libgpiod C structs so the header doesn't need
-// to pull in <gpiod.h> (kept optional via HAVE_GPIOD). The full definitions
-// are only needed in buttons.cpp, which includes <gpiod.h> directly.
+// to pull in <gpiod.h> (libgpiod is a required dependency). The full
+// definitions are only needed in buttons.cpp, which includes <gpiod.h>
+// directly.
 struct gpiod_line_request;
 struct gpiod_edge_event_buffer;
 

@@ -387,7 +387,6 @@ TEST(dng_writer_reports_actual_path_when_free) {
   unlink(path.c_str());
 }
 
-#ifdef HAVE_JPEG
 TEST(swjpeg_writer_reports_actual_path_when_free) {
   const uint32_t w = 2;
   const uint32_t h = 2;
@@ -402,7 +401,6 @@ TEST(swjpeg_writer_reports_actual_path_when_free) {
   CHECK_EQ(actual, path);
   unlink(path.c_str());
 }
-#endif
 
 TEST(hwjpeg_writer_reports_actual_path_when_free) {
   std::vector<uint8_t> fakeJpeg = {0xFF, 0xD8, 0xFF, 0xD9};
@@ -437,7 +435,6 @@ TEST(raw_writer_reports_actual_path_when_free) {
 
 // --- RawJpegWriter: produces both a .jpg and a .raw file ---
 
-#ifdef HAVE_JPEG
 TEST(rawjpeg_writer_produces_jpg_and_raw) {
   const uint32_t w = 4;
   const uint32_t h = 2;
@@ -464,12 +461,10 @@ TEST(rawjpeg_writer_produces_jpg_and_raw) {
   unlink(jpgPath.c_str());
   unlink(rawPath.c_str());
 }
-#endif
 
 // --- DngJpeg: factory returns a JPEG writer (DNG phase handled in preview.cpp)
 // ---
 
-#ifdef HAVE_JPEG
 TEST(dngjpeg_writer_writes_jpeg_from_nv12) {
   // makeOutputWriter(OutputFormat::DngJpeg) returns a JPEG writer; the DNG
   // half of a DNG+JPEG capture is handled separately in preview.cpp's
@@ -504,7 +499,6 @@ TEST(dngjpeg_writer_writes_jpeg_from_nv12) {
 
   unlink(path.c_str());
 }
-#endif
 
 // --- processNv12Frame: ImageSize downscale and AspectRatio crop ---
 

@@ -13,14 +13,12 @@
 #include <string>
 #include <string_view>
 
-#ifdef HAVE_BLUEZ
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/rfcomm.h>
 
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#endif
 
 namespace picamera {
 
@@ -133,7 +131,6 @@ bool BtServer::start(int channel, const std::string &captureDir,
                      std::atomic<bool> &captureRequest,
                      const std::atomic<int> &batteryPercent,
                      const std::atomic<uint32_t> &captureCount) {
-#ifdef HAVE_BLUEZ
   if (running_.load(std::memory_order_acquire))
     return false;
 
@@ -178,39 +175,23 @@ bool BtServer::start(int channel, const std::string &captureDir,
   std::cout << "BtServer: listening on RFCOMM channel " << channel
             << ", serving " << captureDir_ << "\n";
   return true;
-#else
-  (void)channel;
-  (void)captureDir;
-  (void)settings;
-  (void)settingsMtx;
-  (void)captureRequest;
-  (void)batteryPercent;
-  (void)captureCount;
-  std::cerr << "BtServer: Bluetooth support not compiled in "
-            << "(BlueZ development headers not found at build time).\n"
-            << "Install libbluetooth-dev and rebuild to enable --bt.\n";
-  return false;
-#endif
 }
 
 void BtServer::stop() {
   if (!running_.load(std::memory_order_acquire))
     return;
   stopFlag_.store(true, std::memory_order_release);
-#ifdef HAVE_BLUEZ
   if (listenFd_ >= 0) {
     ::shutdown(listenFd_, SHUT_RDWR);
     ::close(listenFd_);
     listenFd_ = -1;
   }
-#endif
   if (thread_.joinable())
     thread_.join();
   running_.store(false, std::memory_order_release);
 }
 
 void BtServer::serverLoop() {
-#ifdef HAVE_BLUEZ
   while (!stopFlag_.load(std::memory_order_acquire)) {
     struct sockaddr_rc peer{};
     socklen_t opt = sizeof(peer);
@@ -226,13 +207,9 @@ void BtServer::serverLoop() {
     handleConnection(clientFd);
     ::close(clientFd);
   }
-#else
-  // Stub — never called when BlueZ is not compiled in.
-#endif
 }
 
 void BtServer::handleConnection(int clientFd) {
-#ifdef HAVE_BLUEZ
   // Timeout so a slow/stuck client doesn't block the server forever.
   struct timeval tv{};
   tv.tv_sec = 10;
@@ -327,9 +304,6 @@ void BtServer::handleConnection(int clientFd) {
         return;
     }
   }
-#else
-  (void)clientFd;
-#endif
 }
 
 } // namespace picamera

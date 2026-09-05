@@ -13,11 +13,9 @@
 #include "stop_flag.h"
 #include "wifi_server.h"
 
-#ifdef HAVE_GPIOD
 #include "buttons.h"
 #include "display.h"
 #include "font.h"
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -37,8 +35,6 @@ namespace {
 constexpr int kFrameTimeoutMs = 2000;
 constexpr int kBatteryReadIntervalSec = 3;
 constexpr uint32_t kStatsIntervalFrames = 60;
-
-#ifdef HAVE_GPIOD
 
 // Splash screen duration (ms)
 constexpr int kSplashDurationMs = 1500;
@@ -295,8 +291,10 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
   // Derive the DNG filename inside the thread from the *actual* saved JPEG
   // path (which may carry a _2/_3 suffix from O_EXCL collision handling) so
   // the companion DNG always matches the JPEG that was really written.
-  uint32_t vfW = pcfg.previewWidth, vfH = pcfg.previewHeight;
-  uint32_t capW = pcfg.captureWidth, capH = pcfg.captureHeight;
+  uint32_t vfW = pcfg.previewWidth;
+  uint32_t vfH = pcfg.previewHeight;
+  uint32_t capW = pcfg.captureWidth;
+  uint32_t capH = pcfg.captureHeight;
 
   return std::jthread([&cam, &captureDone, &captureSuccess, &captureFilename,
                        &errorMsg, &captureMtx, jpegFilename, vfW, vfH, capW,
@@ -677,7 +675,8 @@ void checkCaptureCompletion(PreviewState &s, St7735Display &display) {
     s.captureThread.join();
   if (s.captureActive)
     s.captureActive = false;
-  std::string savedPath, errMsg;
+  std::string savedPath;
+  std::string errMsg;
   {
     std::lock_guard<std::mutex> lk(s.captureMtx);
     savedPath = s.captureFilename;
@@ -904,7 +903,8 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
   // action (wbMeasurePending); consumed here where the live frame is
   // available. Switches AWB off so the computed gains take effect.
   if (s.overlay.settings.wbMeasurePending) {
-    float red = 1.0f, blue = 1.0f;
+    float red = 1.0f;
+    float blue = 1.0f;
     if (computeWbGainsFromNv12(frame.uv(), frame.width, frame.height,
                                frame.uvData.size(), red, blue)) {
       s.overlay.settings.wbRedGain = red;
@@ -926,7 +926,10 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
 
   // Fire next burst/bracket frame if remaining and previous is done
   if (s.burstRemaining > 0 && !s.captureActive && !s.overlay.timelapseRunning) {
-    float evOv = 0.0f, wbRed = 0.0f, wbBlue = 0.0f, gainOv = 0.0f;
+    float evOv = 0.0f;
+    float wbRed = 0.0f;
+    float wbBlue = 0.0f;
+    float gainOv = 0.0f;
     if (s.overlay.settings.driveMode == DriveMode::Bracket &&
         !s.overlay.settings.bracketEv.empty() &&
         s.bracketIndex <
@@ -1247,8 +1250,7 @@ void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg,
   } else if (evt.pressed && evt.id == ButtonId::JoyUp) {
     if (s.playbackIdx > 0) {
       --s.playbackIdx;
-      if (s.playbackIdx < s.playbackScroll)
-        s.playbackScroll = s.playbackIdx;
+      s.playbackScroll = std::min(s.playbackIdx, s.playbackScroll);
       s.screenDirty = true;
     }
   } else if (evt.pressed && evt.id == ButtonId::JoyDown) {
@@ -1346,8 +1348,7 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
           s.playbackFiles = listCaptures(pcfg.captureDir);
           if (s.playbackIdx >= static_cast<int>(s.playbackFiles.size()))
             s.playbackIdx = static_cast<int>(s.playbackFiles.size()) - 1;
-          if (s.playbackIdx < 0)
-            s.playbackIdx = 0;
+          s.playbackIdx = std::max(s.playbackIdx, 0);
           exitImageView(s);
         } else {
           // Delete failed — keep the image on screen and show an error.
@@ -1498,7 +1499,7 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
 
 // Main preview loop — extracted from runPreview() for readability.
 // Handles per-frame rendering, button events, and power management.
-static bool runPreviewLoop(PreviewState &s, DualStream &cam,
+bool runPreviewLoop(PreviewState &s, DualStream &cam,
                            St7735Display &display, ButtonInput &buttons,
                            BatteryMonitor &battery, StopFlag &stop,
                            const PreviewConfig &pcfg) {
@@ -1599,12 +1600,9 @@ static bool runPreviewLoop(PreviewState &s, DualStream &cam,
   return ok;
 }
 
-#endif // HAVE_GPIOD
-
 } // namespace
 
 bool runPreview(PreviewConfig &pcfg) {
-#ifdef HAVE_GPIOD
   // Canonicalize + verify/create the capture directory (symlink-safe).
   if (!prepareCaptureDir(pcfg))
     return false;
@@ -1775,12 +1773,6 @@ bool runPreview(PreviewConfig &pcfg) {
   std::cout << "Preview: stopped after " << s.frameCount << " frames, "
             << s.captureCount << " captures\n";
   return loopOk;
-#else
-  (void)pcfg;
-  std::cerr << "Preview: libgpiod was not available at build time.\n"
-            << "Rebuild on the Pi with libgpiod-dev installed.\n";
-  return false;
-#endif
 }
 
 PreviewConfig makePreviewConfig(const CliOptions &opts,

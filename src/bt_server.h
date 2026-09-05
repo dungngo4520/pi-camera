@@ -45,8 +45,7 @@ std::string btSetToJson(std::string_view key, std::string_view value);
 
 // --- BtServer: minimal Bluetooth RFCOMM serial server for remote control ---
 // Runs in a background thread; handles one connection at a time.
-// When BlueZ is not available at build time (HAVE_BLUEZ not defined),
-// a stub is compiled that always returns false from start().
+// BlueZ is a required build dependency (libbluetooth-dev).
 class BtServer {
 public:
   BtServer();

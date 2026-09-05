@@ -13,6 +13,18 @@ using namespace picamera;
 
 namespace {
 
+// Write exactly len bytes or abort the test. The test files are tiny
+// (tens of bytes), so a short write signals a broken environment.
+void writeFull(int fd, const void *buf, size_t len) {
+  const auto *p = static_cast<const uint8_t *>(buf);
+  while (len > 0) {
+    ssize_t n = write(fd, p, len);
+    REQUIRE(n > 0);
+    p += n;
+    len -= static_cast<size_t>(n);
+  }
+}
+
 // Create a small test PNG and verify it decodes to the right size.
 TEST(decode_png_to_rgb565) {
   // Create a 4x3 red PNG
@@ -53,7 +65,7 @@ TEST(decode_unsupported_format_returns_empty) {
   int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
   REQUIRE(fd >= 0);
   const char *data = "P6\n1 1\n255\nRGB";
-  write(fd, data, 13);
+  writeFull(fd, data, 13);
   close(fd);
 
   auto out = decodeImageToRgb565(path, 128, 128);
@@ -74,7 +86,7 @@ TEST(decode_corrupt_jpeg_returns_empty) {
   const unsigned char data[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J',  'F',
                                 'I',  'F',  0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
                                 0x00, 0x01, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF};
-  write(fd, data, sizeof(data));
+  writeFull(fd, data, sizeof(data));
   close(fd);
 
   auto out = decodeImageToRgb565(path, 128, 128);
@@ -94,7 +106,7 @@ TEST(decode_png_oversized_dimensions_returns_empty) {
 
   // PNG signature
   const unsigned char sig[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-  write(fd, sig, 8);
+  writeFull(fd, sig, 8);
 
   // IHDR chunk: 13 bytes of data
   // Length = 13 (big-endian), Type = "IHDR"
@@ -113,7 +125,7 @@ TEST(decode_png_oversized_dimensions_returns_empty) {
       // to trigger; libpng will reject the CRC, but the user_limits check
       // happens before CRC validation in png_read_info)
       0xDE, 0xAD, 0xBE, 0xEF};
-  write(fd, ihdr, sizeof(ihdr));
+  writeFull(fd, ihdr, sizeof(ihdr));
   close(fd);
 
   // This must return empty, not crash or allocate 12GB.
@@ -130,7 +142,7 @@ TEST(decode_png_zero_dimensions_returns_empty) {
 
   // PNG signature
   const unsigned char sig[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
-  write(fd, sig, 8);
+  writeFull(fd, sig, 8);
 
   // IHDR with 0x0 dimensions
   const unsigned char ihdr[] = {0x00, 0x00, 0x00, 0x0D, 'I',  'H',
@@ -138,7 +150,7 @@ TEST(decode_png_zero_dimensions_returns_empty) {
                                 0x00, 0x00, 0x00, 0x00, // height = 0
                                 0x08, 0x02, 0x00, 0x00, 0x00, 0xDE,
                                 0xAD, 0xBE, 0xEF};
-  write(fd, ihdr, sizeof(ihdr));
+  writeFull(fd, ihdr, sizeof(ihdr));
   close(fd);
 
   auto out = decodeImageToRgb565(path, 128, 128);
@@ -153,7 +165,6 @@ TEST(decode_png_zero_dimensions_returns_empty) {
 // allocated vector must be freed (no leak) and the function must return
 // empty instead of crashing. Run under ASan to catch the leak.
 TEST(decode_truncated_jpeg_after_alloc_no_leak) {
-#ifdef HAVE_JPEG
   // Encode a real 16x16 JPEG so the header is valid.
   uint32_t w = 16;
   uint32_t h = 16;
@@ -177,7 +188,7 @@ TEST(decode_truncated_jpeg_after_alloc_no_leak) {
   int fd = open(trunc.c_str(), O_CREAT | O_WRONLY, 0600);
   REQUIRE(fd >= 0);
   size_t cutLen = static_cast<size_t>(sz) / 2;
-  write(fd, data.data(), cutLen);
+  writeFull(fd, data.data(), cutLen);
   close(fd);
 
   // Must return empty (decode failed) without leaking the output buffer.
@@ -185,11 +196,6 @@ TEST(decode_truncated_jpeg_after_alloc_no_leak) {
   CHECK(out.empty());
 
   unlink(trunc.c_str());
-#else
-  // Without libjpeg, writeJpegRgb returns false and decode is a no-op.
-  // The test passes trivially — no JPEG functionality to verify.
-  CHECK(true);
-#endif
 }
 
 // A PNG with a valid header but truncated IDAT triggers a libpng error
@@ -219,7 +225,7 @@ TEST(decode_truncated_png_after_alloc_no_leak) {
   int fd = open(trunc.c_str(), O_CREAT | O_WRONLY, 0600);
   REQUIRE(fd >= 0);
   size_t cutLen = static_cast<size_t>(sz) / 2;
-  write(fd, data.data(), cutLen);
+  writeFull(fd, data.data(), cutLen);
   close(fd);
 
   // Must return empty (decode failed) without leaking the output buffer.

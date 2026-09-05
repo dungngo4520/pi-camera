@@ -129,11 +129,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
 
   // Detect HW MJPEG fallback (Pi VC4 may reject MJPEG at high res).
   if (wantJpeg && stillSc.pixelFormat != formats::MJPEG) {
-#ifndef HAVE_JPEG
-    std::cerr << "DualStream: HW MJPEG unavailable (got " << stillSc.pixelFormat
-              << ") and libjpeg was not compiled in — cannot encode JPEG\n";
-    return false;
-#else
     std::cerr << "DualStream: HW MJPEG unavailable (got " << stillSc.pixelFormat
               << "), using software JPEG encode\n";
     stillSc.pixelFormat = formats::NV12;
@@ -142,7 +137,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
       std::cerr << "DualStream: NV12 fallback invalid\n";
       return false;
     }
-#endif
   }
 
   if (handle_.camera()->configure(cfg.get())) {
@@ -154,12 +148,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
   if (wantJpeg && !swJpegEncode_) {
     const auto &actualFmt = stillSc.stream()->configuration().pixelFormat;
     if (actualFmt != formats::MJPEG) {
-#ifndef HAVE_JPEG
-      std::cerr << "DualStream: HW MJPEG unavailable post-configure ("
-                << actualFmt << ") and libjpeg was not compiled in"
-                << " — cannot encode JPEG\n";
-      return false;
-#else
       std::cerr << "DualStream: HW MJPEG unavailable post-configure ("
                 << actualFmt << "), reconfiguring with NV12\n";
       stillSc.pixelFormat = formats::NV12;
@@ -180,7 +168,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
         return false;
       }
       swJpegEncode_ = true;
-#endif
     }
   }
 

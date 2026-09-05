@@ -14,10 +14,8 @@
 #include <vector>
 
 #include <png.h>
-#ifdef HAVE_JPEG
 #include <csetjmp>
 #include <jpeglib.h>
-#endif
 
 namespace picamera {
 
@@ -128,7 +126,6 @@ int decodePngCore(png_structp png, png_infop *outInfo, FILE *fp,
   return 0;
 }
 
-#ifdef HAVE_JPEG
 // Error context for libjpeg — must outlive the jpeg_decompress_struct
 // because jpeg_destroy_decompress may access cinfo->err. Defined here
 // so both decodeJpegCore and decodeJpegToRgb24 can see it.
@@ -207,7 +204,6 @@ int decodeJpegCore(struct jpeg_decompress_struct *cinfo, JpegErrCtx *jerr,
   *h = height;
   return 0;
 }
-#endif
 
 // Convert RGB24 to big-endian RGB565, scaled to dispW x dispH with
 // center-crop + nearest-neighbor. Used by both PNG and JPEG decoders.
@@ -317,7 +313,6 @@ uint8_t *decodePngToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
   return guard.release(); // ownership transferred to caller
 }
 
-#ifdef HAVE_JPEG
 // Decode JPEG to RGB24. Returns a malloc'd buffer (caller must free) or
 // nullptr on failure. Never calls exit().
 uint8_t *decodeJpegToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
@@ -341,7 +336,6 @@ uint8_t *decodeJpegToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
   MallocGuard guard{rgb};
   return guard.release(); // ownership transferred to caller
 }
-#endif // HAVE_JPEG
 
 } // namespace
 
@@ -424,13 +418,7 @@ std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
     if (isPng) {
       rgb24 = decodePngToRgb24(fp, w, h);
     } else if (isJpeg) {
-#ifdef HAVE_JPEG
       rgb24 = decodeJpegToRgb24(fp, w, h);
-#else
-      (void)w;
-      (void)h;
-      return {};
-#endif
     } else {
       return {};
     }

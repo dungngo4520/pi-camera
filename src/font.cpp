@@ -7,17 +7,14 @@
 #include <string>
 #include <vector>
 
-#ifdef HAVE_FREETYPE
 #include <ft2build.h>
 #include FT_FREETYPE_H
-#endif
 
 namespace picamera {
 
 // ========================================================================== //
 // FreeType-based renderer (DejaVu Sans Mono)
 // ========================================================================== //
-#ifdef HAVE_FREETYPE
 
 namespace {
 
@@ -259,167 +256,6 @@ int drawText(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
   }
   return cx - x;
 }
-
-// ========================================================================== //
-// Bitmap font fallback (no FreeType)
-// ========================================================================== //
-#else
-
-// --- 5x7 bitmap font ---
-// Each glyph: 5 bytes, one per COLUMN. Bit 0 = top row, bit 4 = bottom row.
-// Bits 5-7 are unused. This is column-major data (the classic LCD font format).
-//
-// The Waveshare 1.44" LCD HAT panel is physically rotated 90° CCW.
-// The display driver corrects this with a 90° CW software rotation,
-// giving identity mapping FB(x,y) → screen(x,y). But the font data
-// encodes glyphs sideways (column-major). To render upright, drawChar
-// transposes the glyph: column `col` becomes screen row `col`, and
-// bit `row` becomes screen column `row`. This is equivalent to
-// rotating the glyph 90° CW, making it upright on the corrected display.
-//
-// This is a compact subset of the classic 5x7 LCD font, sufficient for
-// battery percentage display: digits, %, V, ., -, +, space, A-Z.
-
-// Glyph entry: character + 5 column bytes
-struct Glyph {
-  char ch;
-  uint8_t cols[5];
-};
-
-static constexpr Glyph kGlyphTable[] = {
-    {' ', {0x00, 0x00, 0x00, 0x00, 0x00}},
-    {'+', {0x00, 0x04, 0x0E, 0x04, 0x00}},
-    {'-', {0x00, 0x00, 0x0E, 0x00, 0x00}},
-    {'.', {0x00, 0x00, 0x00, 0x00, 0x06}},
-    {'%', {0x19, 0x0A, 0x04, 0x0A, 0x13}},
-    {'0', {0x0E, 0x11, 0x11, 0x11, 0x0E}},
-    {'1', {0x04, 0x0C, 0x04, 0x04, 0x0E}},
-    {'2', {0x0E, 0x02, 0x04, 0x08, 0x1F}},
-    {'3', {0x0E, 0x02, 0x06, 0x02, 0x0E}},
-    {'4', {0x11, 0x11, 0x1F, 0x02, 0x02}},
-    {'5', {0x1F, 0x10, 0x1E, 0x01, 0x1E}},
-    {'6', {0x0E, 0x10, 0x1E, 0x11, 0x0E}},
-    {'7', {0x1F, 0x01, 0x04, 0x08, 0x08}},
-    {'8', {0x0E, 0x11, 0x0E, 0x11, 0x0E}},
-    {'9', {0x0E, 0x11, 0x0F, 0x01, 0x0E}},
-    {'V', {0x11, 0x11, 0x0A, 0x0A, 0x04}},
-    {'A', {0x0E, 0x11, 0x1F, 0x11, 0x11}},
-    {'B', {0x1E, 0x11, 0x1E, 0x11, 0x1E}},
-    {'C', {0x0E, 0x11, 0x10, 0x11, 0x0E}},
-    {'D', {0x1C, 0x12, 0x11, 0x12, 0x1C}},
-    {'E', {0x1F, 0x10, 0x1E, 0x10, 0x1F}},
-    {'F', {0x1F, 0x10, 0x1E, 0x10, 0x10}},
-    {'G', {0x0E, 0x10, 0x17, 0x11, 0x0E}},
-    {'H', {0x11, 0x11, 0x1F, 0x11, 0x11}},
-    {'I', {0x0E, 0x04, 0x04, 0x04, 0x0E}},
-    {'J', {0x07, 0x02, 0x02, 0x12, 0x0C}},
-    {'K', {0x11, 0x12, 0x1C, 0x12, 0x11}},
-    {'L', {0x10, 0x10, 0x10, 0x10, 0x1F}},
-    {'M', {0x11, 0x1B, 0x15, 0x11, 0x11}},
-    {'N', {0x11, 0x19, 0x15, 0x13, 0x11}},
-    {'O', {0x0E, 0x11, 0x11, 0x11, 0x0E}},
-    {'P', {0x1E, 0x11, 0x1E, 0x10, 0x10}},
-    {'Q', {0x0E, 0x11, 0x15, 0x12, 0x0D}},
-    {'R', {0x1E, 0x11, 0x1E, 0x12, 0x11}},
-    {'S', {0x0E, 0x10, 0x0E, 0x01, 0x1E}},
-    {'T', {0x1F, 0x04, 0x04, 0x04, 0x04}},
-    {'U', {0x11, 0x11, 0x11, 0x11, 0x0E}},
-    {'W', {0x11, 0x11, 0x15, 0x1B, 0x11}},
-    {'X', {0x11, 0x0A, 0x04, 0x0A, 0x11}},
-    {'Y', {0x11, 0x0A, 0x04, 0x04, 0x04}},
-    {'Z', {0x1F, 0x01, 0x04, 0x10, 0x1F}},
-};
-
-static constexpr int kGlyphTableLen =
-    sizeof(kGlyphTable) / sizeof(kGlyphTable[0]);
-
-namespace {
-
-const uint8_t *findGlyph(char ch) {
-  // Convert lowercase to uppercase
-  if (ch >= 'a' && ch <= 'z')
-    ch -= 32;
-  for (int i = 0; i < kGlyphTableLen; ++i) {
-    if (kGlyphTable[i].ch == ch)
-      return kGlyphTable[i].cols;
-  }
-  // Unknown char: return space
-  return kGlyphTable[0].cols;
-}
-
-// Write a single RGB565 pixel (big-endian, for SPI display) at (x, y)
-inline void setPixel(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
-                     uint16_t color) {
-  if (x < 0 || y < 0 || static_cast<uint32_t>(x) >= fbW ||
-      static_cast<uint32_t>(y) >= fbH)
-    return;
-  size_t idx = (static_cast<size_t>(y) * fbW + x) * 2;
-  rgb565[idx] = static_cast<uint8_t>(color >> 8);       // MSB
-  rgb565[idx + 1] = static_cast<uint8_t>(color & 0xFF); // LSB
-}
-
-} // namespace
-
-void drawChar(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
-              char ch, uint16_t fg, uint16_t bg, bool transparent) {
-  const uint8_t *glyph = findGlyph(ch);
-  // Glyph data is column-major: glyph[col] is a byte where bit `row`
-  // = pixel at (col, row). To render upright on the corrected display,
-  // transpose with vertical flip: screen pixel (x+(4-row), y+col)
-  // = glyph bit (col, row). This rotates the sideways glyph 90° CW
-  // and flips vertically, producing an upright, non-mirrored character.
-  for (int col = 0; col < 5; ++col) {
-    uint8_t bits = glyph[col];
-    for (int row = 0; row < 5; ++row) {
-      bool on = (bits >> row) & 1;
-      uint16_t color = on ? fg : bg;
-      if (on || !transparent) {
-        setPixel(rgb565, fbW, fbH, x + (4 - row), y + col, color);
-      }
-    }
-  }
-}
-
-void drawCharScaled(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
-                    char ch, int scale, uint16_t fg, uint16_t bg,
-                    bool transparent) {
-  if (scale <= 0)
-    return; // scale 0 = draw nothing
-  if (scale == 1) {
-    drawChar(rgb565, fbW, fbH, x, y, ch, fg, bg, transparent);
-    return;
-  }
-  const uint8_t *glyph = findGlyph(ch);
-  for (int col = 0; col < 5; ++col) {
-    uint8_t bits = glyph[col];
-    for (int row = 0; row < 5; ++row) {
-      bool on = (bits >> row) & 1;
-      if (!on && transparent)
-        continue;
-      uint16_t color = on ? fg : bg;
-      // Fill a scale x scale block (transposed + V-flipped)
-      for (int dy = 0; dy < scale; ++dy) {
-        for (int dx = 0; dx < scale; ++dx) {
-          setPixel(rgb565, fbW, fbH, x + (4 - row) * scale + dx,
-                   y + col * scale + dy, color);
-        }
-      }
-    }
-  }
-}
-
-int drawText(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
-             std::string_view text, uint16_t fg, uint16_t bg,
-             bool transparent) {
-  int cx = x;
-  for (char ch : text) {
-    drawChar(rgb565, fbW, fbH, cx, y, ch, fg, bg, transparent);
-    cx += 6; // 5px glyph + 1px spacing
-  }
-  return cx - x;
-}
-
-#endif // HAVE_FREETYPE
 
 // ========================================================================== //
 // Battery icon (shared by both renderers)

@@ -8,13 +8,12 @@ namespace picamera {
 
 // Monospace font rendering for RGB565 display overlays.
 //
-// When built with FreeType (HAVE_FREETYPE defined, via CMake pkg_check_modules
-// for freetype2), uses DejaVu Sans Mono (or Liberation Mono / Noto Sans Mono
-// as fallback) rendered at 8px pixel size with anti-aliasing. Glyphs are
-// cached on first use. Supports full ASCII.
+// Uses DejaVu Sans Mono (or Liberation Mono / Noto Sans Mono as fallback)
+// rendered at 8px pixel size with anti-aliasing. Glyphs are cached on first
+// use. Supports full ASCII.
 //
-// Without FreeType, falls back to a hand-crafted 5x7 bitmap font supporting
-// digits 0-9, '%', 'V', '.', '-', '+', space, and 'A'-'Z' (uppercase).
+// FreeType is a required build dependency (linked via CMake
+// pkg_check_modules for freetype2).
 
 // Draw a single character at (x, y) on an RGB565 framebuffer.
 // fg = foreground color (RGB565), bg = background color (RGB565, or pass
