@@ -23,6 +23,8 @@ struct DngMetadata {
   float analogueGain = 0;      // ISO = gain * 100
   uint32_t isoSpeed = 0;       // computed ISO = analogueGain * 100
   uint32_t timestampSec = 0;   // Unix timestamp for DateTime tag
+  int colorSpace = 0;          // 0 = sRGB, 1 = AdobeRGB (DNG ColorMatrix tag)
+  std::string copyright;       // DNG Copyright tag (empty = omitted)
 };
 
 // Write a minimal DNG (Digital Negative) file from raw Bayer data.

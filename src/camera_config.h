@@ -161,6 +161,12 @@ struct CameraConfig {
   // user's chosen range in Manual exposure mode. See clampGainToIsoRange().
   int isoMin = 100;
   int isoMax = 3200;
+
+  // Color space tag for JPEG EXIF / DNG metadata (output is effectively
+  // sRGB on this pipeline; AdobeRGB tags the metadata accordingly).
+  int colorSpace = 0; // 0 = sRGB, 1 = AdobeRGB
+  std::string copyright; // embedded in EXIF Copyright tag / DNG
+  uint64_t minShutterUs = 0; // minimum shutter for auto ISO (0 = auto)
 };
 
 // Clamp a manual analogue gain to the [isoMin, isoMax] ISO range.

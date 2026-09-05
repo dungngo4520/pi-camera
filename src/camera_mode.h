@@ -74,10 +74,27 @@ enum class BracketType {
 enum class PictureStyle {
   Standard = 0,
   Vivid = 1,
-  Neutral = 2,
+  Natural = 2,
   Monochrome = 3,
   Portrait = 4,
   Landscape = 5,
+  Sepia = 6,
+  Cool = 7,
+  Warm = 8,
+  Film = 9,
+  HDR = 10,
+};
+
+enum class ColorSpace {
+  SRGB = 0,
+  AdobeRGB = 1,
+};
+
+enum class CustomMode {
+  Auto = 0,
+  C1 = 1,
+  C2 = 2,
+  C3 = 3,
 };
 
 struct CameraSettings {
@@ -147,6 +164,20 @@ struct CameraSettings {
 
   FileNamingMode fileNamingMode = FileNamingMode::Timestamp;
   bool useDateSubfolders = false;
+
+  // --- New feature settings ---
+  ColorSpace colorSpace = ColorSpace::SRGB;
+  float wbGmShift = 0.0f; // green-magenta WB shift: -9 (green) to +9 (magenta)
+  uint64_t minShutterUs = 0; // minimum shutter speed for auto ISO (0 = auto)
+  bool longExposureNr = false; // dark frame subtraction for exposures > 1s
+  bool silentShutter = false; // suppress capture sounds/indicators
+  bool airplaneMode = false; // disable Wi-Fi/BT at runtime
+  bool rotateTall = false; // rotate portrait images in playback
+  bool nightMode = false; // boost viewfinder brightness for low-light
+  std::string copyright; // copyright string for EXIF/DNG embedding
+  bool grainEffect = false; // film grain overlay on JPEG encode
+  bool hdrMerge = false; // merge AE bracket frames into a single HDR JPEG
+  CustomMode customMode = CustomMode::Auto; // C1/C2/C3 custom shooting modes
 };
 
 struct OverlayState {

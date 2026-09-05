@@ -15,6 +15,8 @@ struct ExifMetadata {
   uint32_t timestampSec = 0;   // Unix timestamp for DateTime tag
   uint32_t width = 0;          // image width (optional, for reference)
   uint32_t height = 0;         // image height (optional, for reference)
+  int colorSpace = 0;          // 0 = sRGB, 1 = AdobeRGB (EXIF ColorSpace tag)
+  std::string copyright;       // EXIF Copyright tag (empty = omitted)
 };
 
 // Build a complete EXIF APP1 data buffer (starting with "Exif\0\0" +

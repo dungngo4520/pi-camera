@@ -42,7 +42,9 @@ constexpr int kImageSizeCount = 3;
 constexpr int kFileNamingCount = 2;
 constexpr int kExposureModeCount = 4;
 constexpr int kBracketTypeCount = 3;
-constexpr int kPictureStyleCount = 6;
+constexpr int kPictureStyleCount = 11;
+constexpr int kColorSpaceCount = 2;
+constexpr int kCustomModeCount = 4;
 
 template <typename E> E cycleEnum(E value, int direction, int count) {
   return static_cast<E>((static_cast<int>(value) + direction + count) % count);
@@ -320,14 +322,24 @@ const char *pictureStyleLabel(PictureStyle p) {
     return "STD";
   case PictureStyle::Vivid:
     return "VIVID";
-  case PictureStyle::Neutral:
-    return "NEUT";
+  case PictureStyle::Natural:
+    return "NAT";
   case PictureStyle::Monochrome:
     return "MONO";
   case PictureStyle::Portrait:
     return "PORTR";
   case PictureStyle::Landscape:
     return "LAND";
+  case PictureStyle::Sepia:
+    return "SEPIA";
+  case PictureStyle::Cool:
+    return "COOL";
+  case PictureStyle::Warm:
+    return "WARM";
+  case PictureStyle::Film:
+    return "FILM";
+  case PictureStyle::HDR:
+    return "HDR";
   }
   return "??";
 }
@@ -343,6 +355,36 @@ const char *focusMagnifyLabel(int m) {
   default:
     return "??";
   }
+}
+
+const char *colorSpaceLabel(ColorSpace c) {
+  switch (c) {
+  case ColorSpace::SRGB:
+    return "sRGB";
+  case ColorSpace::AdobeRGB:
+    return "Adobe";
+  }
+  return "??";
+}
+
+const char *customModeLabel(CustomMode c) {
+  switch (c) {
+  case CustomMode::Auto:
+    return "AUTO";
+  case CustomMode::C1:
+    return "C1";
+  case CustomMode::C2:
+    return "C2";
+  case CustomMode::C3:
+    return "C3";
+  }
+  return "??";
+}
+
+std::string formatMinShutter(uint64_t us) {
+  if (us == 0)
+    return "AUTO";
+  return formatShutter(us);
 }
 
 void adjustDrive(CameraSettings &s, int direction) {
@@ -688,6 +730,54 @@ void adjustFocusMagnify(CameraSettings &s, int direction) {
   s.focusMagnify = kValues[(idx + direction + n) % n];
 }
 
+void adjustColorSpace(CameraSettings &s, int direction) {
+  s.colorSpace = cycleEnum(s.colorSpace, direction, kColorSpaceCount);
+}
+
+void adjustWbGm(CameraSettings &s, int direction) {
+  s.wbGmShift = std::clamp(s.wbGmShift + static_cast<float>(direction),
+                           -9.0f, 9.0f);
+}
+
+void adjustMinShutter(CameraSettings &s, int direction) {
+  int idx = findShutterIdx(s.minShutterUs);
+  int newIdx = idx + direction;
+  if (newIdx >= 0 && newIdx < kShutterStepCount)
+    s.minShutterUs = kShutterSteps[newIdx];
+}
+
+void adjustLongExposureNr(CameraSettings &s, int direction) {
+  s.longExposureNr = (direction > 0);
+}
+
+void adjustSilentShutter(CameraSettings &s, int direction) {
+  s.silentShutter = (direction > 0);
+}
+
+void adjustAirplaneMode(CameraSettings &s, int direction) {
+  s.airplaneMode = (direction > 0);
+}
+
+void adjustRotateTall(CameraSettings &s, int direction) {
+  s.rotateTall = (direction > 0);
+}
+
+void adjustNightMode(CameraSettings &s, int direction) {
+  s.nightMode = (direction > 0);
+}
+
+void adjustGrainEffect(CameraSettings &s, int direction) {
+  s.grainEffect = (direction > 0);
+}
+
+void adjustHdrMerge(CameraSettings &s, int direction) {
+  s.hdrMerge = (direction > 0);
+}
+
+void adjustCustomMode(CameraSettings &s, int direction) {
+  s.customMode = cycleEnum(s.customMode, direction, kCustomModeCount);
+}
+
 std::string_view valDrive(const CameraSettings &s, std::string &) {
   return driveModeLabel(s.driveMode);
 }
@@ -891,18 +981,73 @@ std::string_view valFocusMagnify(const CameraSettings &s, std::string &) {
   return focusMagnifyLabel(s.focusMagnify);
 }
 
+std::string_view valColorSpace(const CameraSettings &s, std::string &) {
+  return colorSpaceLabel(s.colorSpace);
+}
+
+std::string_view valWbGm(const CameraSettings &s, std::string &buf) {
+  if (s.wbGmShift == 0.0f)
+    return "0";
+  buf = (s.wbGmShift > 0) ? "M" : "G";
+  buf += std::to_string(static_cast<int>(std::abs(s.wbGmShift)));
+  return buf;
+}
+
+std::string_view valMinShutter(const CameraSettings &s, std::string &buf) {
+  buf = formatMinShutter(s.minShutterUs);
+  return buf;
+}
+
+std::string_view valLongExposureNr(const CameraSettings &s, std::string &) {
+  return s.longExposureNr ? "ON" : "OFF";
+}
+
+std::string_view valSilentShutter(const CameraSettings &s, std::string &) {
+  return s.silentShutter ? "ON" : "OFF";
+}
+
+std::string_view valAirplaneMode(const CameraSettings &s, std::string &) {
+  return s.airplaneMode ? "ON" : "OFF";
+}
+
+std::string_view valRotateTall(const CameraSettings &s, std::string &) {
+  return s.rotateTall ? "ON" : "OFF";
+}
+
+std::string_view valNightMode(const CameraSettings &s, std::string &) {
+  return s.nightMode ? "ON" : "OFF";
+}
+
+std::string_view valGrainEffect(const CameraSettings &s, std::string &) {
+  return s.grainEffect ? "ON" : "OFF";
+}
+
+std::string_view valHdrMerge(const CameraSettings &s, std::string &) {
+  return s.hdrMerge ? "ON" : "OFF";
+}
+
+std::string_view valCustomMode(const CameraSettings &s, std::string &) {
+  return customModeLabel(s.customMode);
+}
+
+std::string_view valCopyright(const CameraSettings &s, std::string &) {
+  return s.copyright.empty() ? std::string_view("OFF")
+                             : std::string_view("SET");
+}
+
 struct SettingItem {
   std::string_view label;
   std::string_view (*valueFn)(const CameraSettings &, std::string &buf);
   void (*adjustFn)(CameraSettings &, int);
 };
 
-constexpr std::array<SettingItem, 16> kShootTab = {{
+constexpr std::array<SettingItem, 19> kShootTab = {{
     {"DRIVE", valDrive, adjustDrive},
     {"SHUTTER", valShutter, adjustShutter},
     {"ISO", valIso, adjustIso},
     {"ISO MIN", valIsoMin, adjustIsoMin},
     {"ISO MAX", valIsoMax, adjustIsoMax},
+    {"MIN SS", valMinShutter, adjustMinShutter},
     {"EV", valEv, adjustEv},
     {"METER", valMeter, adjustMeter},
     {"AEMODE", valAeMode, adjustAeMode},
@@ -910,21 +1055,25 @@ constexpr std::array<SettingItem, 16> kShootTab = {{
     {"FLICKER", valFlicker, adjustFlicker},
     {"TIMER", valTimer, adjustTimer},
     {"BRACKET", valBracket, adjustBracket},
+    {"HDR", valHdrMerge, adjustHdrMerge},
+    {"LENR", valLongExposureNr, adjustLongExposureNr},
     {"INTERVAL", valInterval, adjustInterval},
     {"COUNT", valCount, adjustCount},
     {"EXPMODE", valExpMode, adjustExpMode},
     {"BRKTYPE", valBracketType, adjustBracketType},
 }};
 
-constexpr std::array<SettingItem, 17> kImgTab = {{
+constexpr std::array<SettingItem, 21> kImgTab = {{
     {"FORMAT", valFormat, adjustImgFormat},
     {"QUALITY", valQuality, adjustImgQuality},
     {"SIZE", valImgSize, adjustImgSize},
     {"ASPECT", valAspect, adjustImgAspect},
+    {"COLOR", valColorSpace, adjustColorSpace},
     {"AWB", valAwb, adjustImgAwb},
     {"KELVIN", valKelvin, adjustImgKelvin},
     {"WBRED", valWbRed, adjustImgWbRed},
     {"WBBLUE", valWbBlue, adjustImgWbBlue},
+    {"WBGM", valWbGm, adjustWbGm},
     {"BRIGHT", valBrightness, adjustImgBrightness},
     {"CONTRAST", valContrast, adjustImgContrast},
     {"SAT", valSaturation, adjustImgSaturation},
@@ -933,21 +1082,32 @@ constexpr std::array<SettingItem, 17> kImgTab = {{
     {"FILENAME", valFileNaming, adjustImgFileNaming},
     {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders},
     {"PSTYLE", valPictureStyle, adjustPictureStyle},
+    {"GRAIN", valGrainEffect, adjustGrainEffect},
+    {"COPYRIGHT", valCopyright, nullptr},
     {"WBSET", valWbSet, adjustImgWbSet},
 }};
 
-constexpr std::array<SettingItem, 6> kDispTab = {{
+constexpr std::array<SettingItem, 8> kDispTab = {{
     {"GRID", valDispGrid, adjustDispGrid},
     {"HIST", valDispHist, adjustDispHist},
     {"ZEBRA", valDispZebra, adjustDispZebra},
     {"PEAK", valDispPeak, adjustDispPeak},
     {"BRIGHT", valDispBright, adjustDispBright},
     {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify},
+    {"NIGHT", valNightMode, adjustNightMode},
+    {"ROTATE", valRotateTall, adjustRotateTall},
 }};
 
-constexpr std::array<SettingItem, 3> kSysTab = {{
+constexpr std::array<SettingItem, 10> kSysTab = {{
     {"BATTERY", valSysBattery, adjustSysBattery},
     {"PWRSAVE", valPowerSave, adjustSysPowerSave},
+    {"SILENT", valSilentShutter, adjustSilentShutter},
+    {"AIRPLANE", valAirplaneMode, adjustAirplaneMode},
+    {"C MODE", valCustomMode, adjustCustomMode},
+    {"FORMAT", valExit, nullptr},
+    {"RESET", valExit, nullptr},
+    {"DATE", valExit, nullptr},
+    {"VIDEO", valExit, nullptr},
     {"EXIT", valExit, nullptr},
 }};
 
@@ -1048,6 +1208,9 @@ CameraConfig settingsToCameraConfig(const CameraSettings &s,
   cfg.aspectRatio = s.aspectRatio;
   cfg.isoMin = s.isoMin;
   cfg.isoMax = s.isoMax;
+  cfg.colorSpace = static_cast<int>(s.colorSpace);
+  cfg.copyright = s.copyright;
+  cfg.minShutterUs = s.minShutterUs;
 
   // Apply exposure mode semantics to the config.
   // P/Auto: AE on, shutter+ISO auto (already defaults).
@@ -1080,7 +1243,7 @@ PictureStyleParams pictureStyleParams(PictureStyle style) {
     return {0.0f, 1.0f, 1.0f, 1.0f};
   case PictureStyle::Vivid:
     return {0.0f, 1.2f, 1.3f, 1.2f};
-  case PictureStyle::Neutral:
+  case PictureStyle::Natural:
     return {0.0f, 0.9f, 0.8f, 0.8f};
   case PictureStyle::Monochrome:
     return {0.0f, 1.1f, 0.0f, 1.0f};
@@ -1088,6 +1251,16 @@ PictureStyleParams pictureStyleParams(PictureStyle style) {
     return {0.1f, 0.95f, 0.9f, 0.8f};
   case PictureStyle::Landscape:
     return {0.0f, 1.15f, 1.2f, 1.3f};
+  case PictureStyle::Sepia:
+    return {-0.1f, 1.0f, 0.0f, 0.9f};
+  case PictureStyle::Cool:
+    return {0.0f, 1.05f, 1.0f, 1.0f};
+  case PictureStyle::Warm:
+    return {0.05f, 1.05f, 1.0f, 1.0f};
+  case PictureStyle::Film:
+    return {0.0f, 1.1f, 0.95f, 0.9f};
+  case PictureStyle::HDR:
+    return {0.0f, 1.2f, 1.1f, 1.0f};
   }
   return {0.0f, 1.0f, 1.0f, 1.0f};
 }
@@ -1273,6 +1446,30 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
     s.bracketType = static_cast<BracketType>(toInt(val));
   else if (key == "pictureStyle")
     s.pictureStyle = static_cast<PictureStyle>(toInt(val));
+  else if (key == "colorSpace")
+    s.colorSpace = static_cast<ColorSpace>(toInt(val));
+  else if (key == "wbGmShift")
+    s.wbGmShift = toFloat(val);
+  else if (key == "minShutterUs")
+    s.minShutterUs = static_cast<uint64_t>(toInt(val));
+  else if (key == "longExposureNr")
+    s.longExposureNr = toBool(val);
+  else if (key == "silentShutter")
+    s.silentShutter = toBool(val);
+  else if (key == "airplaneMode")
+    s.airplaneMode = toBool(val);
+  else if (key == "rotateTall")
+    s.rotateTall = toBool(val);
+  else if (key == "nightMode")
+    s.nightMode = toBool(val);
+  else if (key == "copyright")
+    s.copyright = std::string(val);
+  else if (key == "grainEffect")
+    s.grainEffect = toBool(val);
+  else if (key == "hdrMerge")
+    s.hdrMerge = toBool(val);
+  else if (key == "customMode")
+    s.customMode = static_cast<CustomMode>(toInt(val));
 }
 
 } // namespace
@@ -1334,6 +1531,18 @@ bool saveSettings(const CameraSettings &s, const std::string &path) {
   writeKeyInt(f, "exposureMode", static_cast<int>(s.exposureMode));
   writeKeyInt(f, "bracketType", static_cast<int>(s.bracketType));
   writeKeyInt(f, "pictureStyle", static_cast<int>(s.pictureStyle));
+  writeKeyInt(f, "colorSpace", static_cast<int>(s.colorSpace));
+  writeKeyFloat(f, "wbGmShift", s.wbGmShift);
+  writeKeyInt(f, "minShutterUs", static_cast<long long>(s.minShutterUs));
+  writeKeyBool(f, "longExposureNr", s.longExposureNr);
+  writeKeyBool(f, "silentShutter", s.silentShutter);
+  writeKeyBool(f, "airplaneMode", s.airplaneMode);
+  writeKeyBool(f, "rotateTall", s.rotateTall);
+  writeKeyBool(f, "nightMode", s.nightMode);
+  writeKey(f, "copyright", s.copyright);
+  writeKeyBool(f, "grainEffect", s.grainEffect);
+  writeKeyBool(f, "hdrMerge", s.hdrMerge);
+  writeKeyInt(f, "customMode", static_cast<int>(s.customMode));
   // bracketEv is a vector — serialize as a comma-separated list
   f << "bracketEv=";
   for (size_t i = 0; i < s.bracketEv.size(); ++i) {

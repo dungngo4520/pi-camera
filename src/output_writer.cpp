@@ -109,6 +109,8 @@ ExifMetadata buildExifFromConfig(const CameraConfig &cfg, uint32_t w,
           .count());
   meta.width = w;
   meta.height = h;
+  meta.colorSpace = cfg.colorSpace;
+  meta.copyright = cfg.copyright;
   return meta;
 }
 
@@ -264,6 +266,8 @@ public:
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count());
+    dngMeta.colorSpace = cfg_.colorSpace;
+    dngMeta.copyright = cfg_.copyright;
 
     bool ok = writeDng(filename.c_str(),
                        reinterpret_cast<const uint8_t *>(unpacked.data()),

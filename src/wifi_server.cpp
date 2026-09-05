@@ -194,14 +194,24 @@ const char *pictureStyleStr(PictureStyle p) {
     return "standard";
   case PictureStyle::Vivid:
     return "vivid";
-  case PictureStyle::Neutral:
-    return "neutral";
+  case PictureStyle::Natural:
+    return "natural";
   case PictureStyle::Monochrome:
     return "monochrome";
   case PictureStyle::Portrait:
     return "portrait";
   case PictureStyle::Landscape:
     return "landscape";
+  case PictureStyle::Sepia:
+    return "sepia";
+  case PictureStyle::Cool:
+    return "cool";
+  case PictureStyle::Warm:
+    return "warm";
+  case PictureStyle::Film:
+    return "film";
+  case PictureStyle::HDR:
+    return "hdr";
   }
   return "unknown";
 }
@@ -330,14 +340,24 @@ std::optional<PictureStyle> parsePictureStyleJson(std::string_view s) {
     return PictureStyle::Standard;
   if (s == "vivid")
     return PictureStyle::Vivid;
-  if (s == "neutral")
-    return PictureStyle::Neutral;
+  if (s == "natural")
+    return PictureStyle::Natural;
   if (s == "monochrome")
     return PictureStyle::Monochrome;
   if (s == "portrait")
     return PictureStyle::Portrait;
   if (s == "landscape")
     return PictureStyle::Landscape;
+  if (s == "sepia")
+    return PictureStyle::Sepia;
+  if (s == "cool")
+    return PictureStyle::Cool;
+  if (s == "warm")
+    return PictureStyle::Warm;
+  if (s == "film")
+    return PictureStyle::Film;
+  if (s == "hdr")
+    return PictureStyle::HDR;
   return std::nullopt;
 }
 
@@ -370,6 +390,50 @@ std::optional<AspectRatio> parseAspectJson(std::string_view s) {
     return AspectRatio::Ratio169;
   if (s == "1:1")
     return AspectRatio::Ratio11;
+  return std::nullopt;
+}
+
+const char *colorSpaceStr(ColorSpace c) {
+  switch (c) {
+  case ColorSpace::SRGB:
+    return "srgb";
+  case ColorSpace::AdobeRGB:
+    return "adobe_rgb";
+  }
+  return "unknown";
+}
+
+std::optional<ColorSpace> parseColorSpaceJson(std::string_view s) {
+  if (s == "srgb")
+    return ColorSpace::SRGB;
+  if (s == "adobe_rgb")
+    return ColorSpace::AdobeRGB;
+  return std::nullopt;
+}
+
+const char *customModeStr(CustomMode c) {
+  switch (c) {
+  case CustomMode::Auto:
+    return "auto";
+  case CustomMode::C1:
+    return "c1";
+  case CustomMode::C2:
+    return "c2";
+  case CustomMode::C3:
+    return "c3";
+  }
+  return "unknown";
+}
+
+std::optional<CustomMode> parseCustomModeJson(std::string_view s) {
+  if (s == "auto")
+    return CustomMode::Auto;
+  if (s == "c1")
+    return CustomMode::C1;
+  if (s == "c2")
+    return CustomMode::C2;
+  if (s == "c3")
+    return CustomMode::C3;
   return std::nullopt;
 }
 
@@ -449,7 +513,19 @@ std::string settingsToJson(const CameraSettings &s) {
   oss << jsonNum("displayBrightness", s.displayBrightness) << ',';
   oss << jsonNum("focusMagnify", s.focusMagnify) << ',';
   oss << jsonBool("enableBattery", s.enableBattery) << ',';
-  oss << jsonNum("powerSaveTimeout", s.powerSaveTimeout);
+  oss << jsonNum("powerSaveTimeout", s.powerSaveTimeout) << ',';
+  oss << jsonStr("colorSpace", colorSpaceStr(s.colorSpace)) << ',';
+  oss << jsonNum("wbGmShift", s.wbGmShift) << ',';
+  oss << jsonNum("minShutterUs", s.minShutterUs) << ',';
+  oss << jsonBool("longExposureNr", s.longExposureNr) << ',';
+  oss << jsonBool("silentShutter", s.silentShutter) << ',';
+  oss << jsonBool("airplaneMode", s.airplaneMode) << ',';
+  oss << jsonBool("rotateTall", s.rotateTall) << ',';
+  oss << jsonBool("nightMode", s.nightMode) << ',';
+  oss << jsonStr("copyright", s.copyright) << ',';
+  oss << jsonBool("grainEffect", s.grainEffect) << ',';
+  oss << jsonBool("hdrMerge", s.hdrMerge) << ',';
+  oss << jsonStr("customMode", customModeStr(s.customMode));
   oss << '}';
   return oss.str();
 }
@@ -583,6 +659,37 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
   if (auto v = jsonNumValue<int>(
           jsonFindValue(json, "powerSaveTimeout").value_or("")))
     s.powerSaveTimeout = *v;
+  if (auto v = jsonFindValue(json, "colorSpace"))
+    if (auto c = parseColorSpaceJson(*v))
+      s.colorSpace = *c;
+  if (auto v =
+          jsonNumValue<float>(jsonFindValue(json, "wbGmShift").value_or("")))
+    s.wbGmShift = *v;
+  if (auto v = jsonNumValue<uint64_t>(
+          jsonFindValue(json, "minShutterUs").value_or("")))
+    s.minShutterUs = *v;
+  if (auto v =
+          jsonBoolValue(jsonFindValue(json, "longExposureNr").value_or("")))
+    s.longExposureNr = *v;
+  if (auto v =
+          jsonBoolValue(jsonFindValue(json, "silentShutter").value_or("")))
+    s.silentShutter = *v;
+  if (auto v =
+          jsonBoolValue(jsonFindValue(json, "airplaneMode").value_or("")))
+    s.airplaneMode = *v;
+  if (auto v = jsonBoolValue(jsonFindValue(json, "rotateTall").value_or("")))
+    s.rotateTall = *v;
+  if (auto v = jsonBoolValue(jsonFindValue(json, "nightMode").value_or("")))
+    s.nightMode = *v;
+  if (auto v = jsonFindValue(json, "copyright"))
+    s.copyright = *v;
+  if (auto v = jsonBoolValue(jsonFindValue(json, "grainEffect").value_or("")))
+    s.grainEffect = *v;
+  if (auto v = jsonBoolValue(jsonFindValue(json, "hdrMerge").value_or("")))
+    s.hdrMerge = *v;
+  if (auto v = jsonFindValue(json, "customMode"))
+    if (auto c = parseCustomModeJson(*v))
+      s.customMode = *c;
 }
 
 std::string urlDecode(std::string_view s) {
