@@ -13,6 +13,7 @@
 #include "safe_path.h"
 #include "settings_menu.h"
 #include "stop_flag.h"
+#include "video_config.h"
 #include "wifi_server.h"
 
 #include "buttons.h"
@@ -557,8 +558,12 @@ struct PreviewState {
   // Video recording state (Viewfinder mode, Video drive mode).
   bool videoRecording = false;
   std::chrono::steady_clock::time_point videoStartTime;
+  std::chrono::steady_clock::time_point videoLastFrameTime;
   std::string videoPath;
   int videoFrameCount = 0;
+  uint32_t videoTargetW = 0;
+  uint32_t videoTargetH = 0;
+  int videoEffectiveFps = 30;
 };
 
 struct BracketOverride {
@@ -1218,31 +1223,38 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
   }
 
   // Video recording: encode current frame and append to video file.
+  // Throttle to the selected frame rate (clamped to the sensor mode max)
+  // and scale each frame to the selected output resolution before
+  // encoding. MJPEG and H264 (fallback) write JPEG frames to a .mjpeg
+  // container; YUV writes raw NV12 planes to a .yuv file.
   if (s.videoRecording && !s.videoPath.empty()) {
-    uint32_t vw = frame.width;
-    uint32_t vh = frame.height;
-    uint32_t vStride = frame.stride;
-    if (vw > 0 && vh > 0 && frame.y() && frame.uv()) {
-      uint32_t alignedW = (vw + 1) & ~1u;
-      std::vector<uint8_t> yCopy(
-          frame.y(),
-          frame.y() + static_cast<size_t>(vStride) * vh);
-      std::vector<uint8_t> uvCopy(
-          frame.uv(),
-          frame.uv() + static_cast<size_t>(alignedW) * (vh / 2));
-      auto rgb = yuvToRgb24(yCopy.data(), uvCopy.data(), vw, vh, vStride);
-      if (!rgb.empty()) {
-        // Determine target video dimensions from the selected resolution.
-        auto dims = videoResolutionDims(
-            s.overlay.settings.videoResolution);
-        uint32_t targetW = dims.width;
-        uint32_t targetH = dims.height;
-        // For YUV codec, write raw NV12 frames; for MJPEG/H264, write
-        // JPEG-encoded frames (MJPEG container). H264 hardware encoding
-        // is not available on the Pi VC4 pipeline at build time, so we
-        // fall back to MJPEG-style JPEG frames for both MJPEG and H264.
+    auto now = std::chrono::steady_clock::now();
+    auto interval = videoFrameInterval(s.videoEffectiveFps);
+    if (now - s.videoLastFrameTime >= interval) {
+      s.videoLastFrameTime = now;
+      uint32_t vw = frame.width;
+      uint32_t vh = frame.height;
+      uint32_t vStride = frame.stride;
+      if (vw > 0 && vh > 0 && frame.y() && frame.uv()) {
+        uint32_t alignedW = (vw + 1) & ~1u;
+        std::vector<uint8_t> yCopy(
+            frame.y(),
+            frame.y() + static_cast<size_t>(vStride) * vh);
+        std::vector<uint8_t> uvCopy(
+            frame.uv(),
+            frame.uv() + static_cast<size_t>(alignedW) * (vh / 2));
+        uint32_t targetW = s.videoTargetW;
+        uint32_t targetH = s.videoTargetH;
+        if (targetW == 0 || targetH == 0) {
+          targetW = vw;
+          targetH = vh;
+        }
         if (s.overlay.settings.videoCodec == VideoCodec::YUV) {
-          std::ofstream ofs(s.videoPath, std::ios::binary | std::ios::app);
+          // Raw NV12: write the Y and UV planes verbatim. The output
+          // resolution is set by the sensor-mode selection at recording
+          // start; bitrate is ignored for raw YUV.
+          std::ofstream ofs(s.videoPath,
+                            std::ios::binary | std::ios::app);
           if (ofs) {
             ofs.write(reinterpret_cast<const char *>(yCopy.data()),
                       static_cast<std::streamsize>(yCopy.size()));
@@ -1250,27 +1262,37 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                       static_cast<std::streamsize>(uvCopy.size()));
             ++s.videoFrameCount;
           }
-        } else {
-          int quality = (s.overlay.settings.videoCodec ==
-                          VideoCodec::H264)
-                             ? 90
-                             : 85;
-          std::string tmpPath = s.videoPath + ".tmp.jpg";
-          if (writeJpegRgb(rgb.data(), vw, vh, tmpPath, quality,
-                           nullptr)) {
-            std::ifstream jf(tmpPath, std::ios::binary);
-            if (jf) {
-              std::ofstream ofs(s.videoPath,
-                                std::ios::binary | std::ios::app);
-              ofs << jf.rdbuf();
-              ++s.videoFrameCount;
+        } else if (videoCodecUsesJpeg(s.overlay.settings.videoCodec)) {
+          // MJPEG (and H264 fallback): convert to RGB24, scale to the
+          // target resolution, then JPEG-encode at the bitrate-mapped
+          // quality and append to the .mjpeg container.
+          auto rgb = yuvToRgb24(yCopy.data(), uvCopy.data(), vw, vh,
+                                vStride);
+          if (!rgb.empty()) {
+            if (rgb.size() !=
+                static_cast<size_t>(targetW) * targetH * 3) {
+              auto scaled = scaleRgb24Bilinear(rgb.data(), vw, vh,
+                                                targetW, targetH);
+              if (!scaled.empty())
+                rgb = std::move(scaled);
             }
-            std::error_code ec;
-            std::filesystem::remove(tmpPath, ec);
+            int quality = videoBitrateToJpegQuality(
+                s.overlay.settings.videoBitrate);
+            std::string tmpPath = s.videoPath + ".tmp.jpg";
+            if (writeJpegRgb(rgb.data(), targetW, targetH, tmpPath,
+                             quality, nullptr)) {
+              std::ifstream jf(tmpPath, std::ios::binary);
+              if (jf) {
+                std::ofstream ofs(s.videoPath,
+                                  std::ios::binary | std::ios::app);
+                ofs << jf.rdbuf();
+                ++s.videoFrameCount;
+              }
+              std::error_code ec;
+              std::filesystem::remove(tmpPath, ec);
+            }
           }
         }
-        (void)targetW;
-        (void)targetH;
       }
     }
   }
@@ -1435,12 +1457,12 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
         vidName = makeCaptureFilename(capDir, pcfg.capturePrefix,
                                       OutputFormat::JPEG);
       }
-      // Replace .jpg extension with codec-appropriate extension.
-      const char *ext = ".mjpeg";
-      if (s.overlay.settings.videoCodec == VideoCodec::YUV)
-        ext = ".yuv";
-      else if (s.overlay.settings.videoCodec == VideoCodec::H264)
-        ext = ".h264";
+      // Replace .jpg extension with codec-appropriate extension. H264
+      // falls back to MJPEG encoding (no HW H264 encoder via libcamera on
+      // Pi Zero 2 W), so it uses the .mjpeg container — never write JPEG
+      // frames to a .h264 file (invalid H.264 bitstream).
+      const char *ext =
+          videoCodecExtension(s.overlay.settings.videoCodec);
       auto dot = vidName.rfind('.');
       if (dot != std::string::npos)
         vidName = vidName.substr(0, dot) + ext;
@@ -1450,13 +1472,22 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
       s.videoFrameCount = 0;
       s.videoRecording = true;
       s.videoStartTime = std::chrono::steady_clock::now();
+      s.videoLastFrameTime = s.videoStartTime;
+      // Resolve the target output resolution and clamp the frame rate to
+      // what the closest sensor mode supports.
       auto dims =
           videoResolutionDims(s.overlay.settings.videoResolution);
+      s.videoTargetW = dims.width;
+      s.videoTargetH = dims.height;
+      SensorMode sm = videoResolutionToSensorMode(
+          s.overlay.settings.videoResolution);
+      s.videoEffectiveFps = clampFpsToSensorMode(
+          s.overlay.settings.videoFps, sm);
       std::cout << "Preview: video recording started (" << s.videoPath
-                << ", " << dims.width << "x" << dims.height << "@"
-                << s.overlay.settings.videoFps << "fps, "
+                << ", " << s.videoTargetW << "x" << s.videoTargetH << "@"
+                << s.videoEffectiveFps << "fps, "
                 << videoCodecLabel(s.overlay.settings.videoCodec)
-                << ")\n";
+                << ", sensor " << sensorModeLabel(sm) << ")\n";
     }
     s.screenDirty = true;
     return;

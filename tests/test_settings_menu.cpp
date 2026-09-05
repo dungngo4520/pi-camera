@@ -1689,7 +1689,9 @@ TEST(video_codec_label) {
   CameraSettings s;
   CHECK(settingsItemValue(SettingsTab::System, 11, s) == "MJPEG");
   s.videoCodec = VideoCodec::H264;
-  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "H264");
+  // H264 falls back to MJPEG encoding (no HW H264 encoder on Pi Zero 2 W);
+  // the menu shows "MJPEG*" to indicate the fallback.
+  CHECK(settingsItemValue(SettingsTab::System, 11, s) == "MJPEG*");
   s.videoCodec = VideoCodec::YUV;
   CHECK(settingsItemValue(SettingsTab::System, 11, s) == "YUV");
 }

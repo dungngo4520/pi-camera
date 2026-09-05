@@ -93,4 +93,12 @@ int copyrightCharCount();
 // The buffer character at `pos` is replaced. Pure logic for unit testing.
 void copyrightCycleChar(std::string &buf, int pos, int direction);
 
+// Bilinear-resize an RGB24 buffer to outW x outH. Used by the video
+// recording pipeline to scale viewfinder frames to the selected video
+// resolution before encoding. Returns empty on invalid input (null src,
+// zero dims, or empty output buffer). Pure logic — unit-testable on x86.
+std::vector<uint8_t> scaleRgb24Bilinear(const uint8_t *src, uint32_t srcW,
+                                        uint32_t srcH, uint32_t outW,
+                                        uint32_t outH);
+
 } // namespace picamera

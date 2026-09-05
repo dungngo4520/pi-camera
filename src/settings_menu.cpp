@@ -1229,7 +1229,10 @@ const char *videoCodecLabel(VideoCodec c) {
   case VideoCodec::MJPEG:
     return "MJPEG";
   case VideoCodec::H264:
-    return "H264";
+    // No HW H264 encoder via libcamera on Pi Zero 2 W; the recording
+    // pipeline falls back to MJPEG encoding. Show the fallback in the
+    // menu so the user knows H264 is not a true H.264 bitstream.
+    return "MJPEG*";
   case VideoCodec::YUV:
     return "YUV";
   }

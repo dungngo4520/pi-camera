@@ -259,4 +259,44 @@ void copyrightCycleChar(std::string &buf, int pos, int direction) {
   buf[pos] = copyrightCharAt(idx);
 }
 
+std::vector<uint8_t> scaleRgb24Bilinear(const uint8_t *src, uint32_t srcW,
+                                        uint32_t srcH, uint32_t outW,
+                                        uint32_t outH) {
+  if (!src || srcW == 0 || srcH == 0 || outW == 0 || outH == 0)
+    return {};
+  std::vector<uint8_t> out(static_cast<size_t>(outW) * outH * 3);
+  // Identity-size copy (fast path).
+  if (outW == srcW && outH == srcH) {
+    std::memcpy(out.data(), src, out.size());
+    return out;
+  }
+  for (uint32_t y = 0; y < outH; ++y) {
+    // Map output row to source coordinate in [0, srcH-1].
+    float sy = (outH == 1) ? 0.0f
+                           : static_cast<float>(y) * (srcH - 1) / (outH - 1);
+    uint32_t y0 = static_cast<uint32_t>(sy);
+    uint32_t y1 = std::min(y0 + 1, srcH - 1);
+    float fy = sy - static_cast<float>(y0);
+    for (uint32_t x = 0; x < outW; ++x) {
+      float sx = (outW == 1) ? 0.0f
+                             : static_cast<float>(x) * (srcW - 1) / (outW - 1);
+      uint32_t x0 = static_cast<uint32_t>(sx);
+      uint32_t x1 = std::min(x0 + 1, srcW - 1);
+      float fx = sx - static_cast<float>(x0);
+      for (int c = 0; c < 3; ++c) {
+        size_t i00 = (static_cast<size_t>(y0) * srcW + x0) * 3 + c;
+        size_t i10 = (static_cast<size_t>(y0) * srcW + x1) * 3 + c;
+        size_t i01 = (static_cast<size_t>(y1) * srcW + x0) * 3 + c;
+        size_t i11 = (static_cast<size_t>(y1) * srcW + x1) * 3 + c;
+        float top = src[i00] * (1.0f - fx) + src[i10] * fx;
+        float bot = src[i01] * (1.0f - fx) + src[i11] * fx;
+        float val = top * (1.0f - fy) + bot * fy;
+        out[(static_cast<size_t>(y) * outW + x) * 3 + c] =
+            static_cast<uint8_t>(std::clamp(val + 0.5f, 0.0f, 255.0f));
+      }
+    }
+  }
+  return out;
+}
+
 } // namespace picamera
