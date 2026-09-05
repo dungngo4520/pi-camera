@@ -326,4 +326,188 @@ TEST(nv12_to_rgb565_rejects_small_uv_plane) {
     CHECK(out[0] == 0xAA);
 }
 
+// --- downscaleNv12 tests ---
+
+TEST(downscale_nv12_2x_produces_half_dimensions) {
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto out = downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 2);
+    CHECK(!out.empty());
+    // outW = 8/2 = 4, outH = 4/2 = 2. Y size = 4*2=8, UV size = 4*1=4. Total = 12.
+    CHECK(out.size() == 12u);
+}
+
+TEST(downscale_nv12_4x_produces_quarter_dimensions) {
+    const uint32_t w = 16, h = 8, stride = 16;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto out = downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 4);
+    CHECK(!out.empty());
+    // outW = 16/4 = 4, outH = 8/4 = 2. Y=8, UV=4. Total=12.
+    CHECK(out.size() == 12u);
+}
+
+TEST(downscale_nv12_averages_correctly) {
+    // 4x4 source with a 2x2 block of distinct values. 2x downscale should
+    // average each 2x2 block. Use Y values 0,100,200,255 in a 2x2 block.
+    const uint32_t w = 4, h = 4, stride = 4;
+    std::vector<uint8_t> y = {
+        0,   100, 0,   100,
+        200, 255, 200, 255,
+        0,   100, 0,   100,
+        200, 255, 200, 255
+    };
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto out = downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 2);
+    CHECK(!out.empty());
+    // outW=2, outH=2. Y plane = 4 bytes, UV = 2 bytes.
+    // Block (0,0): avg(0,100,200,255) = 555/4 = 138 (with rounding: (555+2)/4=139)
+    CHECK(out[0] == 139u);
+    // Block (1,0): same values -> 139
+    CHECK(out[1] == 139u);
+    // Block (0,1): same -> 139
+    CHECK(out[2] == 139u);
+    CHECK(out[3] == 139u);
+}
+
+TEST(downscale_nv12_rejects_invalid_factor) {
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    CHECK(downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 3).empty());
+    CHECK(downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 1).empty());
+    CHECK(downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 0).empty());
+}
+
+TEST(downscale_nv12_rejects_null) {
+    CHECK(downscaleNv12(nullptr, nullptr, 4, 4, 4, 0, 0, 2).empty());
+}
+
+TEST(downscale_nv12_rounds_to_even) {
+    // 7x5 source, 2x downscale -> outW = (7/2)&~1 = 2, outH = (5/2)&~1 = 2
+    const uint32_t w = 7, h = 5, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * ((h + 1) / 2), 128);
+    auto out = downscaleNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(), 2);
+    CHECK(!out.empty());
+    // outW=2, outH=2, Y=4, UV=2, total=6
+    CHECK(out.size() == 6u);
+}
+
+// --- cropNv12 tests ---
+
+TEST(crop_nv12_produces_correct_dimensions) {
+    const uint32_t w = 8, h = 8, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto out = cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                        2, 2, 4, 4);
+    CHECK(!out.empty());
+    // Y = 4*4=16, UV = 4*2=8, total = 24
+    CHECK(out.size() == 24u);
+}
+
+TEST(crop_nv12_copies_correct_pixels) {
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 0);
+    // Set a distinctive value at (4,2) -> crop at (2,0,4,4) maps to (2,2)
+    y[2 * stride + 4] = 200;
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    auto out = cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                        2, 0, 4, 4);
+    CHECK(!out.empty());
+    // outW=4, outH=4. Pixel at (2,2) in crop = y[2*4+2] = out[10]
+    CHECK(out[10] == 200u);
+}
+
+TEST(crop_nv12_rejects_odd_crop_origin) {
+    const uint32_t w = 8, h = 8, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    // odd cropX
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   1, 0, 4, 4).empty());
+    // odd cropY
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   0, 1, 4, 4).empty());
+}
+
+TEST(crop_nv12_rejects_odd_crop_dims) {
+    const uint32_t w = 8, h = 8, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   0, 0, 5, 4).empty());
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   0, 0, 4, 5).empty());
+}
+
+TEST(crop_nv12_rejects_out_of_bounds) {
+    const uint32_t w = 8, h = 8, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    // crop extends past width
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   6, 0, 4, 4).empty());
+    // crop extends past height
+    CHECK(cropNv12(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
+                   0, 6, 4, 4).empty());
+}
+
+TEST(crop_nv12_rejects_null) {
+    CHECK(cropNv12(nullptr, nullptr, 4, 4, 4, 0, 0, 0, 0, 4, 4).empty());
+}
+
+// --- nv12ToRgb565CroppedScaled tests ---
+
+TEST(nv12_rgb565_cropped_scaled_basic) {
+    // 8x4 source, crop center 4x4, scale to 2x2 display.
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(2 * 2 * 2, 0);
+    bool ok = nv12ToRgb565CroppedScaled(y.data(), uv.data(), w, h, stride,
+                                        y.size(), uv.size(),
+                                        2, 0, 4, 4,
+                                        out.data(), 2, 2, out.size());
+    CHECK(ok);
+    // With neutral chroma, R≈G≈B for all pixels.
+    for (size_t p = 0; p < 4; ++p) {
+        uint16_t pix = (static_cast<uint16_t>(out[p * 2]) << 8) | out[p * 2 + 1];
+        uint8_t r5 = (pix >> 11) & 0x1F;
+        uint8_t g6 = (pix >> 5) & 0x3F;
+        uint8_t b5 = pix & 0x1F;
+        int r8 = r5 << 3, g8 = g6 << 2, b8 = b5 << 3;
+        CHECK(std::abs(r8 - g8) <= 8);
+        CHECK(std::abs(g8 - b8) <= 8);
+    }
+}
+
+TEST(nv12_rgb565_cropped_scaled_rejects_odd_origin) {
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(8, 0xAA);
+    bool ok = nv12ToRgb565CroppedScaled(y.data(), uv.data(), w, h, stride,
+                                        y.size(), uv.size(),
+                                        1, 0, 4, 4,
+                                        out.data(), 2, 2, out.size());
+    CHECK(!ok);
+    CHECK(out[0] == 0xAA);
+}
+
+TEST(nv12_rgb565_cropped_scaled_rejects_out_of_bounds) {
+    const uint32_t w = 8, h = 4, stride = 8;
+    std::vector<uint8_t> y(stride * h, 128);
+    std::vector<uint8_t> uv(stride * (h / 2), 128);
+    std::vector<uint8_t> out(8, 0xAA);
+    bool ok = nv12ToRgb565CroppedScaled(y.data(), uv.data(), w, h, stride,
+                                        y.size(), uv.size(),
+                                        6, 0, 4, 4,
+                                        out.data(), 2, 2, out.size());
+    CHECK(!ok);
+    CHECK(out[0] == 0xAA);
+}
+
 } // namespace

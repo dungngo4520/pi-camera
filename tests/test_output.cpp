@@ -165,6 +165,77 @@ TEST(jpeg_write_roundtrip) {
     unlink(path.c_str());
 }
 
+TEST(png_text_chunks_embed_metadata) {
+    // writePng() can embed EXIF-equivalent metadata as PNG tEXt chunks.
+    // Verify the chunks are written and readable back via libpng.
+    const uint32_t w = 4, h = 4;
+    std::vector<uint8_t> rgb(w * h * 3, 200);  // solid light grey
+
+    ExifMetadata meta;
+    meta.exposureTimeUs = 8000;
+    meta.analogueGain = 4.0f;   // ISO = 400
+    meta.timestampSec = 1700000000;  // fixed: 2023-11-14 22:13:20 UTC
+    meta.width = w;
+    meta.height = h;
+
+    std::string path = tmpPath(".png");
+    CHECK(writePng(path.c_str(), rgb.data(), w, h, 6, nullptr, &meta));
+
+    // Read back with libpng and extract tEXt chunks.
+    FILE *fp = fopen(path.c_str(), "rb");
+    REQUIRE(fp);
+    unsigned char sig[8];
+    REQUIRE(fread(sig, 1, 8, fp) == 8);
+    CHECK(png_check_sig(sig, 8));
+
+    png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    REQUIRE(png);
+    png_infop info = png_create_info_struct(png);
+    REQUIRE(info);
+
+    if (setjmp(png_jmpbuf(png))) {
+        png_destroy_read_struct(&png, &info, nullptr);
+        fclose(fp);
+        CHECK(!"libpng read failed");
+        unlink(path.c_str());
+        return;
+    }
+
+    png_init_io(png, fp);
+    png_set_sig_bytes(png, 8);
+    png_read_info(png, info);
+
+    int numText = 0;
+    png_textp textChunks = nullptr;
+    png_get_text(png, info, &textChunks, &numText);
+    CHECK(numText >= 6);  // Make, Model, Software, DateTime, ExposureTime, ISOSpeedRatings
+
+    // Helper to find a tEXt chunk by key.
+    auto findText = [&](const char *key) -> const char * {
+        for (int i = 0; i < numText; ++i)
+            if (std::strcmp(textChunks[i].key, key) == 0)
+                return textChunks[i].text;
+        return nullptr;
+    };
+
+    CHECK(findText("Make") != nullptr);
+    CHECK_EQ(std::string(findText("Make")), std::string("Raspberry Pi"));
+    CHECK(findText("Model") != nullptr);
+    CHECK_EQ(std::string(findText("Model")), std::string("IMX477"));
+    CHECK(findText("Software") != nullptr);
+    CHECK_EQ(std::string(findText("Software")), std::string("picamera"));
+    CHECK(findText("DateTime") != nullptr);
+    CHECK_EQ(std::string(findText("DateTime")), std::string("2023:11:14 22:13:20"));
+    CHECK(findText("ExposureTime") != nullptr);
+    CHECK_EQ(std::string(findText("ExposureTime")), std::string("8000us"));
+    CHECK(findText("ISOSpeedRatings") != nullptr);
+    CHECK_EQ(std::string(findText("ISOSpeedRatings")), std::string("400"));
+
+    png_destroy_read_struct(&png, &info, nullptr);
+    fclose(fp);
+    unlink(path.c_str());
+}
+
 // --- New tests for unlink-on-failure (Tier 1 fix) ---
 
 TEST(write_to_unwritable_path_leaves_no_file) {

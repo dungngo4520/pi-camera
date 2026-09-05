@@ -199,4 +199,145 @@ TEST(list_captures_case_insensitive_extension) {
     std::filesystem::remove_all(dir);
 }
 
+// --- makeSequentialFilename tests ---
+
+TEST(make_sequential_filename_has_prefix_and_img) {
+    std::string dir = makeTempDir();
+    std::string fn = makeSequentialFilename(dir, "shot", OutputFormat::JPEG);
+    CHECK(fn.find("shot_IMG") != std::string::npos);
+    CHECK(fn.find(".jpg") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(make_sequential_filename_starts_at_1) {
+    std::string dir = makeTempDir();
+    std::string fn = makeSequentialFilename(dir, "shot", OutputFormat::JPEG);
+    CHECK(fn.find("IMG0001") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(make_sequential_filename_increments) {
+    std::string dir = makeTempDir();
+    // Create existing files
+    std::ofstream(dir + "/shot_IMG0001.jpg") << "x";
+    std::ofstream(dir + "/shot_IMG0002.jpg") << "x";
+    std::string fn = makeSequentialFilename(dir, "shot", OutputFormat::JPEG);
+    CHECK(fn.find("IMG0003") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(make_sequential_filename_finds_max) {
+    std::string dir = makeTempDir();
+    std::ofstream(dir + "/shot_IMG0001.jpg") << "x";
+    std::ofstream(dir + "/shot_IMG0010.jpg") << "x";
+    std::ofstream(dir + "/shot_IMG0005.jpg") << "x";
+    std::string fn = makeSequentialFilename(dir, "shot", OutputFormat::JPEG);
+    CHECK(fn.find("IMG0011") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(make_sequential_filename_empty_dir_starts_at_1) {
+    std::string dir = makeTempDir();
+    std::string fn = makeSequentialFilename(dir, "img", OutputFormat::PNG);
+    CHECK(fn.find("IMG0001") != std::string::npos);
+    CHECK(fn.find(".png") != std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+// --- ensureDateSubfolder tests ---
+
+TEST(ensure_date_subfolder_disabled_returns_dir) {
+    std::string dir = makeTempDir();
+    std::string result = ensureDateSubfolder(dir, false);
+    CHECK(result == dir);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(ensure_date_subfolder_enabled_creates_subfolder) {
+    std::string dir = makeTempDir();
+    std::string result = ensureDateSubfolder(dir, true);
+    // Result should be dir + "/YYYY-MM-DD"
+    CHECK(result.find(dir) == 0);
+    CHECK(result.size() > dir.size());
+    // The subfolder should exist
+    CHECK(std::filesystem::exists(result));
+    CHECK(std::filesystem::is_directory(result));
+    std::filesystem::remove_all(dir);
+}
+
+// --- File protection tests ---
+
+TEST(file_protection_unprotected_by_default) {
+    std::string dir = makeTempDir();
+    std::string file = dir + "/img_001.jpg";
+    // Create a dummy file
+    std::ofstream f(file);
+    f << "dummy";
+    f.close();
+    CHECK(!isFileProtected(dir, file));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(file_protection_toggle_protects) {
+    std::string dir = makeTempDir();
+    std::string file = dir + "/img_001.jpg";
+    std::ofstream f(file);
+    f << "dummy";
+    f.close();
+    bool nowProtected = toggleFileProtection(dir, file);
+    CHECK(nowProtected == true);
+    CHECK(isFileProtected(dir, file));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(file_protection_toggle_unprotects) {
+    std::string dir = makeTempDir();
+    std::string file = dir + "/img_001.jpg";
+    std::ofstream f(file);
+    f << "dummy";
+    f.close();
+    toggleFileProtection(dir, file);  // protect
+    bool nowProtected = toggleFileProtection(dir, file);  // unprotect
+    CHECK(nowProtected == false);
+    CHECK(!isFileProtected(dir, file));
+    std::filesystem::remove_all(dir);
+}
+
+TEST(file_protection_list_protected) {
+    std::string dir = makeTempDir();
+    std::string file1 = dir + "/img_001.jpg";
+    std::string file2 = dir + "/img_002.jpg";
+    std::ofstream f1(file1); f1 << "x"; f1.close();
+    std::ofstream f2(file2); f2 << "x"; f2.close();
+    toggleFileProtection(dir, file1);
+    toggleFileProtection(dir, file2);
+    auto list = listProtectedFiles(dir);
+    CHECK(list.size() == 2);
+    // Both basenames should be in the list
+    bool found1 = false, found2 = false;
+    for (const auto &name : list) {
+        if (name == "img_001.jpg") found1 = true;
+        if (name == "img_002.jpg") found2 = true;
+    }
+    CHECK(found1);
+    CHECK(found2);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(file_protection_persists_across_calls) {
+    std::string dir = makeTempDir();
+    std::string file = dir + "/img_001.jpg";
+    std::ofstream f(file);
+    f << "dummy";
+    f.close();
+    toggleFileProtection(dir, file);
+    // Re-read from disk
+    CHECK(isFileProtected(dir, file));
+    // List should still contain it
+    auto list = listProtectedFiles(dir);
+    CHECK(list.size() == 1);
+    CHECK(list[0] == "img_001.jpg");
+    std::filesystem::remove_all(dir);
+}
+
 } // namespace
