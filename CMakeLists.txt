@@ -157,16 +157,12 @@ if(PICAMERA_BUILD_TESTS)
 
     if(PICAMERA_ENABLE_SANITIZERS)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-            # Apply sanitizer flags to both picamera_core and picamera_tests.
-            # picamera_core is a static library — its object files are compiled
-            # with picamera_core's flags, so without this, the core logic
-            # (image, encoders, dng, safe_path) is not instrumented by ASan/UBSan.
-            foreach(target picamera_core picamera_tests)
-                target_compile_options(${target} PRIVATE
-                    -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-                target_link_options(${target} PRIVATE
-                    -fsanitize=address,undefined)
-            endforeach()
+            target_compile_options(picamera_core PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+            target_link_options(picamera_core PUBLIC
+                -fsanitize=address,undefined)
+            target_compile_options(picamera_tests PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
         endif()
     endif()
 

@@ -433,7 +433,8 @@ bool St7735Display::blitRegion(const uint8_t *rgb565, uint32_t srcW,
   //   90° CW:  dst(col, h-1-row) = src(row, col)
   //   270° CW: dst(w-1-col, row) = src(row, col)
   if (needsTranspose_) {
-    int winW = h, winH = w;
+    int winW = h;
+    int winH = w;
     if (!setAddrWindow(dispX, dispY, winW, winH))
       return false;
     if (!sendCommand(RAMWR))
