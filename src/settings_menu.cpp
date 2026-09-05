@@ -45,6 +45,13 @@ constexpr int kBracketTypeCount = 3;
 constexpr int kPictureStyleCount = 11;
 constexpr int kColorSpaceCount = 2;
 constexpr int kCustomModeCount = 4;
+constexpr int kVideoResolutionCount = 4;
+constexpr int kVideoCodecCount = 3;
+constexpr int kSensorModeCount = 5;
+constexpr int kVideoFpsSteps[] = {10, 24, 30, 50, 60};
+constexpr int kVideoFpsStepCount = 5;
+constexpr int kVideoBitrateSteps[] = {1, 5, 10, 20};
+constexpr int kVideoBitrateStepCount = 4;
 
 template <typename E> E cycleEnum(E value, int direction, int count) {
   return static_cast<E>((static_cast<int>(value) + direction + count) % count);
@@ -780,6 +787,55 @@ void adjustCustomMode(CameraSettings &s, int direction) {
   s.customMode = cycleEnum(s.customMode, direction, kCustomModeCount);
 }
 
+const char *videoResolutionLabel(VideoResolution r) {
+  switch (r) {
+  case VideoResolution::Res320x240:
+    return "320x240";
+  case VideoResolution::Res640x480:
+    return "640x480";
+  case VideoResolution::Res1280x720:
+    return "720P";
+  case VideoResolution::Res1920x1080:
+    return "1080P";
+  }
+  return "??";
+}
+
+void adjustVideoResolution(CameraSettings &s, int direction) {
+  s.videoResolution =
+      cycleEnum(s.videoResolution, direction, kVideoResolutionCount);
+}
+
+void adjustVideoFps(CameraSettings &s, int direction) {
+  int idx = 0;
+  for (int i = 0; i < kVideoFpsStepCount; ++i)
+    if (kVideoFpsSteps[i] == s.videoFps) {
+      idx = i;
+      break;
+    }
+  idx = (idx + direction + kVideoFpsStepCount) % kVideoFpsStepCount;
+  s.videoFps = kVideoFpsSteps[idx];
+}
+
+void adjustVideoCodec(CameraSettings &s, int direction) {
+  s.videoCodec = cycleEnum(s.videoCodec, direction, kVideoCodecCount);
+}
+
+void adjustVideoBitrate(CameraSettings &s, int direction) {
+  int idx = 0;
+  for (int i = 0; i < kVideoBitrateStepCount; ++i)
+    if (kVideoBitrateSteps[i] == s.videoBitrate) {
+      idx = i;
+      break;
+    }
+  idx = (idx + direction + kVideoBitrateStepCount) % kVideoBitrateStepCount;
+  s.videoBitrate = kVideoBitrateSteps[idx];
+}
+
+void adjustSensorMode(CameraSettings &s, int direction) {
+  s.sensorMode = cycleEnum(s.sensorMode, direction, kSensorModeCount);
+}
+
 std::string_view valDrive(const CameraSettings &s, std::string &) {
   return driveModeLabel(s.driveMode);
 }
@@ -1036,6 +1092,28 @@ std::string_view valCustomMode(const CameraSettings &s, std::string &) {
   return customModeLabel(s.customMode);
 }
 
+std::string_view valVideoResolution(const CameraSettings &s, std::string &) {
+  return videoResolutionLabel(s.videoResolution);
+}
+
+std::string_view valVideoFps(const CameraSettings &s, std::string &buf) {
+  buf = std::to_string(s.videoFps) + "FPS";
+  return buf;
+}
+
+std::string_view valVideoCodec(const CameraSettings &s, std::string &) {
+  return videoCodecLabel(s.videoCodec);
+}
+
+std::string_view valVideoBitrate(const CameraSettings &s, std::string &buf) {
+  buf = std::to_string(s.videoBitrate) + "MB";
+  return buf;
+}
+
+std::string_view valSensorMode(const CameraSettings &s, std::string &) {
+  return sensorModeLabel(s.sensorMode);
+}
+
 std::string_view valCopyright(const CameraSettings &s, std::string &) {
   return s.copyright.empty() ? std::string_view("OFF")
                              : std::string_view("SET");
@@ -1047,7 +1125,7 @@ struct SettingItem {
   void (*adjustFn)(CameraSettings &, int);
 };
 
-constexpr std::array<SettingItem, 19> kShootTab = {{
+constexpr std::array<SettingItem, 20> kShootTab = {{
     {"DRIVE", valDrive, adjustDrive},
     {"SHUTTER", valShutter, adjustShutter},
     {"ISO", valIso, adjustIso},
@@ -1067,6 +1145,7 @@ constexpr std::array<SettingItem, 19> kShootTab = {{
     {"COUNT", valCount, adjustCount},
     {"EXPMODE", valExpMode, adjustExpMode},
     {"BRKTYPE", valBracketType, adjustBracketType},
+    {"SMODE", valSensorMode, adjustSensorMode},
 }};
 
 constexpr std::array<SettingItem, 21> kImgTab = {{
@@ -1104,7 +1183,7 @@ constexpr std::array<SettingItem, 8> kDispTab = {{
     {"ROTATE", valRotateTall, adjustRotateTall},
 }};
 
-constexpr std::array<SettingItem, 10> kSysTab = {{
+constexpr std::array<SettingItem, 14> kSysTab = {{
     {"BATTERY", valSysBattery, adjustSysBattery},
     {"PWRSAVE", valPowerSave, adjustSysPowerSave},
     {"SILENT", valSilentShutter, adjustSilentShutter},
@@ -1114,6 +1193,10 @@ constexpr std::array<SettingItem, 10> kSysTab = {{
     {"RESET", valExit, nullptr},
     {"DATE", valExit, nullptr},
     {"VIDEO", valVideo, nullptr},
+    {"VIDRES", valVideoResolution, adjustVideoResolution},
+    {"VIDFPS", valVideoFps, adjustVideoFps},
+    {"VIDCODEC", valVideoCodec, adjustVideoCodec},
+    {"VIDBITRATE", valVideoBitrate, adjustVideoBitrate},
     {"EXIT", valExit, nullptr},
 }};
 
@@ -1140,6 +1223,34 @@ void adjustSetting(SettingsTab tab, int item, CameraSettings &s,
 }
 
 } // namespace
+
+const char *videoCodecLabel(VideoCodec c) {
+  switch (c) {
+  case VideoCodec::MJPEG:
+    return "MJPEG";
+  case VideoCodec::H264:
+    return "H264";
+  case VideoCodec::YUV:
+    return "YUV";
+  }
+  return "??";
+}
+
+const char *sensorModeLabel(SensorMode m) {
+  switch (m) {
+  case SensorMode::Auto:
+    return "AUTO";
+  case SensorMode::Mode1332x990:
+    return "1332x990";
+  case SensorMode::Mode2028x1080:
+    return "2028x1080";
+  case SensorMode::Mode2028x1520:
+    return "2028x1520";
+  case SensorMode::Mode4056x3040:
+    return "4056x3040";
+  }
+  return "??";
+}
 
 int settingsTabItemCount(SettingsTab tab) {
   return static_cast<int>(tabItems(tab).size());
@@ -1173,7 +1284,8 @@ void settingsItemAdjustRight(SettingsTab tab, int item, CameraSettings &s) {
 bool settingsNeedsReconfigure(const CameraSettings &before,
                               const CameraSettings &after) {
   return before.captureFormat != after.captureFormat ||
-         before.aspectRatio != after.aspectRatio;
+         before.aspectRatio != after.aspectRatio ||
+         before.sensorMode != after.sensorMode;
 }
 
 CameraConfig settingsToCameraConfig(const CameraSettings &s,
@@ -1317,6 +1429,36 @@ CropRegion aspectRatioCrop(uint32_t srcW, uint32_t srcH, AspectRatio ratio) {
   }
   }
   return r;
+}
+
+VideoDimensions videoResolutionDims(VideoResolution r) {
+  switch (r) {
+  case VideoResolution::Res320x240:
+    return {320, 240};
+  case VideoResolution::Res640x480:
+    return {640, 480};
+  case VideoResolution::Res1280x720:
+    return {1280, 720};
+  case VideoResolution::Res1920x1080:
+    return {1920, 1080};
+  }
+  return {320, 240};
+}
+
+VideoDimensions sensorModeDims(SensorMode m) {
+  switch (m) {
+  case SensorMode::Auto:
+    return {0, 0};
+  case SensorMode::Mode1332x990:
+    return {1332, 990};
+  case SensorMode::Mode2028x1080:
+    return {2028, 1080};
+  case SensorMode::Mode2028x1520:
+    return {2028, 1520};
+  case SensorMode::Mode4056x3040:
+    return {4056, 3040};
+  }
+  return {0, 0};
 }
 
 namespace {
@@ -1478,6 +1620,16 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
     s.hdrMerge = toBool(val);
   else if (key == "customMode")
     s.customMode = static_cast<CustomMode>(toInt(val));
+  else if (key == "videoResolution")
+    s.videoResolution = static_cast<VideoResolution>(toInt(val));
+  else if (key == "videoFps")
+    s.videoFps = static_cast<int>(toInt(val));
+  else if (key == "videoCodec")
+    s.videoCodec = static_cast<VideoCodec>(toInt(val));
+  else if (key == "videoBitrate")
+    s.videoBitrate = static_cast<int>(toInt(val));
+  else if (key == "sensorMode")
+    s.sensorMode = static_cast<SensorMode>(toInt(val));
 }
 
 } // namespace
@@ -1551,6 +1703,11 @@ bool saveSettings(const CameraSettings &s, const std::string &path) {
   writeKeyBool(f, "grainEffect", s.grainEffect);
   writeKeyBool(f, "hdrMerge", s.hdrMerge);
   writeKeyInt(f, "customMode", static_cast<int>(s.customMode));
+  writeKeyInt(f, "videoResolution", static_cast<int>(s.videoResolution));
+  writeKeyInt(f, "videoFps", s.videoFps);
+  writeKeyInt(f, "videoCodec", static_cast<int>(s.videoCodec));
+  writeKeyInt(f, "videoBitrate", s.videoBitrate);
+  writeKeyInt(f, "sensorMode", static_cast<int>(s.sensorMode));
   // bracketEv is a vector — serialize as a comma-separated list
   f << "bracketEv=";
   for (size_t i = 0; i < s.bracketEv.size(); ++i) {

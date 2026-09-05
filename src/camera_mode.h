@@ -98,6 +98,27 @@ enum class CustomMode {
   C3 = 3,
 };
 
+enum class VideoResolution {
+  Res320x240 = 0,
+  Res640x480 = 1,
+  Res1280x720 = 2,
+  Res1920x1080 = 3,
+};
+
+enum class VideoCodec {
+  MJPEG = 0,
+  H264 = 1,
+  YUV = 2,
+};
+
+enum class SensorMode {
+  Auto = 0,
+  Mode1332x990 = 1,
+  Mode2028x1080 = 2,
+  Mode2028x1520 = 3,
+  Mode4056x3040 = 4,
+};
+
 struct CameraSettings {
   DriveMode driveMode = DriveMode::Single;
 
@@ -179,6 +200,11 @@ struct CameraSettings {
   bool grainEffect = false; // film grain overlay on JPEG encode
   bool hdrMerge = false; // merge AE bracket frames into a single HDR JPEG
   CustomMode customMode = CustomMode::Auto; // C1/C2/C3 custom shooting modes
+  VideoResolution videoResolution = VideoResolution::Res320x240;
+  int videoFps = 30; // 10/24/30/50/60
+  VideoCodec videoCodec = VideoCodec::MJPEG;
+  int videoBitrate = 5; // Mbps for H264: 1/5/10/20
+  SensorMode sensorMode = SensorMode::Auto; // IMX477 sensor mode preset
 };
 
 struct OverlayState {

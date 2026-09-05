@@ -529,7 +529,12 @@ std::string settingsToJson(const CameraSettings &s) {
   oss << jsonStr("copyright", s.copyright) << ',';
   oss << jsonBool("grainEffect", s.grainEffect) << ',';
   oss << jsonBool("hdrMerge", s.hdrMerge) << ',';
-  oss << jsonStr("customMode", customModeStr(s.customMode));
+  oss << jsonStr("customMode", customModeStr(s.customMode)) << ',';
+  oss << jsonNum("videoResolution", static_cast<int>(s.videoResolution)) << ',';
+  oss << jsonNum("videoFps", s.videoFps) << ',';
+  oss << jsonNum("videoCodec", static_cast<int>(s.videoCodec)) << ',';
+  oss << jsonNum("videoBitrate", s.videoBitrate) << ',';
+  oss << jsonNum("sensorMode", static_cast<int>(s.sensorMode));
   oss << '}';
   return oss.str();
 }
@@ -694,6 +699,21 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
   if (auto v = jsonFindValue(json, "customMode"))
     if (auto c = parseCustomModeJson(*v))
       s.customMode = *c;
+  if (auto v = jsonNumValue<int>(
+          jsonFindValue(json, "videoResolution").value_or("")))
+    s.videoResolution = static_cast<VideoResolution>(*v);
+  if (auto v = jsonNumValue<int>(
+          jsonFindValue(json, "videoFps").value_or("")))
+    s.videoFps = *v;
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "videoCodec").value_or("")))
+    s.videoCodec = static_cast<VideoCodec>(*v);
+  if (auto v = jsonNumValue<int>(
+          jsonFindValue(json, "videoBitrate").value_or("")))
+    s.videoBitrate = *v;
+  if (auto v =
+          jsonNumValue<int>(jsonFindValue(json, "sensorMode").value_or("")))
+    s.sensorMode = static_cast<SensorMode>(*v);
 }
 
 std::string urlDecode(std::string_view s) {

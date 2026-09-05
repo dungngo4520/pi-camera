@@ -63,4 +63,18 @@ struct CropRegion {
 };
 CropRegion aspectRatioCrop(uint32_t srcW, uint32_t srcH, AspectRatio ratio);
 
+// Map a VideoResolution enum to its pixel dimensions.
+struct VideoDimensions {
+  uint32_t width;
+  uint32_t height;
+};
+VideoDimensions videoResolutionDims(VideoResolution r);
+
+// Map a SensorMode enum to its pixel dimensions. Auto returns {0,0}
+// (meaning: use the default/full sensor resolution).
+VideoDimensions sensorModeDims(SensorMode m);
+
+const char *videoCodecLabel(VideoCodec c);
+const char *sensorModeLabel(SensorMode m);
+
 } // namespace picamera
