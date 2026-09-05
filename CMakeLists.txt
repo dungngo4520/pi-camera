@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(picamera VERSION 1.0.0 LANGUAGES CXX)
+project(
+  picamera
+  VERSION 1.0.0
+  LANGUAGES CXX
+)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -28,7 +32,10 @@ pkg_check_modules(FREETYPE QUIET IMPORTED_TARGET freetype2)
 pkg_check_modules(BLUEZ QUIET IMPORTED_TARGET bluez)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+  set(CMAKE_BUILD_TYPE
+      Release
+      CACHE STRING "Build type" FORCE
+  )
 endif()
 
 # Force -std=c++20 in compile_commands.json even when the compiler defaults
@@ -41,7 +48,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Warnings as a baseline for all targets.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
 option(PICAMERA_BUILD_TESTS "Build unit tests" ON)
@@ -57,43 +64,40 @@ option(PICAMERA_ENABLE_SANITIZERS "Enable ASan+UBSan for the test build" OFF)
 # for image.cpp's std::thread workers. libcamera is NOT needed here —
 # camera_config.h is a plain data header with no libcamera dependency.
 # --------------------------------------------------------------------------- #
-add_library(picamera_core STATIC
-    src/image.cpp
-    src/encoders.cpp
-    src/output_writer.cpp
-    src/cli.cpp
-    src/timelapse.cpp
-    src/dng.cpp
-    src/battery.cpp
-    src/font.cpp
-    src/safe_path.cpp
-    src/camera_mode.cpp
-    src/image_decode.cpp
-    src/preview_helpers.cpp
-    src/file_util.cpp
-    src/hardware_config.cpp
-    src/settings_menu.cpp
-    src/wifi_server.cpp
-    src/bt_server.cpp
+add_library(
+  picamera_core STATIC
+  src/image.cpp
+  src/encoders.cpp
+  src/output_writer.cpp
+  src/cli.cpp
+  src/timelapse.cpp
+  src/dng.cpp
+  src/battery.cpp
+  src/font.cpp
+  src/safe_path.cpp
+  src/camera_mode.cpp
+  src/image_decode.cpp
+  src/preview_helpers.cpp
+  src/file_util.cpp
+  src/hardware_config.cpp
+  src/settings_menu.cpp
+  src/wifi_server.cpp
+  src/bt_server.cpp
 )
 target_compile_features(picamera_core PUBLIC cxx_std_20)
 target_include_directories(picamera_core PUBLIC src)
-target_link_libraries(picamera_core
-    PUBLIC
-        PkgConfig::PNG
-        Threads::Threads
-)
+target_link_libraries(picamera_core PUBLIC PkgConfig::PNG Threads::Threads)
 if(JPEG_FOUND)
-    target_compile_definitions(picamera_core PUBLIC HAVE_JPEG)
-    target_link_libraries(picamera_core PUBLIC PkgConfig::JPEG)
+  target_compile_definitions(picamera_core PUBLIC HAVE_JPEG)
+  target_link_libraries(picamera_core PUBLIC PkgConfig::JPEG)
 endif()
 if(FREETYPE_FOUND)
-    target_compile_definitions(picamera_core PUBLIC HAVE_FREETYPE)
-    target_link_libraries(picamera_core PUBLIC PkgConfig::FREETYPE)
+  target_compile_definitions(picamera_core PUBLIC HAVE_FREETYPE)
+  target_link_libraries(picamera_core PUBLIC PkgConfig::FREETYPE)
 endif()
 if(BLUEZ_FOUND)
-    target_compile_definitions(picamera_core PUBLIC HAVE_BLUEZ)
-    target_link_libraries(picamera_core PUBLIC PkgConfig::BLUEZ)
+  target_compile_definitions(picamera_core PUBLIC HAVE_BLUEZ)
+  target_link_libraries(picamera_core PUBLIC PkgConfig::BLUEZ)
 endif()
 
 # --------------------------------------------------------------------------- #
@@ -102,7 +106,8 @@ endif()
 # buttons.cpp are gated on libgpiod. The entire executable requires libcamera.
 # --------------------------------------------------------------------------- #
 if(LIBCAMERA_FOUND)
-add_executable(picamera
+  add_executable(
+    picamera
     src/main.cpp
     src/camera.cpp
     src/camera_handle.cpp
@@ -110,16 +115,18 @@ add_executable(picamera
     src/preview.cpp
     src/dual_stream.cpp
     src/timelapse_runner.cpp
-)
-target_compile_features(picamera PRIVATE cxx_std_20)
-target_link_libraries(picamera PRIVATE picamera_core PkgConfig::LIBCAMERA)
-if(LIBGPIOD_FOUND)
+  )
+  target_compile_features(picamera PRIVATE cxx_std_20)
+  target_link_libraries(picamera PRIVATE picamera_core PkgConfig::LIBCAMERA)
+  if(LIBGPIOD_FOUND)
     target_sources(picamera PRIVATE src/display.cpp src/buttons.cpp)
     target_compile_definitions(picamera PRIVATE HAVE_GPIOD)
     target_link_libraries(picamera PRIVATE PkgConfig::LIBGPIOD)
-endif()
+  endif()
 else()
-    message(STATUS "libcamera not found — building tests only (no picamera executable)")
+  message(
+    STATUS "libcamera not found — building tests only (no picamera executable)"
+  )
 endif()
 
 # --------------------------------------------------------------------------- #
@@ -127,46 +134,50 @@ endif()
 # plus a tiny hand-rolled test runner in tests/.
 # --------------------------------------------------------------------------- #
 if(PICAMERA_BUILD_TESTS)
-    enable_testing()
+  enable_testing()
 
-    add_executable(picamera_tests
-        tests/test_main.cpp
-        tests/test_image.cpp
-        tests/test_output.cpp
-        tests/test_output_writer.cpp
-        tests/test_cli.cpp
-        tests/test_timelapse.cpp
-        tests/test_dng.cpp
-        tests/test_battery.cpp
-        tests/test_safe_path.cpp
-        tests/test_image_decode.cpp
-        tests/test_font.cpp
-        tests/test_preview_helpers.cpp
-        tests/test_camera_mode.cpp
-        tests/test_stop_flag.cpp
-        tests/test_hardware_config.cpp
-        tests/test_settings_menu.cpp
-        tests/test_wb_utils.cpp
-        tests/test_wifi_server.cpp
-        tests/test_bt_server.cpp
-        tests/test_encoders.cpp
-    )
-    target_compile_features(picamera_tests PRIVATE cxx_std_20)
-    target_include_directories(picamera_tests PRIVATE tests)
-    target_link_libraries(picamera_tests PRIVATE picamera_core)
+  add_executable(
+    picamera_tests
+    tests/test_main.cpp
+    tests/test_image.cpp
+    tests/test_output.cpp
+    tests/test_output_writer.cpp
+    tests/test_cli.cpp
+    tests/test_timelapse.cpp
+    tests/test_dng.cpp
+    tests/test_battery.cpp
+    tests/test_safe_path.cpp
+    tests/test_image_decode.cpp
+    tests/test_font.cpp
+    tests/test_preview_helpers.cpp
+    tests/test_camera_mode.cpp
+    tests/test_stop_flag.cpp
+    tests/test_hardware_config.cpp
+    tests/test_settings_menu.cpp
+    tests/test_wb_utils.cpp
+    tests/test_wifi_server.cpp
+    tests/test_bt_server.cpp
+    tests/test_encoders.cpp
+  )
+  target_compile_features(picamera_tests PRIVATE cxx_std_20)
+  target_include_directories(picamera_tests PRIVATE tests)
+  target_link_libraries(picamera_tests PRIVATE picamera_core)
 
-    if(PICAMERA_ENABLE_SANITIZERS)
-        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-            target_compile_options(picamera_core PRIVATE
-                -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-            target_link_options(picamera_core PUBLIC
-                -fsanitize=address,undefined)
-            target_compile_options(picamera_tests PRIVATE
-                -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-        endif()
+  if(PICAMERA_ENABLE_SANITIZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(
+        picamera_core PRIVATE -fsanitize=address,undefined
+                              -fno-omit-frame-pointer -g -O1
+      )
+      target_link_options(picamera_core PUBLIC -fsanitize=address,undefined)
+      target_compile_options(
+        picamera_tests PRIVATE -fsanitize=address,undefined
+                               -fno-omit-frame-pointer -g -O1
+      )
     endif()
+  endif()
 
-    add_test(NAME picamera_tests COMMAND picamera_tests)
+  add_test(NAME picamera_tests COMMAND picamera_tests)
 endif()
 
 # --------------------------------------------------------------------------- #
@@ -177,7 +188,6 @@ endif()
 #   sudo systemctl start picamera
 # --------------------------------------------------------------------------- #
 if(LIBCAMERA_FOUND)
-install(TARGETS picamera RUNTIME DESTINATION bin)
-install(FILES config/systemd/picamera.service
-        DESTINATION lib/systemd/system)
+  install(TARGETS picamera RUNTIME DESTINATION bin)
+  install(FILES config/systemd/picamera.service DESTINATION lib/systemd/system)
 endif()
