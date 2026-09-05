@@ -1561,7 +1561,8 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
                   ++deleted;
               }
             }
-          } catch (const std::exception &) {
+          } catch (const std::exception &e) {
+            std::cerr << "Preview: format error: " << e.what() << "\n";
           }
           s.persistentError = "FORMATTED";
           s.errorExpiry = now + std::chrono::seconds(3);

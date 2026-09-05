@@ -61,11 +61,13 @@ void applyAwbControls(ControlList &ctrls, const CameraConfig &cfg) {
     applyWbGmShift(r, b, cfg.wbGmShift);
     setManualGains(ctrls, r, b);
   } else if (cfg.awbMode == "shade") {
-    float r = 1.4f, b = 0.7f; // ~7500K: cool, boosted red
+    float r = 1.4f; // ~7500K: cool, boosted red
+    float b = 0.7f;
     applyWbGmShift(r, b, cfg.wbGmShift);
     setManualGains(ctrls, r, b);
   } else if (cfg.awbMode == "flash") {
-    float r = 1.05f, b = 1.1f; // ~5500K: slightly cool
+    float r = 1.05f; // ~5500K: slightly cool
+    float b = 1.1f;
     applyWbGmShift(r, b, cfg.wbGmShift);
     setManualGains(ctrls, r, b);
   } else {
@@ -77,7 +79,8 @@ void applyAwbControls(ControlList &ctrls, const CameraConfig &cfg) {
     // Apply G/M shift even in auto AWB mode by setting ColourGains
     // after AWB — libcamera will use these as post-AWB adjustments.
     if (cfg.wbGmShift != 0.0f) {
-      float r = 1.0f, b = 1.0f;
+      float r = 1.0f;
+      float b = 1.0f;
       applyWbGmShift(r, b, cfg.wbGmShift);
       const float gains[2] = {r, b};
       ctrls.set(controls::ColourGains, Span<const float, 2>(gains, 2));

@@ -286,9 +286,10 @@ bool toggleFileProtection(const std::string &dir, const std::string &filename) {
 
 // --- File rating ---
 
+namespace {
 // Build the .rating sidecar path for a file: dir/.<basename>.rating
-static std::string ratingSidecarPath(const std::string &dir,
-                                     const std::string &filename) {
+std::string ratingSidecarPath(const std::string &dir,
+                              const std::string &filename) {
   namespace fs = std::filesystem;
   fs::path p(filename);
   std::string base = p.filename().string();
@@ -296,6 +297,7 @@ static std::string ratingSidecarPath(const std::string &dir,
     return {};
   return dir + "/." + base + ".rating";
 }
+} // namespace
 
 int readFileRating(const std::string &dir, const std::string &filename) {
   std::string path = ratingSidecarPath(dir, filename);
