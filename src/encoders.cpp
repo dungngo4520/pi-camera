@@ -33,9 +33,11 @@ enum : uint16_t {
   ExifTagModel = 272,              // 0x0110
   ExifTagSoftware = 305,           // 0x0131
   ExifTagDateTime = 306,           // 0x0132
+  ExifTagCopyright = 33432,        // 0x8298
   ExifTagExifIFD = 34665,          // 0x8769
   ExifTagExposureTime = 33434,     // 0x829A
   ExifTagISOSpeed = 34855,         // 0x8827
+  ExifTagColorSpace = 40961,       // 0xA001
   ExifTagDateTimeOriginal = 36867, // 0x9003
 };
 
@@ -544,9 +546,12 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
 
   const std::string dateStr = formatExifDateTime(meta.timestampSec);
   const bool hasDate = !dateStr.empty();
+  const bool hasCopyright = !meta.copyright.empty();
 
-  // IFD0 entries: Make, Model, Software, DateTime (if present), ExifIFD ptr.
-  const uint16_t ifd0Count = hasDate ? 5 : 4;
+  // IFD0 entries: Make, Model, Software, DateTime (if present), Copyright (if
+  // present), ExifIFD ptr.
+  const uint16_t ifd0Count =
+      static_cast<uint16_t>(4 + (hasDate ? 1 : 0) + (hasCopyright ? 1 : 0));
   const uint32_t ifd0Size = 2 + static_cast<uint32_t>(ifd0Count) * 12 + 4;
   const uint32_t ifd0DataStart = 8 + ifd0Size;
 
@@ -560,6 +565,9 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
   if (hasDate)
     addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagDateTime,
                   dateStr);
+  if (hasCopyright)
+    addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagCopyright,
+                  meta.copyright);
 
   // ExifIFD pointer (LONG, inline). Offset filled after computing the
   // ExifIFD start position.
@@ -579,7 +587,8 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
   const bool hasExposure =
       (meta.exposureTimeUs > 0 &&
        meta.exposureTimeUs <= std::numeric_limits<uint32_t>::max());
-  const uint16_t exifIfdCount = (hasExposure ? 1 : 0) + 1 + (hasDate ? 1 : 0);
+  const uint16_t exifIfdCount =
+      static_cast<uint16_t>((hasExposure ? 1 : 0) + 1 + (hasDate ? 1 : 0) + 1);
   const uint32_t exifIfdSize = 2 + static_cast<uint32_t>(exifIfdCount) * 12 + 4;
   const uint32_t exifIfdDataStart = exifIfdStart + exifIfdSize;
 
@@ -616,6 +625,12 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
     }
     iso = std::min(iso, 0xFFFFu);
     exifIfdEntries.push_back({ExifTagISOSpeed, ExifTypeShort, 1, iso});
+  }
+
+  // ColorSpace (0xA001) — SHORT, inline. sRGB = 1, AdobeRGB = 2 (uncalibrated).
+  {
+    uint32_t cs = (meta.colorSpace == 1) ? 0x0002 : 0x0001;
+    exifIfdEntries.push_back({ExifTagColorSpace, ExifTypeShort, 1, cs});
   }
 
   // DateTimeOriginal (0x9003) — ASCII, 20 bytes

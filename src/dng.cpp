@@ -53,7 +53,9 @@ enum : uint16_t {
   TagActiveArea = 50729,
   // EXIF tags
   TagExposureTime = 33434,
+  TagCopyright = 33432,
   TagISOSpeed = 34855,
+  TagColorSpace = 40961,
   TagDateTimeOriginal = 36867,
 };
 
@@ -320,6 +322,20 @@ IfdResult buildExifIfd(const DngMetadata &m, uint32_t dataBase) {
   if (entries.size() >= 65535)
     throw std::overflow_error("DNG EXIF IFD entry count exceeds 65535");
   entries.push_back({TagISOSpeed, TypeShort, 1, iso});
+
+  // ColorSpace (SHORT, inline) — sRGB = 1, AdobeRGB = 2 (uncalibrated).
+  if (entries.size() >= 65535)
+    throw std::overflow_error("DNG EXIF IFD entry count exceeds 65535");
+  entries.push_back({TagColorSpace, TypeShort, 1,
+                     (m.colorSpace == 1) ? 0x0002u : 0x0001u});
+
+  // Copyright (ASCII) — embedded if non-empty.
+  if (!m.copyright.empty()) {
+    std::string cr = m.copyright;
+    cr.push_back('\0'); // NUL terminator required by ASCII type
+    addData(TagCopyright, TypeAscii, static_cast<uint32_t>(cr.size()),
+            reinterpret_cast<const uint8_t *>(cr.data()), cr.size());
+  }
 
   // DateTimeOriginal (ASCII, 20 bytes)
   if (m.timestampSec > 0) {

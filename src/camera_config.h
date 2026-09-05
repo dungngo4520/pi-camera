@@ -167,6 +167,7 @@ struct CameraConfig {
   int colorSpace = 0; // 0 = sRGB, 1 = AdobeRGB
   std::string copyright; // embedded in EXIF Copyright tag / DNG
   uint64_t minShutterUs = 0; // minimum shutter for auto ISO (0 = auto)
+  float wbGmShift = 0.0f; // green-magenta WB shift (-9 to +9)
 };
 
 // Clamp a manual analogue gain to the [isoMin, isoMax] ISO range.

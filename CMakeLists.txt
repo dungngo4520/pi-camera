@@ -80,6 +80,7 @@ add_library(
   src/settings_menu.cpp
   src/wifi_server.cpp
   src/bt_server.cpp
+  src/image_effects.cpp
 )
 target_compile_features(picamera_core PUBLIC cxx_std_20)
 target_include_directories(picamera_core PUBLIC src)
@@ -140,6 +141,7 @@ if(PICAMERA_BUILD_TESTS)
     tests/test_wifi_server.cpp
     tests/test_bt_server.cpp
     tests/test_encoders.cpp
+    tests/test_image_effects.cpp
   )
   target_compile_features(picamera_tests PRIVATE cxx_std_20)
   target_include_directories(picamera_tests PRIVATE tests)

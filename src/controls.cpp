@@ -22,6 +22,17 @@ void setManualGains(ControlList &ctrls, float r, float b) {
   ctrls.set(controls::ColourGains, Span<const float, 2>(gains, 2));
 }
 
+// Apply green/magenta WB shift to ColourGains. A positive shift (magenta)
+// increases R and B relative to G; a negative shift (green) decreases them.
+// The factor is 1.0 + shift * 0.02 (±9 → ±18% gain adjustment).
+void applyWbGmShift(float &r, float &b, float gmShift) {
+  if (gmShift == 0.0f)
+    return;
+  float factor = 1.0f + gmShift * 0.02f;
+  r *= factor;
+  b *= factor;
+}
+
 } // namespace
 
 // lookupAwb() and kelvinToGains() are pure-logic helpers whose implementations
@@ -38,22 +49,38 @@ lookupAwb(std::string_view name) {
 
 void applyAwbControls(ControlList &ctrls, const CameraConfig &cfg) {
   if (!cfg.awbEnable) {
-    setManualGains(ctrls, cfg.wbRedGain, cfg.wbBlueGain);
+    float r = cfg.wbRedGain;
+    float b = cfg.wbBlueGain;
+    applyWbGmShift(r, b, cfg.wbGmShift);
+    setManualGains(ctrls, r, b);
   } else if (cfg.wbKelvin > 0) {
     // Kelvin -> approximate R/B gains, manual AWB off.
     float r = 1.0f;
     float b = 1.0f;
     kelvinToGains(cfg.wbKelvin, r, b);
+    applyWbGmShift(r, b, cfg.wbGmShift);
     setManualGains(ctrls, r, b);
   } else if (cfg.awbMode == "shade") {
-    setManualGains(ctrls, 1.4f, 0.7f); // ~7500K: cool, boosted red
+    float r = 1.4f, b = 0.7f; // ~7500K: cool, boosted red
+    applyWbGmShift(r, b, cfg.wbGmShift);
+    setManualGains(ctrls, r, b);
   } else if (cfg.awbMode == "flash") {
-    setManualGains(ctrls, 1.05f, 1.1f); // ~5500K: slightly cool
+    float r = 1.05f, b = 1.1f; // ~5500K: slightly cool
+    applyWbGmShift(r, b, cfg.wbGmShift);
+    setManualGains(ctrls, r, b);
   } else {
     ctrls.set(controls::AwbEnable, true);
     ctrls.set(controls::AwbLocked, false);
     if (auto mode = lookupAwb(cfg.awbMode)) {
       ctrls.set(controls::AwbMode, *mode);
+    }
+    // Apply G/M shift even in auto AWB mode by setting ColourGains
+    // after AWB — libcamera will use these as post-AWB adjustments.
+    if (cfg.wbGmShift != 0.0f) {
+      float r = 1.0f, b = 1.0f;
+      applyWbGmShift(r, b, cfg.wbGmShift);
+      const float gains[2] = {r, b};
+      ctrls.set(controls::ColourGains, Span<const float, 2>(gains, 2));
     }
   }
 }
@@ -87,6 +114,14 @@ void applyCameraControls(ControlList &ctrls, const CameraConfig &cfg,
     if (manualShutter) {
       ctrls.set(controls::ExposureTime, static_cast<int32_t>(std::min<uint64_t>(
                                             cfg.exposureTime, INT32_MAX)));
+    } else if (cfg.minShutterUs > 0) {
+      // Minimum shutter speed for auto ISO: clamp the auto exposure time
+      // to not exceed the user's minimum (i.e., don't go slower than this).
+      // This is applied as a fixed ExposureTime floor — the AE algorithm
+      // will use this as the maximum exposure time and raise ISO instead.
+      ctrls.set(controls::ExposureTime,
+                static_cast<int32_t>(std::min<uint64_t>(cfg.minShutterUs,
+                                                        INT32_MAX)));
     }
     ctrls.set(controls::AeMeteringMode, static_cast<int32_t>(cfg.meteringMode));
     ctrls.set(controls::AeExposureMode,

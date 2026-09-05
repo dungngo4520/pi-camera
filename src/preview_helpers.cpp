@@ -284,4 +284,49 @@ bool toggleFileProtection(const std::string &dir, const std::string &filename) {
   return nowProtected;
 }
 
+// --- File rating ---
+
+// Build the .rating sidecar path for a file: dir/.<basename>.rating
+static std::string ratingSidecarPath(const std::string &dir,
+                                     const std::string &filename) {
+  namespace fs = std::filesystem;
+  fs::path p(filename);
+  std::string base = p.filename().string();
+  if (base.empty())
+    return {};
+  return dir + "/." + base + ".rating";
+}
+
+int readFileRating(const std::string &dir, const std::string &filename) {
+  std::string path = ratingSidecarPath(dir, filename);
+  if (path.empty())
+    return 0;
+  std::ifstream f(path);
+  if (!f.is_open())
+    return 0;
+  int rating = 0;
+  f >> rating;
+  if (f.fail() || f.bad())
+    return 0;
+  return std::clamp(rating, 0, 5);
+}
+
+bool writeFileRating(const std::string &dir, const std::string &filename,
+                     int rating) {
+  rating = std::clamp(rating, 0, 5);
+  std::string path = ratingSidecarPath(dir, filename);
+  if (path.empty())
+    return false;
+  if (rating == 0) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return true; // removing a non-existent file is not an error
+  }
+  std::ofstream f(path);
+  if (!f.is_open())
+    return false;
+  f << rating << "\n";
+  return f.good();
+}
+
 } // namespace picamera

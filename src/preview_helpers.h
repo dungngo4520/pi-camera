@@ -61,4 +61,17 @@ bool toggleFileProtection(const std::string &dir, const std::string &filename);
 // Returns the set of protected basenames in the capture directory.
 std::vector<std::string> listProtectedFiles(const std::string &dir);
 
+// --- File rating (playback) ---
+// Ratings are stored in .rating sidecar files (one per image, containing
+// a single integer 0-5). This follows the existing .protected sidecar
+// pattern.
+
+// Read the rating for a file. Returns 0 if no .rating sidecar exists.
+int readFileRating(const std::string &dir, const std::string &filename);
+
+// Write a rating (0-5) for a file to a .rating sidecar. Returns true on
+// success. A rating of 0 deletes the sidecar file.
+bool writeFileRating(const std::string &dir, const std::string &filename,
+                     int rating);
+
 } // namespace picamera

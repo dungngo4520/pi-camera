@@ -1211,6 +1211,7 @@ CameraConfig settingsToCameraConfig(const CameraSettings &s,
   cfg.colorSpace = static_cast<int>(s.colorSpace);
   cfg.copyright = s.copyright;
   cfg.minShutterUs = s.minShutterUs;
+  cfg.wbGmShift = s.wbGmShift;
 
   // Apply exposure mode semantics to the config.
   // P/Auto: AE on, shutter+ISO auto (already defaults).
