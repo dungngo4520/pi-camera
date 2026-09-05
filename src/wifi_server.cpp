@@ -643,6 +643,9 @@ void applySettingsJson(const std::string &json, CameraSettings &s) {
   if (auto v =
           jsonNumValue<float>(jsonFindValue(json, "wbBlueGain").value_or("")))
     s.wbBlueGain = *v;
+  if (auto v =
+          jsonNumValue<float>(jsonFindValue(json, "digitalGain").value_or("")))
+    s.digitalGain = *v;
   if (auto v = jsonFindValue(json, "pictureStyle"))
     if (auto p = parsePictureStyleJson(*v))
       s.pictureStyle = *p;

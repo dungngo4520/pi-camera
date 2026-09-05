@@ -441,6 +441,16 @@ void adjustIsoMax(CameraSettings &s, int direction) {
   s.isoMin = std::min(s.isoMax, s.isoMin);
 }
 
+constexpr float kDigitalGainStep = 0.5f;
+constexpr float kMinDigitalGain = 1.0f;
+constexpr float kMaxDigitalGain = 16.0f;
+
+void adjustDigitalGain(CameraSettings &s, int direction) {
+  float base = (s.digitalGain < kMinDigitalGain) ? kMinDigitalGain : s.digitalGain;
+  s.digitalGain =
+      std::clamp(base + direction * kDigitalGainStep, kMinDigitalGain, kMaxDigitalGain);
+}
+
 void adjustEv(CameraSettings &s, int direction) {
   int idx = findEvIdx(s.exposureValue);
   int newIdx = idx + direction;
@@ -547,6 +557,10 @@ void adjustImgQuality(CameraSettings &s, int direction) {
     if (s.jpegQuality > kMinJpegQuality)
       --s.jpegQuality;
   }
+}
+
+void adjustImgPngLevel(CameraSettings &s, int direction) {
+  s.pngLevel = std::clamp(s.pngLevel + direction, 0, 9);
 }
 
 void adjustImgAspect(CameraSettings &s, int direction) {
@@ -862,6 +876,12 @@ std::string_view valIsoMax(const CameraSettings &s, std::string &buf) {
   return buf;
 }
 
+std::string_view valDigitalGain(const CameraSettings &s, std::string &buf) {
+  float v = (s.digitalGain < kMinDigitalGain) ? kMinDigitalGain : s.digitalGain;
+  buf = fmt1(v);
+  return buf;
+}
+
 std::string_view valEv(const CameraSettings &s, std::string &buf) {
   buf = fmtEv(s.exposureValue);
   return buf;
@@ -921,6 +941,11 @@ std::string_view valFormat(const CameraSettings &s, std::string &) {
 
 std::string_view valQuality(const CameraSettings &s, std::string &buf) {
   buf = std::to_string(s.jpegQuality);
+  return buf;
+}
+
+std::string_view valPngLevel(const CameraSettings &s, std::string &buf) {
+  buf = std::to_string(s.pngLevel);
   return buf;
 }
 
@@ -1125,9 +1150,10 @@ struct SettingItem {
   void (*adjustFn)(CameraSettings &, int);
 };
 
-constexpr std::array<SettingItem, 12> kCaptureTab = {{
+constexpr std::array<SettingItem, 13> kCaptureTab = {{
     {"FORMAT", valFormat, adjustImgFormat},
     {"QUALITY", valQuality, adjustImgQuality},
+    {"PNG", valPngLevel, adjustImgPngLevel},
     {"SIZE", valImgSize, adjustImgSize},
     {"ASPECT", valAspect, adjustImgAspect},
     {"SMODE", valSensorMode, adjustSensorMode},
@@ -1140,12 +1166,13 @@ constexpr std::array<SettingItem, 12> kCaptureTab = {{
     {"COUNT", valCount, adjustCount},
 }};
 
-constexpr std::array<SettingItem, 12> kExposureTab = {{
+constexpr std::array<SettingItem, 13> kExposureTab = {{
     {"EXPMODE", valExpMode, adjustExpMode},
     {"SHUTTER", valShutter, adjustShutter},
     {"ISO", valIso, adjustIso},
     {"ISO MIN", valIsoMin, adjustIsoMin},
     {"ISO MAX", valIsoMax, adjustIsoMax},
+    {"DGAIN", valDigitalGain, adjustDigitalGain},
     {"EV", valEv, adjustEv},
     {"METER", valMeter, adjustMeter},
     {"AEMODE", valAeMode, adjustAeMode},
@@ -1241,22 +1268,23 @@ struct BasicItemRef {
   int itemIdx;
 };
 
-constexpr std::array<BasicItemRef, 11> kBasicRefs = {{
+constexpr std::array<BasicItemRef, 12> kBasicRefs = {{
     {SettingsTab::Exposure, 0},  // EXPMODE
     {SettingsTab::Exposure, 2},  // ISO
     {SettingsTab::Exposure, 1},  // SHUTTER
-    {SettingsTab::Exposure, 5},  // EV
+    {SettingsTab::Exposure, 6},  // EV
     {SettingsTab::Color, 0},     // AWB
-    {SettingsTab::Capture, 5},   // DRIVE
-    {SettingsTab::Capture, 6},   // TIMER
+    {SettingsTab::Capture, 6},   // DRIVE
+    {SettingsTab::Capture, 7},   // TIMER
     {SettingsTab::Capture, 0},   // FORMAT
-    {SettingsTab::Capture, 2},   // SIZE
+    {SettingsTab::Capture, 3},   // SIZE
+    {SettingsTab::Capture, 4},   // ASPECT
     {SettingsTab::Color, 11},    // PSTYLE
     {SettingsTab::System, 0},    // BATTERY
 }};
-constexpr int kBasicMenuItemCount = 13; // 11 refs + FORMAT CARD + ADVANCED
-constexpr int kBasicFormatCardIdx = 11;
-constexpr int kBasicAdvancedIdx = 12;
+constexpr int kBasicMenuItemCount = 14; // 12 refs + FORMAT CARD + ADVANCED
+constexpr int kBasicFormatCardIdx = 12;
+constexpr int kBasicAdvancedIdx = 13;
 
 } // namespace
 

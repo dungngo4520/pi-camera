@@ -1669,17 +1669,17 @@ void adjustQuickFnItem(PreviewState &s, int idx, int direction) {
     else
       settingsItemAdjustLeft(SettingsTab::Color, 0, s.overlay.settings);
     break;
-  case 2: // EV → Exposure tab idx 5
+  case 2: // EV → Exposure tab idx 6
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Exposure, 5, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Exposure, 6, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Exposure, 5, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Exposure, 6, s.overlay.settings);
     break;
-  case 3: // Drive → Capture tab idx 5
+  case 3: // Drive → Capture tab idx 6
     if (direction > 0)
-      settingsItemAdjustRight(SettingsTab::Capture, 5, s.overlay.settings);
+      settingsItemAdjustRight(SettingsTab::Capture, 6, s.overlay.settings);
     else
-      settingsItemAdjustLeft(SettingsTab::Capture, 5, s.overlay.settings);
+      settingsItemAdjustLeft(SettingsTab::Capture, 6, s.overlay.settings);
     break;
   case 4: // Format → Capture tab idx 0
     if (direction > 0)
@@ -2044,6 +2044,10 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
       s.copyrightEditing = false;
       saveSettings(s.overlay.settings, defaultSettingsPath());
       std::cout << "Preview: copyright set to '" << trimmed << "'\n";
+    } else if (evt.id == ButtonId::Key1) {
+      // Cancel: discard changes and exit edit mode without saving.
+      s.copyrightEditing = false;
+      std::cout << "Preview: copyright edit cancelled\n";
     } else if (evt.id == ButtonId::JoyUp) {
       copyrightCycleChar(s.copyrightBuffer, s.copyrightCursor, 1);
     } else if (evt.id == ButtonId::JoyDown) {
