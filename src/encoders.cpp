@@ -1,10 +1,12 @@
 #include "encoders.h"
 #include "safe_path.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -24,6 +26,115 @@
 namespace picamera {
 
 namespace {
+
+// --- EXIF/TIFF helpers (shared with dng.cpp's approach) ---
+
+// TIFF tag IDs for EXIF
+enum : uint16_t {
+    ExifTagMake             = 271,    // 0x010F
+    ExifTagModel            = 272,    // 0x0110
+    ExifTagSoftware         = 305,    // 0x0131
+    ExifTagDateTime         = 306,    // 0x0132
+    ExifTagExifIFD          = 34665,  // 0x8769
+    ExifTagExposureTime     = 33434,  // 0x829A
+    ExifTagISOSpeed         = 34855,  // 0x8827
+    ExifTagDateTimeOriginal = 36867,  // 0x9003
+};
+
+enum : uint16_t {
+    ExifTypeByte     = 1,
+    ExifTypeAscii    = 2,
+    ExifTypeShort    = 3,
+    ExifTypeLong     = 4,
+    ExifTypeRational = 5,
+};
+
+// LE binary writers
+void exifPutU16(std::vector<uint8_t> &buf, uint16_t v) {
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+}
+void exifPutU32(std::vector<uint8_t> &buf, uint32_t v) {
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+    buf.push_back((v >> 16) & 0xFF);
+    buf.push_back((v >> 24) & 0xFF);
+}
+
+// Pack up to 4 bytes into a uint32_t as little-endian, for the IFD inline
+// value field.
+uint32_t exifPackLe32(const uint8_t *bytes, size_t len) {
+    uint32_t val = 0;
+    for (size_t i = 0; i < len; ++i)
+        val |= static_cast<uint32_t>(bytes[i]) << (8 * i);
+    return val;
+}
+
+// A single IFD entry (12 bytes on disk).
+struct ExifIfdEntry {
+    uint16_t tag;
+    uint16_t type;
+    uint32_t count;
+    uint32_t valueOrOffset;
+};
+
+// Add an ASCII IFD entry: stored inline if ≤4 bytes, else spilled to the
+// data area (word-aligned). dataStart is the TIFF-header-relative offset of
+// the data area's beginning.
+void addAsciiEntry(std::vector<ExifIfdEntry> &entries,
+                   std::vector<uint8_t> &data, uint32_t dataStart,
+                   uint16_t tag, const std::string &s) {
+    std::string nulStr = s + '\0';
+    uint32_t count = static_cast<uint32_t>(nulStr.size());
+    if (nulStr.size() <= 4) {
+        uint8_t tmp[4] = {};
+        for (size_t i = 0; i < nulStr.size(); ++i)
+            tmp[i] = static_cast<uint8_t>(nulStr[i]);
+        entries.push_back({tag, ExifTypeAscii, count,
+                           exifPackLe32(tmp, nulStr.size())});
+    } else {
+        if (data.size() % 2 != 0) data.push_back(0);
+        uint32_t off = dataStart + static_cast<uint32_t>(data.size());
+        data.insert(data.end(), nulStr.begin(), nulStr.end());
+        entries.push_back({tag, ExifTypeAscii, count, off});
+    }
+}
+
+// Word-align a data area before appending an offset-based entry.
+void alignData(std::vector<uint8_t> &data) {
+    if (data.size() % 2 != 0) data.push_back(0);
+}
+
+// Compute the GCD of two uint32_t values for rational reduction.
+uint32_t exifGcd(uint32_t a, uint32_t b) {
+    while (b) { uint32_t t = a % b; a = b; b = t; }
+    return a;
+}
+
+} // namespace
+
+namespace {
+
+// Format a Unix timestamp as "YYYY:MM:DD HH:MM:SS" (EXIF DateTime format).
+// Returns an empty string on failure (e.g., timestamp == 0). Shared by
+// buildExifData (JPEG) and writePng (tEXt chunk).
+std::string formatExifDateTime(uint32_t timestampSec) {
+    if (timestampSec == 0) return {};
+    std::time_t t = static_cast<std::time_t>(timestampSec);
+    std::tm tm;
+    std::tm *tmPtr = nullptr;
+#ifdef _WIN32
+    if (std::gmtime_s(&tm, &t) == 0) tmPtr = &tm;
+#else
+    tmPtr = gmtime_r(&t, &tm);
+#endif
+    if (!tmPtr) return {};
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%04d:%02d:%02d %02d:%02d:%02d",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return std::string(buf);
+}
 
 // Max retries on EEXIST — suffix scan goes _2.._999, so 999 is plenty.
 constexpr int kMaxNameRetries = 999;
@@ -45,7 +156,8 @@ bool fitsStreamSize(size_t size) {
 // png_error longjmp is caught instead of aborting the process.
 int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
                  const uint8_t *rgb, uint32_t w, uint32_t h,
-                 int compressionLevel, png_bytep **outRows) {
+                 int compressionLevel, png_bytep **outRows,
+                 png_textp textChunks, int numText) {
     *outRows = nullptr;
     *outInfo = nullptr;
     if (setjmp(png_jmpbuf(png))) return -1;
@@ -66,6 +178,10 @@ int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
     png_set_IHDR(png, info, w, h, 8, PNG_COLOR_TYPE_RGB,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
                  PNG_FILTER_TYPE_DEFAULT);
+    // Embed metadata as tEXt chunks (if provided). Must be called before
+    // png_write_info() so the chunks are written in the file header.
+    if (textChunks && numText > 0)
+        png_set_text(png, info, textChunks, numText);
     png_write_info(png, info);
 
     // Raw pointer — no destructor, safe across longjmp. Tracked via
@@ -105,7 +221,8 @@ static_assert(std::is_standard_layout_v<JpegErrCtx>,
 // so it is declared in the caller and passed by pointer.
 int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr, FILE *fp,
                      const uint8_t *rgb, uint32_t w, uint32_t h, int quality,
-                     JSAMPROW **outRowPtrs, bool *outCreated) {
+                     JSAMPROW **outRowPtrs, bool *outCreated,
+                     const uint8_t *exifData, size_t exifSize) {
     *outRowPtrs = nullptr;
     *outCreated = false;
     cinfo->err = jpeg_std_error(&jerr->base);
@@ -128,6 +245,15 @@ int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr, FILE 
     jpeg_set_defaults(cinfo);
     jpeg_set_quality(cinfo, quality, TRUE);
     jpeg_start_compress(cinfo, TRUE);
+
+    // Write EXIF APP1 marker after jpeg_start_compress and before
+    // writing scanlines. jpeg_write_marker inserts the marker code
+    // (0xE1), the 2-byte length, and the data bytes into the bitstream.
+    if (exifData && exifSize > 0) {
+        jpeg_write_marker(cinfo, 0xE1,
+                          reinterpret_cast<const JOCTET *>(exifData),
+                          static_cast<unsigned int>(exifSize));
+    }
 
     // Raw pointer — tracked via outRowPtrs for cleanup on longjmp.
     size_t rowPtrsBytes = 0;
@@ -187,6 +313,30 @@ FILE *safeFileOpen(const std::string &path, std::string &outPath) {
         if (errno != EEXIST && errno != ELOOP) return nullptr;
     }
     return nullptr;
+}
+
+// Flush stdio buffer to kernel, then kernel buffer to disk, then close.
+// Same durability discipline as FdOutStreamBuf::finish() and writeDng().
+// On any I/O error, unlinks localPath (no partial files) and returns false.
+bool finishFile(FILE *fp, const std::string &localPath, const char *tag) {
+    if (fflush(fp) != 0) {
+        std::cerr << tag << ": fflush() failed: " << errnoString(errno) << "\n";
+        fclose(fp);
+        unlink(localPath.c_str());
+        return false;
+    }
+    if (::fsync(fileno(fp)) != 0) {
+        std::cerr << tag << ": fsync() failed: " << errnoString(errno) << "\n";
+        fclose(fp);
+        unlink(localPath.c_str());
+        return false;
+    }
+    if (fclose(fp) != 0) {
+        std::cerr << tag << ": fclose() failed: " << errnoString(errno) << "\n";
+        unlink(localPath.c_str());
+        return false;
+    }
+    return true;
 }
 
 // Portable fd-based output streambuf. Replaces __gnu_cxx::stdio_filebuf
@@ -346,14 +496,175 @@ std::unique_ptr<SafeOstream> safeOfstream(const std::string &path) {
 
 } // namespace
 
+std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
+    // Layout (all offsets relative to the TIFF header start, i.e., after
+    // the 6-byte "Exif\0\0" prefix):
+    //   [0..8)        TIFF header ("II" + 42 + offset to IFD0 = 8)
+    //   [8..8+I0)     IFD0: count(2) + N*12 + nextIFD(4)
+    //   [..+D0)       IFD0 data area (strings that don't fit inline)
+    //   [..+I1)       ExifIFD: count(2) + M*12 + nextIFD(4)
+    //   [..+D1)       ExifIFD data area (rational + string)
+
+    const std::string dateStr = formatExifDateTime(meta.timestampSec);
+    const bool hasDate = !dateStr.empty();
+
+    // IFD0 entries: Make, Model, Software, DateTime (if present), ExifIFD ptr.
+    const uint16_t ifd0Count = hasDate ? 5 : 4;
+    const uint32_t ifd0Size = 2 + static_cast<uint32_t>(ifd0Count) * 12 + 4;
+    const uint32_t ifd0DataStart = 8 + ifd0Size;
+
+    std::vector<uint8_t> ifd0Data;
+    std::vector<ExifIfdEntry> ifd0Entries;
+    addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagMake, "Raspberry Pi");
+    addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagModel, "IMX477");
+    addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagSoftware, "picamera");
+    if (hasDate)
+        addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagDateTime, dateStr);
+
+    // ExifIFD pointer (LONG, inline). Offset filled after computing the
+    // ExifIFD start position.
+    const uint32_t exifIfdStart = ifd0DataStart + static_cast<uint32_t>(ifd0Data.size());
+    ifd0Entries.push_back({ExifTagExifIFD, ExifTypeLong, 1, exifIfdStart});
+
+    // TIFF requires IFD entries sorted by tag.
+    std::sort(ifd0Entries.begin(), ifd0Entries.end(),
+              [](const ExifIfdEntry &a, const ExifIfdEntry &b) { return a.tag < b.tag; });
+
+    // --- ExifIFD ---
+    // Entries: ExposureTime (if present), ISOSpeedRatings, DateTimeOriginal (if present).
+    const bool hasExposure = (meta.exposureTimeUs > 0 &&
+                              meta.exposureTimeUs <= std::numeric_limits<uint32_t>::max());
+    const uint16_t exifIfdCount = (hasExposure ? 1 : 0) + 1 + (hasDate ? 1 : 0);
+    const uint32_t exifIfdSize = 2 + static_cast<uint32_t>(exifIfdCount) * 12 + 4;
+    const uint32_t exifIfdDataStart = exifIfdStart + exifIfdSize;
+
+    std::vector<uint8_t> exifIfdData;
+    std::vector<ExifIfdEntry> exifIfdEntries;
+
+    // ExposureTime (0x829A) — RATIONAL (num/den in seconds)
+    if (hasExposure) {
+        uint32_t num = static_cast<uint32_t>(meta.exposureTimeUs);
+        uint32_t den = 1000000;
+        uint32_t g = exifGcd(num, den);
+        if (g > 0) { num /= g; den /= g; }
+        alignData(exifIfdData);
+        uint32_t off = exifIfdDataStart + static_cast<uint32_t>(exifIfdData.size());
+        exifPutU32(exifIfdData, num);
+        exifPutU32(exifIfdData, den);
+        exifIfdEntries.push_back({ExifTagExposureTime, ExifTypeRational, 1, off});
+    }
+
+    // ISOSpeedRatings (0x8827) — SHORT, inline (low 16 bits of the 4-byte field)
+    {
+        uint32_t iso;
+        if (meta.analogueGain > 0) {
+            float isoF = meta.analogueGain * 100.0f;
+            if (!std::isfinite(isoF) || isoF < 0.0f) isoF = 100.0f;
+            isoF = std::min(isoF, static_cast<float>(0xFFFF));
+            iso = static_cast<uint32_t>(isoF);
+        } else {
+            iso = 100;
+        }
+        iso = std::min(iso, 0xFFFFu);
+        exifIfdEntries.push_back({ExifTagISOSpeed, ExifTypeShort, 1, iso});
+    }
+
+    // DateTimeOriginal (0x9003) — ASCII, 20 bytes
+    if (hasDate)
+        addAsciiEntry(exifIfdEntries, exifIfdData, exifIfdDataStart,
+                      ExifTagDateTimeOriginal, dateStr);
+
+    std::sort(exifIfdEntries.begin(), exifIfdEntries.end(),
+              [](const ExifIfdEntry &a, const ExifIfdEntry &b) { return a.tag < b.tag; });
+
+    // --- Serialize the complete EXIF buffer ---
+    std::vector<uint8_t> buf;
+    // "Exif\0\0" header (6 bytes)
+    buf.push_back('E'); buf.push_back('x'); buf.push_back('i'); buf.push_back('f');
+    buf.push_back(0); buf.push_back(0);
+
+    // TIFF header: "II" (little-endian) + magic 42 + offset to IFD0 (8)
+    buf.push_back('I'); buf.push_back('I');
+    exifPutU16(buf, 42);
+    exifPutU32(buf, 8);
+
+    // IFD0: count + entries + nextIFD(0)
+    exifPutU16(buf, ifd0Count);
+    for (const auto &e : ifd0Entries) {
+        exifPutU16(buf, e.tag);
+        exifPutU16(buf, e.type);
+        exifPutU32(buf, e.count);
+        exifPutU32(buf, e.valueOrOffset);
+    }
+    exifPutU32(buf, 0);
+
+    buf.insert(buf.end(), ifd0Data.begin(), ifd0Data.end());
+    alignData(buf);
+
+    // ExifIFD: count + entries + nextIFD(0)
+    exifPutU16(buf, exifIfdCount);
+    for (const auto &e : exifIfdEntries) {
+        exifPutU16(buf, e.tag);
+        exifPutU16(buf, e.type);
+        exifPutU32(buf, e.count);
+        exifPutU32(buf, e.valueOrOffset);
+    }
+    exifPutU32(buf, 0);
+
+    buf.insert(buf.end(), exifIfdData.begin(), exifIfdData.end());
+    alignData(buf);
+
+    return buf;
+}
+
 bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w, uint32_t h,
-              int compressionLevel, std::string *actualPath) {
+              int compressionLevel, std::string *actualPath,
+              const ExifMetadata *meta) {
     if (w == 0 || h == 0) return false;
     if (!rgb) return false;
     // Validate dimensions to prevent integer overflow in row pointer math
     size_t rgbSize = 0;
     if (!checkedMul(static_cast<size_t>(w), h, rgbSize)) return false;
     if (!checkedMul(rgbSize, 3, rgbSize)) return false;
+
+    // Build PNG tEXt chunks from metadata (if provided). The strings
+    // must stay alive until writePngCore returns — they're declared
+    // here in the caller's scope, outside the setjmp/longjmp boundary.
+    std::string dateStr;
+    std::string expStr;
+    std::string isoStr;
+    std::string makeStr;
+    std::string modelStr;
+    std::string softStr;
+    png_text textChunks[6];
+    int numText = 0;
+    if (meta) {
+        auto addText = [&](const char *key, const std::string &val) {
+            if (val.empty()) return;
+            textChunks[numText].compression = PNG_TEXT_COMPRESSION_NONE;
+            textChunks[numText].key = const_cast<char *>(key);
+            textChunks[numText].text = const_cast<char *>(val.c_str());
+            textChunks[numText].text_length = val.size();
+            ++numText;
+        };
+        // Format DateTime from timestamp
+        dateStr = formatExifDateTime(meta->timestampSec);
+        addText("DateTime", dateStr);
+        if (meta->exposureTimeUs > 0) {
+            expStr = std::to_string(meta->exposureTimeUs) + "us";
+            addText("ExposureTime", expStr);
+        }
+        if (meta->analogueGain > 0) {
+            isoStr = std::to_string(static_cast<int>(meta->analogueGain * 100));
+            addText("ISOSpeedRatings", isoStr);
+        }
+        makeStr = "Raspberry Pi";
+        addText("Make", makeStr);
+        modelStr = "IMX477";
+        addText("Model", modelStr);
+        softStr = "picamera";
+        addText("Software", softStr);
+    }
 
     std::string localPath;
     FILE *fp = safeFileOpen(path, localPath);
@@ -368,7 +679,8 @@ bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w, uint32_t 
     // png_destroy_write_struct is safe even if creation never happened.
     png_infop info = nullptr;
     png_bytep *rows = nullptr;
-    int rc = writePngCore(png, &info, fp, rgb, w, h, compressionLevel, &rows);
+    int rc = writePngCore(png, &info, fp, rgb, w, h, compressionLevel, &rows,
+                          textChunks, numText);
 
     png_destroy_write_struct(&png, &info);
     std::free(static_cast<void *>(rows));  // Free row array if longjmp left it allocated
@@ -377,25 +689,7 @@ bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w, uint32_t 
         unlink(localPath.c_str());
         return false;
     }
-    // Flush stdio buffer to kernel, then kernel buffer to disk — same
-    // durability discipline as FdOutStreamBuf::finish() and writeDng().
-    if (fflush(fp) != 0) {
-        std::cerr << "PNG: fflush() failed: " << errnoString(errno) << "\n";
-        fclose(fp);
-        unlink(localPath.c_str());
-        return false;
-    }
-    if (::fsync(fileno(fp)) != 0) {
-        std::cerr << "PNG: fsync() failed: " << errnoString(errno) << "\n";
-        fclose(fp);
-        unlink(localPath.c_str());
-        return false;
-    }
-    if (fclose(fp) != 0) {
-        std::cerr << "PNG: fclose() failed: " << errnoString(errno) << "\n";
-        unlink(localPath.c_str());
-        return false;
-    }
+    if (!finishFile(fp, localPath, "PNG")) return false;
     if (actualPath) *actualPath = localPath;
     return true;
 }
@@ -462,7 +756,8 @@ bool writeJpeg(const uint8_t *data, size_t size, const std::string &path,
 
 bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
                   const std::string &path, int quality,
-                  std::string *actualPath) {
+                  std::string *actualPath,
+                  const ExifMetadata *meta) {
 #ifdef HAVE_JPEG
     if (w == 0 || h == 0) return false;
     if (!rgb) return false;
@@ -475,6 +770,17 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
     if (!checkedMul(static_cast<size_t>(w), h, expectedSize)) return false;
     if (!checkedMul(expectedSize, 3, expectedSize)) return false;
 
+    // Build EXIF APP1 data from metadata (if provided). The buffer
+    // stays alive in this scope until writeJpegRgbCore returns.
+    std::vector<uint8_t> exifData;
+    if (meta) {
+        ExifMetadata exifMeta = *meta;
+        // Fill in image dimensions if not already set.
+        if (exifMeta.width == 0) exifMeta.width = w;
+        if (exifMeta.height == 0) exifMeta.height = h;
+        exifData = buildExifData(exifMeta);
+    }
+
     std::string localPath;
     FILE *fp = safeFileOpen(path, localPath);
     if (!fp) return false;
@@ -483,7 +789,8 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
     JpegErrCtx jerr;  // Must outlive cinfo (jpeg_destroy_compress accesses cinfo->err)
     JSAMPROW *rowPtrs = nullptr;
     bool cinfoCreated = false;
-    int rc = writeJpegRgbCore(&cinfo, &jerr, fp, rgb, w, h, quality, &rowPtrs, &cinfoCreated);
+    int rc = writeJpegRgbCore(&cinfo, &jerr, fp, rgb, w, h, quality, &rowPtrs, &cinfoCreated,
+                              exifData.data(), exifData.size());
 
     // Only destroy if jpeg_create_compress actually succeeded — calling
     // jpeg_destroy_compress on an uninitialized cinfo is undefined behavior.
@@ -494,25 +801,7 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
         unlink(localPath.c_str());
         return false;
     }
-    // Flush stdio buffer to kernel, then kernel buffer to disk — same
-    // durability discipline as FdOutStreamBuf::finish() and writeDng().
-    if (fflush(fp) != 0) {
-        std::cerr << "JPEG: fflush() failed: " << errnoString(errno) << "\n";
-        fclose(fp);
-        unlink(localPath.c_str());
-        return false;
-    }
-    if (::fsync(fileno(fp)) != 0) {
-        std::cerr << "JPEG: fsync() failed: " << errnoString(errno) << "\n";
-        fclose(fp);
-        unlink(localPath.c_str());
-        return false;
-    }
-    if (fclose(fp) != 0) {
-        std::cerr << "JPEG: fclose() failed: " << errnoString(errno) << "\n";
-        unlink(localPath.c_str());
-        return false;
-    }
+    if (!finishFile(fp, localPath, "JPEG")) return false;
     if (actualPath) *actualPath = localPath;
     return true;
 #else

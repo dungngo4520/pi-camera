@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 #if defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
@@ -16,6 +17,42 @@ namespace {
 
 inline uint8_t clamp8(int v) {
     return static_cast<uint8_t>(std::clamp(v, 0, 255));
+}
+
+// Sample one NV12 pixel at (sx, sy) and convert to RGB565 (RRRRRGGGGGGBBBBB).
+// Guards odd-width UV reads: if the V byte is past the luma width, use the
+// stride padding if available, else replicate the previous UV pair.
+inline uint16_t nv12ToRgb565Pixel(const uint8_t *y, const uint8_t *uv,
+                                  uint32_t stride, uint32_t sx, uint32_t sy) {
+    int Y = y[static_cast<size_t>(sy) * stride + sx];
+    uint32_t uvX = (sx / 2) * 2;
+    uint32_t uvY = sy / 2;
+    int U;
+    int V;
+    if (uvX + 1 < stride) {
+        size_t uvBase = static_cast<size_t>(uvY) * stride;
+        U = uv[uvBase + uvX] - 128;
+        V = uv[uvBase + uvX + 1] - 128;
+    } else if (uvX >= 2) {
+        size_t uvBase = static_cast<size_t>(uvY) * stride;
+        U = uv[uvBase + uvX - 2] - 128;
+        V = uv[uvBase + uvX - 1] - 128;
+    } else {
+        U = 0;
+        V = 0;
+    }
+    int C = Y - 16;
+    int R = (298 * C + 409 * V + 128) >> 8;
+    int G = (298 * C - 100 * U - 208 * V + 128) >> 8;
+    int B = (298 * C + 516 * U + 128) >> 8;
+    return static_cast<uint16_t>(
+        ((clamp8(R) >> 3) << 11) | ((clamp8(G) >> 2) << 5) | (clamp8(B) >> 3));
+}
+
+// Store a 16-bit RGB565 value big-endian (high byte first) for SPI displays.
+inline void storeRgb565Be(uint8_t *out, uint16_t pixel, size_t idx) {
+    out[idx] = static_cast<uint8_t>(pixel >> 8);
+    out[idx + 1] = static_cast<uint8_t>(pixel & 0xFF);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,18 +251,14 @@ void nv12ToRgbRowPair(const uint8_t *yRow0, const uint8_t *yRow1,
 std::vector<uint8_t> nv12ToRgb(const uint8_t *y, const uint8_t *uv,
                                 uint32_t w, uint32_t h, uint32_t stride,
                                 size_t ySize, size_t uvSize) {
-    // Validate inputs: stride must be >= w to prevent out-of-bounds reads.
     if (!y || !uv || w == 0 || h == 0 || stride < w) return {};
 
-    // Validate plane sizes to prevent out-of-bounds reads.
-    // Y plane: stride * h. UV plane: stride * ceil(h/2).
     size_t needY = 0;
     size_t needUv = 0;
     if (!checkedMul(static_cast<size_t>(stride), h, needY)) return {};
     if (!checkedMul(static_cast<size_t>(stride), (h + 1) / 2, needUv)) return {};
     if (ySize < needY || uvSize < needUv) return {};
 
-    // Checked multiplication to prevent integer overflow on large dimensions
     size_t rgbSize = 0;
     if (!checkedMul(static_cast<size_t>(w), h, rgbSize)) return {};
     if (!checkedMul(rgbSize, 3, rgbSize)) return {};
@@ -236,7 +269,6 @@ std::vector<uint8_t> nv12ToRgb(const uint8_t *y, const uint8_t *uv,
         (h + 1) / 2);  // one thread per 2-row pair, capped
 
     if (nThreads <= 1 || h < 8) {
-        // Single-threaded path.
         for (uint32_t yRow = 0; yRow < h; yRow += 2) {
             bool haveRow1 = (yRow + 1 < h);
             size_t yOff0 = static_cast<size_t>(yRow) * stride;
@@ -312,45 +344,34 @@ bool nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv,
                         size_t ySize, size_t uvSize,
                         uint8_t *out, uint32_t dispW, uint32_t dispH,
                         size_t outSize) {
-    // Validate inputs: stride must be >= srcW to prevent out-of-bounds reads.
-    // dispW/dispH must be non-zero to avoid division by zero in aspect calc.
     if (!y || !uv || !out || srcW == 0 || srcH == 0 || dispW == 0 || dispH == 0 ||
         stride < srcW)
         return false;
-    // Validate plane sizes to prevent out-of-bounds reads.
     size_t needY = 0;
     size_t needUv = 0;
     if (!checkedMul(static_cast<size_t>(stride), srcH, needY)) return false;
     if (!checkedMul(static_cast<size_t>(stride), (srcH + 1) / 2, needUv)) return false;
     if (ySize < needY || uvSize < needUv) return false;
-    // Validate output buffer size to prevent out-of-bounds writes.
-    // Use checkedMul to prevent integer overflow on huge dimensions.
     size_t requiredOut = 0;
     if (!checkedMul(static_cast<size_t>(dispW), dispH, requiredOut) ||
         !checkedMul(requiredOut, 2, requiredOut)) return false;
     if (outSize < requiredOut) return false;
 
-    // Compute center-crop region to match display aspect ratio
     float srcAspect = static_cast<float>(srcW) / srcH;
     float dispAspect = static_cast<float>(dispW) / dispH;
 
     uint32_t cropW;
     uint32_t cropH;
     if (srcAspect > dispAspect) {
-        // Source is wider — crop horizontally
         cropH = srcH;
         cropW = static_cast<uint32_t>(srcH * dispAspect);
     } else {
-        // Source is taller — crop vertically
         cropW = srcW;
         cropH = static_cast<uint32_t>(srcW / dispAspect);
     }
-    // Clamp crop dimensions BEFORE computing crop offsets to prevent
-    // unsigned underflow in (srcW - cropW) / (srcH - cropH).
+    // Clamp before computing offsets to prevent unsigned underflow.
     cropW = std::min(cropW, srcW);
     cropH = std::min(cropH, srcH);
-    // Clamp to at least 1 to prevent zero-dimension crops that would
-    // cause division by zero or degenerate sampling.
     cropW = std::max(cropW, 1u);
     cropH = std::max(cropH, 1u);
     uint32_t cropX;
@@ -364,68 +385,178 @@ bool nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv,
     }
 
     for (uint32_t dy = 0; dy < dispH; ++dy) {
-        // Map display row to source row (nearest-neighbor).
-        // Use uint64_t for the product: dy*cropH can exceed 2^32 for
-        // large source resolutions (e.g. 4056x3040 with dispH=128).
+        // Map display row to source row (nearest-neighbor). uint64_t for the
+        // product: dy*cropH can exceed 2^32 for large source resolutions.
         uint32_t sy = cropY + static_cast<uint32_t>(
             (static_cast<uint64_t>(dy) * cropH) / dispH);
         if (sy >= srcH) sy = srcH - 1;
 
         for (uint32_t dx = 0; dx < dispW; ++dx) {
-            // Map display column to source column.
             uint32_t sx = cropX + static_cast<uint32_t>(
                 (static_cast<uint64_t>(dx) * cropW) / dispW);
             if (sx >= srcW) sx = srcW - 1;
-
-            // Get Y sample — use size_t arithmetic to avoid uint32_t
-            // overflow on large buffers (>4GB) on 64-bit systems.
-            int Y = y[static_cast<size_t>(sy) * stride + sx];
-
-            // Get UV sample (NV12: UV is interleaved, subsampled 2x2)
-            uint32_t uvX = (sx / 2) * 2;
-            uint32_t uvY = sy / 2;
-            int U;
-            int V;
-            // Guard odd-width UV read: if the UV pair extends past the
-            // luma width, check if the V byte is within the stride (row
-            // padding). For odd srcW with stride > srcW, the V byte at
-            // position srcW is valid. Only replicate the previous UV pair
-            // when the V byte is truly absent (stride == srcW).
-            if (uvX + 1 < stride) {
-                size_t uvBase = static_cast<size_t>(uvY) * stride;
-                U = uv[uvBase + uvX] - 128;
-                V = uv[uvBase + uvX + 1] - 128;
-            } else if (uvX >= 2) {
-                size_t uvBase = static_cast<size_t>(uvY) * stride;
-                U = uv[uvBase + uvX - 2] - 128;
-                V = uv[uvBase + uvX - 1] - 128;
-            } else {
-                U = 0;
-                V = 0;
-            }
-
-            // BT.601 limited-range YUV -> RGB
-            int C = Y - 16;
-            int R = (298 * C + 409 * V + 128) >> 8;
-            int G = (298 * C - 100 * U - 208 * V + 128) >> 8;
-            int B = (298 * C + 516 * U + 128) >> 8;
-
-            // Clamp to [0, 255]
-            R = clamp8(R);
-            G = clamp8(G);
-            B = clamp8(B);
-
-            // Pack to RGB565: RRRRRGGG GGGBBBBB
-            uint16_t pixel = static_cast<uint16_t>(
-                ((R >> 3) << 11) | ((G >> 2) << 5) | (B >> 3));
-
-            // Store big-endian (high byte first for SPI)
-            size_t outIdx = (static_cast<size_t>(dy) * dispW + dx) * 2;
-            out[outIdx] = static_cast<uint8_t>(pixel >> 8);
-            out[outIdx + 1] = static_cast<uint8_t>(pixel & 0xFF);
+            uint16_t pixel = nv12ToRgb565Pixel(y, uv, stride, sx, sy);
+            storeRgb565Be(out, pixel, (static_cast<size_t>(dy) * dispW + dx) * 2);
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// NV12 -> RGB565 with explicit crop region + nearest-neighbor scaling.
+// Used by the focus magnifier: crop the center of the viewfinder and scale
+// to the display. cropX/cropY must be even (NV12 chroma 2x2 subsampling).
+// ---------------------------------------------------------------------------
+bool nv12ToRgb565CroppedScaled(const uint8_t *y, const uint8_t *uv,
+                               uint32_t srcW, uint32_t srcH, uint32_t stride,
+                               size_t ySize, size_t uvSize,
+                               uint32_t cropX, uint32_t cropY,
+                               uint32_t cropW, uint32_t cropH,
+                               uint8_t *out, uint32_t dispW, uint32_t dispH,
+                               size_t outSize) {
+    if (!y || !uv || !out || srcW == 0 || srcH == 0 || dispW == 0 || dispH == 0 ||
+        stride < srcW || cropW == 0 || cropH == 0)
+        return false;
+    // cropX/cropY must be even for NV12 chroma alignment.
+    if ((cropX & 1) || (cropY & 1)) return false;
+    if (cropX + cropW > srcW || cropY + cropH > srcH) return false;
+    size_t needY = 0;
+    size_t needUv = 0;
+    if (!checkedMul(static_cast<size_t>(stride), srcH, needY)) return false;
+    if (!checkedMul(static_cast<size_t>(stride), (srcH + 1) / 2, needUv)) return false;
+    if (ySize < needY || uvSize < needUv) return false;
+    size_t requiredOut = 0;
+    if (!checkedMul(static_cast<size_t>(dispW), dispH, requiredOut) ||
+        !checkedMul(requiredOut, 2, requiredOut)) return false;
+    if (outSize < requiredOut) return false;
+
+    for (uint32_t dy = 0; dy < dispH; ++dy) {
+        uint32_t sy = cropY + static_cast<uint32_t>(
+            (static_cast<uint64_t>(dy) * cropH) / dispH);
+        if (sy >= srcH) sy = srcH - 1;
+        for (uint32_t dx = 0; dx < dispW; ++dx) {
+            uint32_t sx = cropX + static_cast<uint32_t>(
+                (static_cast<uint64_t>(dx) * cropW) / dispW);
+            if (sx >= srcW) sx = srcW - 1;
+            uint16_t pixel = nv12ToRgb565Pixel(y, uv, stride, sx, sy);
+            storeRgb565Be(out, pixel, (static_cast<size_t>(dy) * dispW + dx) * 2);
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Downscale NV12 by an integer factor (2 or 4) using block averaging.
+// Y plane: average factor x factor blocks. UV plane: average factor x factor
+// blocks (each UV sample covers a 2x2 Y block, so the UV block is
+// factor/2 x factor/2 in UV samples — but we just average the raw UV bytes
+// the same way as Y, treating the interleaved U,V pairs).
+// Returns packed NV12 (Y then UV, stride == outW).
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> downscaleNv12(const uint8_t *y, const uint8_t *uv,
+                                   uint32_t srcW, uint32_t srcH, uint32_t stride,
+                                   size_t ySize, size_t uvSize,
+                                   int factor) {
+    if (!y || !uv || srcW == 0 || srcH == 0 || stride < srcW) return {};
+    if (factor != 2 && factor != 4) return {};
+    size_t needY = 0;
+    size_t needUv = 0;
+    if (!checkedMul(static_cast<size_t>(stride), srcH, needY)) return {};
+    if (!checkedMul(static_cast<size_t>(stride), (srcH + 1) / 2, needUv)) return {};
+    if (ySize < needY || uvSize < needUv) return {};
+
+    // Round down to even for NV12 chroma alignment.
+    uint32_t outW = (srcW / factor) & ~1u;
+    uint32_t outH = (srcH / factor) & ~1u;
+    if (outW == 0 || outH == 0) return {};
+
+    size_t outYSize = 0;
+    size_t outUvSize = 0;
+    if (!checkedMul(static_cast<size_t>(outW), outH, outYSize)) return {};
+    if (!checkedMul(static_cast<size_t>(outW), outH / 2, outUvSize)) return {};
+    std::vector<uint8_t> result(outYSize + outUvSize);
+    uint8_t *outY = result.data();
+    uint8_t *outUv = result.data() + outYSize;
+
+    // Downscale Y plane: average factor x factor blocks.
+    for (uint32_t oy = 0; oy < outH; ++oy) {
+        for (uint32_t ox = 0; ox < outW; ++ox) {
+            unsigned sum = 0;
+            for (int fy = 0; fy < factor; ++fy) {
+                uint32_t sy = oy * factor + fy;
+                if (sy >= srcH) break;
+                for (int fx = 0; fx < factor; ++fx) {
+                    uint32_t sx = ox * factor + fx;
+                    if (sx >= srcW) break;
+                    sum += y[static_cast<size_t>(sy) * stride + sx];
+                }
+            }
+            outY[static_cast<size_t>(oy) * outW + ox] =
+                static_cast<uint8_t>((sum + factor * factor / 2) / (factor * factor));
+        }
+    }
+
+    // UV plane: NV12 UV is interleaved with stride == srcW bytes per row.
+    // Average factor x factor blocks of UV bytes (same spatial block as Y).
+    for (uint32_t oy = 0; oy < outH / 2; ++oy) {
+        for (uint32_t ox = 0; ox < outW; ++ox) {
+            unsigned sum = 0;
+            for (int fy = 0; fy < factor; ++fy) {
+                uint32_t sy = oy * factor + fy;
+                if (sy >= srcH / 2) break;
+                for (int fx = 0; fx < factor; ++fx) {
+                    uint32_t sx = ox * factor + fx;
+                    if (sx >= srcW) break;
+                    sum += uv[static_cast<size_t>(sy) * stride + sx];
+                }
+            }
+            outUv[static_cast<size_t>(oy) * outW + ox] =
+                static_cast<uint8_t>((sum + factor * factor / 2) / (factor * factor));
+        }
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Crop an NV12 frame to (cropX, cropY, cropW, cropH).
+// cropX/cropY must be even. Returns packed NV12 (Y then UV, stride == cropW).
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> cropNv12(const uint8_t *y, const uint8_t *uv,
+                              uint32_t srcW, uint32_t srcH, uint32_t stride,
+                              size_t ySize, size_t uvSize,
+                              uint32_t cropX, uint32_t cropY,
+                              uint32_t cropW, uint32_t cropH) {
+    if (!y || !uv || srcW == 0 || srcH == 0 || stride < srcW) return {};
+    if (cropW == 0 || cropH == 0) return {};
+    if ((cropX & 1) || (cropY & 1)) return {};
+    if ((cropW & 1) || (cropH & 1)) return {};
+    if (cropX + cropW > srcW || cropY + cropH > srcH) return {};
+    size_t needY = 0;
+    size_t needUv = 0;
+    if (!checkedMul(static_cast<size_t>(stride), srcH, needY)) return {};
+    if (!checkedMul(static_cast<size_t>(stride), (srcH + 1) / 2, needUv)) return {};
+    if (ySize < needY || uvSize < needUv) return {};
+
+    size_t outYSize = 0;
+    size_t outUvSize = 0;
+    if (!checkedMul(static_cast<size_t>(cropW), cropH, outYSize)) return {};
+    if (!checkedMul(static_cast<size_t>(cropW), cropH / 2, outUvSize)) return {};
+    std::vector<uint8_t> result(outYSize + outUvSize);
+    uint8_t *outY = result.data();
+    uint8_t *outUv = result.data() + outYSize;
+
+    for (uint32_t r = 0; r < cropH; ++r) {
+        const uint8_t *srcRow = y + static_cast<size_t>(cropY + r) * stride + cropX;
+        std::memcpy(outY + static_cast<size_t>(r) * cropW, srcRow, cropW);
+    }
+    // UV rows = cropH/2, each row = cropW bytes.
+    for (uint32_t r = 0; r < cropH / 2; ++r) {
+        const uint8_t *srcRow = uv + static_cast<size_t>(cropY / 2 + r) * stride + cropX;
+        std::memcpy(outUv + static_cast<size_t>(r) * cropW, srcRow, cropW);
+    }
+
+    return result;
 }
 
 } // namespace picamera
