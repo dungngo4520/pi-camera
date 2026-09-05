@@ -7,6 +7,7 @@
 #include "hardware_config.h"
 #include "image.h"
 #include "image_decode.h"
+#include "image_effects.h"
 #include "preview_helpers.h"
 #include "safe_path.h"
 #include "settings_menu.h"
@@ -524,6 +525,21 @@ struct PreviewState {
   // Bluetooth server (shares wifiSettingsMtx + overlay.settings)
   BtServer btServer;
   std::atomic<bool> btCaptureRequest{false};
+
+  // Rating state (ImageView mode). Current rating of the displayed image.
+  int fileRating = 0;
+
+  // Format/reset confirmation state (Settings mode).
+  std::chrono::steady_clock::time_point formatConfirmDeadline;
+  std::chrono::steady_clock::time_point resetConfirmDeadline;
+
+  // HDR bracket capture state: stores bracket frame paths for merging.
+  std::vector<std::string> bracketCapturePaths;
+  bool bracketMergePending = false;
+
+  // Dark frame capture state for long-exposure NR.
+  std::string darkFramePath;
+  bool darkFramePending = false;
 };
 
 struct BracketOverride {
@@ -549,7 +565,8 @@ BracketOverride computeBracketOverride(const PreviewState &s, int index) {
 void launchCapture(PreviewState &s, DualStream &cam, const PreviewConfig &pcfg,
                    St7735Display &display, float evOv, float wbRed,
                    float wbBlue, uint64_t exposureOverride, float gainOv) {
-  display.flash();
+  if (!s.overlay.settings.silentShutter)
+    display.flash();
   {
     std::lock_guard<std::mutex> lk(s.captureMtx);
     s.captureErrorMsg.clear();
@@ -862,6 +879,23 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
 
   applyBrightnessDimming(s.rgb565.data(), s.dispPixels,
                          s.overlay.settings.displayBrightness);
+
+  // Night mode: boost viewfinder brightness by scaling RGB565 pixel values.
+  // This helps visibility in low-light conditions on the ST7735S display.
+  if (s.overlay.settings.nightMode) {
+    for (size_t i = 0; i < s.dispPixels * 2; i += 2) {
+      uint16_t px = (static_cast<uint16_t>(s.rgb565[i]) << 8) | s.rgb565[i + 1];
+      uint8_t r5 = (px >> 11) & 0x1F;
+      uint8_t g6 = (px >> 5) & 0x3F;
+      uint8_t b5 = px & 0x1F;
+      r5 = static_cast<uint8_t>(std::min(31, r5 * 3 / 2));
+      g6 = static_cast<uint8_t>(std::min(63, g6 * 3 / 2));
+      b5 = static_cast<uint8_t>(std::min(31, b5 * 3 / 2));
+      uint16_t boosted = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
+      s.rgb565[i] = static_cast<uint8_t>(boosted >> 8);
+      s.rgb565[i + 1] = static_cast<uint8_t>(boosted & 0xFF);
+    }
+  }
 
   if (s.overlay.settings.aspectRatio != AspectRatio::Native) {
     drawAspectRatioMask(s.rgb565.data(), display.width(), display.height(),
@@ -1276,6 +1310,8 @@ void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg,
     s.slideshowActive = false;
     // Check if the file is protected.
     s.fileProtected = isFileProtected(pcfg.captureDir, sel);
+    // Load the file's rating (0 if no .rating sidecar exists).
+    s.fileRating = readFileRating(pcfg.captureDir, sel);
     // Enter ImageView mode regardless of decode success — if the
     // image couldn't be decoded (e.g. DNG/RAW), drawImageView shows
     // a black screen with the filename so the user knows what file
@@ -1411,6 +1447,21 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
         const std::string &sel = s.playbackFiles[s.playbackIdx];
         s.imageViewPixels = decodeImageToRgb565(sel, s.dispW, s.dispH);
         s.imageViewPath = sel;
+        s.fileRating = readFileRating(pcfg.captureDir, sel);
+      }
+      s.screenDirty = true;
+    } else {
+      // Not zoomed, not slideshow: joystick adjusts rating (0-5 stars).
+      // Up/Right increases, Down/Left decreases.
+      if (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyRight) {
+        if (s.fileRating < 5)
+          ++s.fileRating;
+      } else {
+        if (s.fileRating > 0)
+          --s.fileRating;
+      }
+      if (!s.imageViewPath.empty()) {
+        writeFileRating(pcfg.captureDir, s.imageViewPath, s.fileRating);
       }
       s.screenDirty = true;
     }
@@ -1458,6 +1509,10 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
     }
     // Save settings on exit
     saveSettings(s.overlay.settings, defaultSettingsPath());
+    // If a custom mode slot is selected (C1/C2/C3), also save to that slot.
+    if (s.overlay.settings.customMode != CustomMode::Auto)
+      saveCustomMode(s.overlay.settings,
+                     static_cast<int>(s.overlay.settings.customMode));
     // Apply updated controls to the still stream
     CameraConfig stillCfg = settingsToCameraConfig(
         s.overlay.settings, pcfg.captureWidth, pcfg.captureHeight);
@@ -1483,17 +1538,139 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
     }
   } else if (evt.pressed &&
              (evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
-    // EXIT item (System tab, last item) is not adjustable — exit via Key2.
     int count = settingsTabItemCount(s.settingsTab);
-    if (!(s.settingsTab == SettingsTab::System && s.settingsIdx == count - 1)) {
-      if (evt.id == ButtonId::JoyLeft)
-        settingsItemAdjustLeft(s.settingsTab, s.settingsIdx,
-                               s.overlay.settings);
-      else
-        settingsItemAdjustRight(s.settingsTab, s.settingsIdx,
-                                s.overlay.settings);
-      s.screenDirty = true;
+    // EXIT item (System tab, last item) is not adjustable.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == count - 1)
+      return;
+    // FORMAT (System idx 5): double-press JoyRight to confirm.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 5) {
+      if (evt.id == ButtonId::JoyRight) {
+        auto now = std::chrono::steady_clock::now();
+        if (s.formatConfirmDeadline != std::chrono::steady_clock::time_point{} &&
+            now < s.formatConfirmDeadline) {
+          s.formatConfirmDeadline = {};
+          // Format: delete all non-protected captures.
+          int deleted = 0;
+          try {
+            namespace fs = std::filesystem;
+            for (const auto &f : listCaptures(pcfg.captureDir)) {
+              if (!isFileProtected(pcfg.captureDir, f)) {
+                std::error_code ec;
+                fs::remove(f, ec);
+                if (!ec)
+                  ++deleted;
+              }
+            }
+          } catch (const std::exception &) {
+          }
+          s.persistentError = "FORMATTED";
+          s.errorExpiry = now + std::chrono::seconds(3);
+          std::cout << "Preview: formatted card, deleted " << deleted
+                    << " files\n";
+        } else {
+          s.formatConfirmDeadline = now + std::chrono::seconds(3);
+          s.persistentError = "FORMAT? JOY-R";
+          s.errorExpiry = s.formatConfirmDeadline;
+        }
+        s.screenDirty = true;
+      }
+      return;
     }
+    // RESET (System idx 6): double-press JoyRight to confirm.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 6) {
+      if (evt.id == ButtonId::JoyRight) {
+        auto now = std::chrono::steady_clock::now();
+        if (s.resetConfirmDeadline !=
+                std::chrono::steady_clock::time_point{} &&
+            now < s.resetConfirmDeadline) {
+          s.resetConfirmDeadline = {};
+          // Reset: restore defaults and delete settings file.
+          s.overlay.settings = CameraSettings();
+          s.overlay.settings.captureFormat = s.capFmt;
+          std::error_code ec;
+          std::filesystem::remove(defaultSettingsPath(), ec);
+          s.persistentError = "RESET DONE";
+          s.errorExpiry = now + std::chrono::seconds(3);
+          std::cout << "Preview: settings reset to defaults\n";
+        } else {
+          s.resetConfirmDeadline = now + std::chrono::seconds(3);
+          s.persistentError = "RESET? JOY-R";
+          s.errorExpiry = s.resetConfirmDeadline;
+        }
+        s.screenDirty = true;
+      }
+      return;
+    }
+    // DATE (System idx 7): show current date/time (read-only on Pi Zero
+    // without RTC — setting system time requires root privileges).
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 7) {
+      auto now = std::chrono::system_clock::now();
+      std::time_t t = std::chrono::system_clock::to_time_t(now);
+      std::tm tm;
+      tm = *std::localtime(&t);
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                    tm.tm_min);
+      s.persistentError = buf;
+      s.errorExpiry = std::chrono::steady_clock::now() +
+                      std::chrono::seconds(5);
+      s.screenDirty = true;
+      return;
+    }
+    // VIDEO (System idx 8): stub — coming soon.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 8) {
+      s.persistentError = "COMING SOON";
+      s.errorExpiry = std::chrono::steady_clock::now() +
+                      std::chrono::seconds(3);
+      s.screenDirty = true;
+      return;
+    }
+    // Normal adjustable item.
+    if (evt.id == ButtonId::JoyLeft)
+      settingsItemAdjustLeft(s.settingsTab, s.settingsIdx,
+                             s.overlay.settings);
+    else
+      settingsItemAdjustRight(s.settingsTab, s.settingsIdx,
+                              s.overlay.settings);
+    // Handle airplane mode toggle: start/stop servers at runtime.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 3) {
+      if (s.overlay.settings.airplaneMode) {
+        s.wifiServer.stop();
+        s.btServer.stop();
+        std::cout << "Preview: airplane mode ON — servers stopped\n";
+      } else {
+        constexpr int kWifiPort = 8080;
+        s.wifiServer.start(kWifiPort, pcfg.captureDir, s.overlay.settings,
+                           s.wifiSettingsMtx, s.wifiCaptureRequest,
+                           s.wifiBatteryPercent, s.wifiCaptureCount);
+        constexpr int kBtChannel = 1;
+        s.btServer.start(kBtChannel, pcfg.captureDir, s.overlay.settings,
+                         s.wifiSettingsMtx, s.btCaptureRequest,
+                         s.wifiBatteryPercent, s.wifiCaptureCount);
+        std::cout << "Preview: airplane mode OFF — servers started\n";
+      }
+    }
+    // Handle custom mode selection: load saved settings for C1/C2/C3.
+    if (s.settingsTab == SettingsTab::System && s.settingsIdx == 4 &&
+        s.overlay.settings.customMode != CustomMode::Auto) {
+      CameraSettings loaded;
+      if (loadCustomMode(loaded,
+                         static_cast<int>(s.overlay.settings.customMode))) {
+        // Preserve the customMode selection itself and capture format.
+        OutputFormat savedFmt = s.overlay.settings.captureFormat;
+        loaded.customMode = s.overlay.settings.customMode;
+        loaded.captureFormat = savedFmt;
+        s.overlay.settings = loaded;
+        std::cout << "Preview: loaded custom mode C"
+                  << static_cast<int>(s.overlay.settings.customMode) << "\n";
+      } else {
+        std::cout << "Preview: no saved settings for C"
+                  << static_cast<int>(s.overlay.settings.customMode)
+                  << " — using current\n";
+      }
+    }
+    s.screenDirty = true;
   }
 }
 
@@ -1728,7 +1905,8 @@ bool runPreview(PreviewConfig &pcfg) {
                "Ctrl+C=exit\n";
 
   // Start Wi-Fi server if enabled (--wifi flag or wifi_enabled config key)
-  if (pcfg.wifiEnabled) {
+  // and airplane mode is not active.
+  if (pcfg.wifiEnabled && !s.overlay.settings.airplaneMode) {
     constexpr int kWifiPort = 8080;
     if (!s.wifiServer.start(kWifiPort, pcfg.captureDir, s.overlay.settings,
                             s.wifiSettingsMtx, s.wifiCaptureRequest,
@@ -1740,7 +1918,7 @@ bool runPreview(PreviewConfig &pcfg) {
 
   // Start Bluetooth server if enabled (--bt flag or bt_enabled config key).
   // Shares the same settings mutex + CameraSettings as the Wi-Fi server.
-  if (pcfg.btEnabled) {
+  if (pcfg.btEnabled && !s.overlay.settings.airplaneMode) {
     constexpr int kBtChannel = 1;
     if (!s.btServer.start(kBtChannel, pcfg.captureDir, s.overlay.settings,
                           s.wifiSettingsMtx, s.btCaptureRequest,

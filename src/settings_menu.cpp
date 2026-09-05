@@ -1612,4 +1612,24 @@ std::string defaultSettingsPath() {
   return std::string(home) + "/.config/picamera/settings.conf";
 }
 
+std::string customModePath(int slot) {
+  const char *home = std::getenv("HOME");
+  if (!home)
+    home = "/tmp";
+  return std::string(home) + "/.config/picamera/custom_c" +
+         std::to_string(slot) + ".conf";
+}
+
+bool saveCustomMode(const CameraSettings &s, int slot) {
+  if (slot < 1 || slot > 3)
+    return false;
+  return saveSettings(s, customModePath(slot));
+}
+
+bool loadCustomMode(CameraSettings &s, int slot) {
+  if (slot < 1 || slot > 3)
+    return false;
+  return loadSettings(s, customModePath(slot));
+}
+
 } // namespace picamera

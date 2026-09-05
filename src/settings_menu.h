@@ -32,6 +32,16 @@ bool loadSettings(CameraSettings &s, const std::string &path);
 
 std::string defaultSettingsPath();
 
+// Custom shooting mode slot paths: ~/.config/picamera/custom_c1.conf etc.
+std::string customModePath(int slot);
+
+// Save current settings to a custom mode slot (1-3).
+bool saveCustomMode(const CameraSettings &s, int slot);
+
+// Load settings from a custom mode slot (1-3). Returns false if no saved
+// settings exist for the slot.
+bool loadCustomMode(CameraSettings &s, int slot);
+
 // Picture style preset mapping: returns {brightness, contrast, saturation,
 // sharpness} for the given style. Used by the settings menu to apply a
 // preset when the user selects a picture style.
