@@ -11,11 +11,7 @@ namespace {
 
 // Build a tiny NV12 frame and check nv12ToRgb against a hand-computed result.
 // 4x2 image, stride 4. Grey (Y=128, U=V=128) should map to RGB(128,128,128)
-// under BT.601 limited-range: C = 128-16 = 112; R = (298*112 + 0 + 128)>>8 =
-// 33464>>8 = 130. Wait — let's compute precisely and assert against the
-// function rather than hand-rolling the math, to verify the *relationship*
-// (chroma neutrality, Y monotonicity, range clamping) rather than magic
-// constants.
+// under BT.709 full-range: with neutral chroma, R=G=B=Y.
 TEST(nv12_grey_is_neutral) {
   const uint32_t w = 4;
   const uint32_t h = 2;
@@ -157,11 +153,12 @@ TEST(nv12_large_image_multithreaded) {
     CHECK_EQ(rgb[p * 3 + 1], rgb[p * 3 + 2]);
   }
 
-  // Verify a few specific pixels against the scalar formula.
-  // Pixel (0,0): Y=16, C=0, R=G=B=(298*0+0+128)>>8 = 0.
-  CHECK_EQ(rgb[0], 0u);
-  // Pixel (0,1): Y=17, C=1, R=(298*1+128)>>8 = 426>>8 = 1.
-  CHECK_EQ(rgb[3], 1u);
+  // Verify a few specific pixels against the BT.709 full-range formula.
+  // With neutral chroma, R=G=B=Y (no offset, no gain).
+  // Pixel (0,0): Y=16 → R=G=B=16.
+  CHECK_EQ(rgb[0], 16u);
+  // Pixel (0,1): Y=17 → R=G=B=17.
+  CHECK_EQ(rgb[3], 17u);
 }
 
 TEST(nv12_large_image_odd_dimensions) {
@@ -197,8 +194,8 @@ TEST(nv12_to_rgb565_grey_neutral) {
   nv12ToRgb565Scaled(y.data(), uv.data(), w, h, stride, y.size(), uv.size(),
                      out.data(), 2, 2, out.size());
   // Each pixel: high byte = RRRRRGGG, low byte = GGGBBBBB
-  // With neutral chroma and Y=128: R≈130, G≈130, B≈128 (BT.601 limited).
-  // R5 = 130>>3 = 16, G6 = 130>>2 = 32, B5 = 128>>3 = 16
+  // With neutral chroma and Y=128 (BT.709 full-range): R=G=B=128.
+  // R5 = 128>>3 = 16, G6 = 128>>2 = 32, B5 = 128>>3 = 16
   // pixel = (16<<11)|(32<<5)|16 = 0x8410
   // high = 0x84, low = 0x10
   for (size_t p = 0; p < 4; ++p) {

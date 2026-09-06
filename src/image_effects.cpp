@@ -155,7 +155,7 @@ std::vector<uint8_t> rgb24ToY(const uint8_t *rgb, uint32_t width,
       int g = rgb[rgbIdx + 1];
       int b = rgb[rgbIdx + 2];
       y[static_cast<size_t>(row) * stride + col] =
-          static_cast<uint8_t>((77 * r + 150 * g + 29 * b) / 256);
+          static_cast<uint8_t>((54 * r + 183 * g + 19 * b) / 256);
     }
   }
   return y;
@@ -176,9 +176,9 @@ std::vector<uint8_t> yuvToRgb24(const uint8_t *y, const uint8_t *uv,
           static_cast<size_t>(row / 2) * uvStride + static_cast<size_t>(col / 2) * 2;
       int uVal = uv[uvIdx] - 128;
       int vVal = uv[uvIdx + 1] - 128;
-      int r = yVal + static_cast<int>(1.402f * vVal);
-      int g = yVal - static_cast<int>(0.344f * uVal + 0.714f * vVal);
-      int b = yVal + static_cast<int>(1.772f * uVal);
+      int r = yVal + static_cast<int>(1.5748f * vVal);
+      int g = yVal - static_cast<int>(0.1873f * uVal + 0.4681f * vVal);
+      int b = yVal + static_cast<int>(1.8556f * uVal);
       size_t rgbIdx = (static_cast<size_t>(row) * width + col) * 3;
       rgb[rgbIdx] = static_cast<uint8_t>(std::clamp(r, 0, 255));
       rgb[rgbIdx + 1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
@@ -214,8 +214,8 @@ std::vector<uint8_t> rgb24ToUv(const uint8_t *rgb, uint32_t width,
       int r = rSum / 4;
       int g = gSum / 4;
       int b = bSum / 4;
-      int u = (-38 * r - 74 * g + 112 * b) / 256 + 128;
-      int v = (112 * r - 94 * g - 18 * b) / 256 + 128;
+      int u = (-29 * r - 99 * g + 128 * b) / 256 + 128;
+      int v = (128 * r - 116 * g - 12 * b) / 256 + 128;
       size_t uvIdx = (static_cast<size_t>(cy) * halfW + cx) * 2;
       uv[uvIdx] = static_cast<uint8_t>(std::clamp(u, 0, 255));
       uv[uvIdx + 1] = static_cast<uint8_t>(std::clamp(v, 0, 255));

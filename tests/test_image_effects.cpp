@@ -522,9 +522,9 @@ TEST(rgb24_to_uv_neutral_gray) {
 }
 
 TEST(rgb24_to_uv_red_pixel) {
-  // 2x2 red image (255,0,0):
-  // U = (-38*255)/256 + 128 = -9690/256 + 128 = -37 + 128 = 91
-  // V = (112*255)/256 + 128 = 28560/256 + 128 = 111 + 128 = 239
+  // 2x2 red image (255,0,0) — BT.709 full-range:
+  // U = (-29*255)/256 + 128 = -7395/256 + 128 = -28 + 128 = 100
+  // V = (128*255)/256 + 128 = 32640/256 + 128 = 127 + 128 = 255
   std::vector<uint8_t> rgb(2 * 2 * 3);
   for (size_t i = 0; i < rgb.size(); i += 3) {
     rgb[i] = 255;
@@ -533,14 +533,14 @@ TEST(rgb24_to_uv_red_pixel) {
   }
   auto uv = rgb24ToUv(rgb.data(), 2, 2);
   CHECK(uv.size() == 2);
-  CHECK(uv[0] == 91);   // U
-  CHECK(uv[1] == 239);  // V
+  CHECK(uv[0] == 100);  // U
+  CHECK(uv[1] == 255);  // V
 }
 
 TEST(rgb24_to_uv_blue_pixel) {
-  // 2x2 blue image (0,0,255):
-  // U = (-38*0 - 74*0 + 112*255)/256 + 128 = 28560/256 + 128 = 111 + 128 = 239
-  // V = (112*0 - 94*0 - 18*255)/256 + 128 = -4590/256 + 128 = -17 + 128 = 111
+  // 2x2 blue image (0,0,255) — BT.709 full-range:
+  // U = (128*255)/256 + 128 = 32640/256 + 128 = 127 + 128 = 255
+  // V = (-12*255)/256 + 128 = -3060/256 + 128 = -11 + 128 = 117
   std::vector<uint8_t> rgb(2 * 2 * 3);
   for (size_t i = 0; i < rgb.size(); i += 3) {
     rgb[i] = 0;
@@ -549,8 +549,8 @@ TEST(rgb24_to_uv_blue_pixel) {
   }
   auto uv = rgb24ToUv(rgb.data(), 2, 2);
   CHECK(uv.size() == 2);
-  CHECK(uv[0] == 239);  // U
-  CHECK(uv[1] == 111);  // V
+  CHECK(uv[0] == 255);  // U
+  CHECK(uv[1] == 117);  // V
 }
 
 TEST(rgb24_to_uv_4x4_image) {

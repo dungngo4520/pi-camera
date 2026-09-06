@@ -20,6 +20,7 @@ inline uint8_t clamp8(int v) {
 }
 
 // NV12 pixel → RGB565; guards odd-width UV reads.
+// BT.709 full-range (sYCC) — matches libcamera's default NV12 color space.
 inline uint16_t nv12ToRgb565Pixel(const uint8_t *y, const uint8_t *uv,
                                   uint32_t stride, uint32_t sx, uint32_t sy) {
   int Y = y[static_cast<size_t>(sy) * stride + sx];
@@ -39,10 +40,9 @@ inline uint16_t nv12ToRgb565Pixel(const uint8_t *y, const uint8_t *uv,
     U = 0;
     V = 0;
   }
-  int C = Y - 16;
-  int R = (298 * C + 409 * V + 128) >> 8;
-  int G = (298 * C - 100 * U - 208 * V + 128) >> 8;
-  int B = (298 * C + 516 * U + 128) >> 8;
+  int R = (256 * Y + 403 * V + 128) >> 8;
+  int G = (256 * Y - 48 * U - 120 * V + 128) >> 8;
+  int B = (256 * Y + 475 * U + 128) >> 8;
   return static_cast<uint16_t>(((clamp8(R) >> 3) << 11) |
                                ((clamp8(G) >> 2) << 5) | (clamp8(B) >> 3));
 }
@@ -72,21 +72,21 @@ void nv12ToRgbRowPair_scalar(const uint8_t *yRow0, const uint8_t *yRow1,
     }
     int D = U - 128;
     int E = V - 128;
-    int Ruv = 409 * E;
-    int Guv = -100 * D - 208 * E;
-    int Buv = 516 * D;
+    int Ruv = 403 * E;
+    int Guv = -48 * D - 120 * E;
+    int Buv = 475 * D;
 
     for (uint32_t dx = 0; dx < 2 && x + dx < w; ++dx) {
-      int C0 = yRow0[x + dx] - 16;
-      rgb0[(x + dx) * 3 + 0] = clamp8((298 * C0 + Ruv + 128) >> 8);
-      rgb0[(x + dx) * 3 + 1] = clamp8((298 * C0 + Guv + 128) >> 8);
-      rgb0[(x + dx) * 3 + 2] = clamp8((298 * C0 + Buv + 128) >> 8);
+      int Y0 = yRow0[x + dx];
+      rgb0[(x + dx) * 3 + 0] = clamp8((256 * Y0 + Ruv + 128) >> 8);
+      rgb0[(x + dx) * 3 + 1] = clamp8((256 * Y0 + Guv + 128) >> 8);
+      rgb0[(x + dx) * 3 + 2] = clamp8((256 * Y0 + Buv + 128) >> 8);
 
       if (haveRow1) {
-        int C1 = yRow1[x + dx] - 16;
-        rgb1[(x + dx) * 3 + 0] = clamp8((298 * C1 + Ruv + 128) >> 8);
-        rgb1[(x + dx) * 3 + 1] = clamp8((298 * C1 + Guv + 128) >> 8);
-        rgb1[(x + dx) * 3 + 2] = clamp8((298 * C1 + Buv + 128) >> 8);
+        int Y1 = yRow1[x + dx];
+        rgb1[(x + dx) * 3 + 0] = clamp8((256 * Y1 + Ruv + 128) >> 8);
+        rgb1[(x + dx) * 3 + 1] = clamp8((256 * Y1 + Guv + 128) >> 8);
+        rgb1[(x + dx) * 3 + 2] = clamp8((256 * Y1 + Buv + 128) >> 8);
       }
     }
   }
@@ -94,15 +94,14 @@ void nv12ToRgbRowPair_scalar(const uint8_t *yRow0, const uint8_t *yRow1,
 
 #ifdef PICAMERA_HAS_NEON
 // NEON SIMD path — 16 pixels per row-pair iteration on ARM.
-// BT.601 limited-range NV12→RGB24; products overflow int16 so int32x4_t is used.
+// BT.709 full-range (sYCC) NV12→RGB24; products overflow int16 so int32x4_t is used.
 // NV12 chroma: 8 UV pairs per 16 Y pixels; vld2_u8 deinterleaves, vzip_u8 duplicates.
 // Convert 8 Y pixels (one row) to 8 RGB triplets, given 8 U and 8 V values
 // (already deinterleaved and duplicated to per-pixel granularity).
 static inline void convert8pixels_neon(uint8x8_t y8, uint8x8_t u8, uint8x8_t v8,
                                        uint8_t *out) {
-  // Widen to int16 and subtract offsets.
+  // Widen to int16. Y is full-range (no -16 offset); U/V subtract 128.
   int16x8_t y16 = vreinterpretq_s16_u16(vmovl_u8(y8));
-  y16 = vsubq_s16(y16, vdupq_n_s16(16));
   int16x8_t u16 = vreinterpretq_s16_u16(vmovl_u8(u8));
   u16 = vsubq_s16(u16, vdupq_n_s16(128));
   int16x8_t v16 = vreinterpretq_s16_u16(vmovl_u8(v8));
@@ -115,31 +114,31 @@ static inline void convert8pixels_neon(uint8x8_t y8, uint8x8_t u8, uint8x8_t v8,
   int16x4_t v_lo = vget_low_s16(v16);
   int16x4_t v_hi = vget_high_s16(v16);
 
-  // Y * 298 (widening to int32)
-  int32x4_t y298_lo = vmull_n_s16(y_lo, 298);
-  int32x4_t y298_hi = vmull_n_s16(y_hi, 298);
+  // Y * 256 (widening to int32)
+  int32x4_t y256_lo = vmull_n_s16(y_lo, 256);
+  int32x4_t y256_hi = vmull_n_s16(y_hi, 256);
 
-  // R = (Y*298 + V*409 + 128) >> 8
-  int32x4_t r_lo = vaddq_s32(vmlal_n_s16(y298_lo, v_lo, 409), vdupq_n_s32(128));
-  int32x4_t r_hi = vaddq_s32(vmlal_n_s16(y298_hi, v_hi, 409), vdupq_n_s32(128));
+  // R = (Y*256 + V*403 + 128) >> 8
+  int32x4_t r_lo = vaddq_s32(vmlal_n_s16(y256_lo, v_lo, 403), vdupq_n_s32(128));
+  int32x4_t r_hi = vaddq_s32(vmlal_n_s16(y256_hi, v_hi, 403), vdupq_n_s32(128));
   uint16x4_t r16_lo = vqshrun_n_s32(r_lo, 8);
   uint16x4_t r16_hi = vqshrun_n_s32(r_hi, 8);
   uint8x8_t r8 = vqmovn_u16(vcombine_u16(r16_lo, r16_hi));
 
-  // G = (Y*298 - U*100 - V*208 + 128) >> 8
-  int32x4_t g_lo = vmlsl_n_s16(y298_lo, u_lo, 100);
-  g_lo = vmlsl_n_s16(g_lo, v_lo, 208);
+  // G = (Y*256 - U*48 - V*120 + 128) >> 8
+  int32x4_t g_lo = vmlsl_n_s16(y256_lo, u_lo, 48);
+  g_lo = vmlsl_n_s16(g_lo, v_lo, 120);
   g_lo = vaddq_s32(g_lo, vdupq_n_s32(128));
-  int32x4_t g_hi = vmlsl_n_s16(y298_hi, u_hi, 100);
-  g_hi = vmlsl_n_s16(g_hi, v_hi, 208);
+  int32x4_t g_hi = vmlsl_n_s16(y256_hi, u_hi, 48);
+  g_hi = vmlsl_n_s16(g_hi, v_hi, 120);
   g_hi = vaddq_s32(g_hi, vdupq_n_s32(128));
   uint16x4_t g16_lo = vqshrun_n_s32(g_lo, 8);
   uint16x4_t g16_hi = vqshrun_n_s32(g_hi, 8);
   uint8x8_t g8 = vqmovn_u16(vcombine_u16(g16_lo, g16_hi));
 
-  // B = (Y*298 + U*516 + 128) >> 8
-  int32x4_t b_lo = vaddq_s32(vmlal_n_s16(y298_lo, u_lo, 516), vdupq_n_s32(128));
-  int32x4_t b_hi = vaddq_s32(vmlal_n_s16(y298_hi, u_hi, 516), vdupq_n_s32(128));
+  // B = (Y*256 + U*475 + 128) >> 8
+  int32x4_t b_lo = vaddq_s32(vmlal_n_s16(y256_lo, u_lo, 475), vdupq_n_s32(128));
+  int32x4_t b_hi = vaddq_s32(vmlal_n_s16(y256_hi, u_hi, 475), vdupq_n_s32(128));
   uint16x4_t b16_lo = vqshrun_n_s32(b_lo, 8);
   uint16x4_t b16_hi = vqshrun_n_s32(b_hi, 8);
   uint8x8_t b8 = vqmovn_u16(vcombine_u16(b16_lo, b16_hi));
