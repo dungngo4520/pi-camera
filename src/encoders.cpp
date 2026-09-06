@@ -25,9 +25,6 @@ namespace picamera {
 
 namespace {
 
-// --- EXIF/TIFF helpers (shared with dng.cpp's approach) ---
-
-// TIFF tag IDs for EXIF
 enum : uint16_t {
   ExifTagMake = 271,               // 0x010F
   ExifTagModel = 272,              // 0x0110
@@ -49,7 +46,6 @@ enum : uint16_t {
   ExifTypeRational = 5,
 };
 
-// LE binary writers
 void exifPutU16(std::vector<uint8_t> &buf, uint16_t v) {
   buf.push_back(v & 0xFF);
   buf.push_back((v >> 8) & 0xFF);
@@ -61,8 +57,7 @@ void exifPutU32(std::vector<uint8_t> &buf, uint32_t v) {
   buf.push_back((v >> 24) & 0xFF);
 }
 
-// Pack up to 4 bytes into a uint32_t as little-endian, for the IFD inline
-// value field.
+// Pack little-endian bytes into a uint32_t inline value.
 uint32_t exifPackLe32(const uint8_t *bytes, size_t len) {
   uint32_t val = 0;
   for (size_t i = 0; i < len; ++i)
@@ -70,7 +65,6 @@ uint32_t exifPackLe32(const uint8_t *bytes, size_t len) {
   return val;
 }
 
-// A single IFD entry (12 bytes on disk).
 struct ExifIfdEntry {
   uint16_t tag;
   uint16_t type;
@@ -78,9 +72,7 @@ struct ExifIfdEntry {
   uint32_t valueOrOffset;
 };
 
-// Add an ASCII IFD entry: stored inline if ≤4 bytes, else spilled to the
-// data area (word-aligned). dataStart is the TIFF-header-relative offset of
-// the data area's beginning.
+// ASCII IFD entry: inline if ≤4 bytes, else spilled to the data area.
 void addAsciiEntry(std::vector<ExifIfdEntry> &entries,
                    std::vector<uint8_t> &data, uint32_t dataStart, uint16_t tag,
                    const std::string &s) {
@@ -101,13 +93,11 @@ void addAsciiEntry(std::vector<ExifIfdEntry> &entries,
   }
 }
 
-// Word-align a data area before appending an offset-based entry.
 void alignData(std::vector<uint8_t> &data) {
   if (data.size() % 2 != 0)
     data.push_back(0);
 }
 
-// Compute the GCD of two uint32_t values for rational reduction.
 uint32_t exifGcd(uint32_t a, uint32_t b) {
   while (b) {
     uint32_t t = a % b;
@@ -121,9 +111,7 @@ uint32_t exifGcd(uint32_t a, uint32_t b) {
 
 namespace {
 
-// Format a Unix timestamp as "YYYY:MM:DD HH:MM:SS" (EXIF DateTime format).
-// Returns an empty string on failure (e.g., timestamp == 0). Shared by
-// buildExifData (JPEG) and writePng (tEXt chunk).
+// EXIF DateTime string from a Unix timestamp.
 std::string formatExifDateTime(uint32_t timestampSec) {
   if (timestampSec == 0)
     return {};
@@ -156,14 +144,7 @@ bool fitsStreamSize(size_t size) {
          static_cast<size_t>(std::numeric_limits<std::streamsize>::max());
 }
 
-// Core PNG writer: contains the setjmp/longjmp and uses ONLY raw pointers
-// and trivial types. No C++ objects with non-trivial destructors are in
-// scope when longjmp could fire, avoiding the undefined behavior described
-// in C++ [support.runtime]/3. Returns 0 on success, -1 on libpng error.
-// On error, *outRows is set if the row array was allocated (caller frees),
-// and *outInfo is set if the info struct was created (caller destroys).
-// png_create_info_struct is called AFTER setjmp so that an OOM-triggered
-// png_error longjmp is caught instead of aborting the process.
+// libpng longjmp wrapper: only trivial locals across setjmp.
 int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
                  const uint8_t *rgb, uint32_t w, uint32_t h,
                  int compressionLevel, png_bytep **outRows,
@@ -178,9 +159,7 @@ int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
     return -1;
   *outInfo = info;
 
-  // Compression level: 0=none, 1=fastest, 6=zlib default, 9=best.
-  // Clamp to valid range in case cfg_.pngLevel was set programmatically
-  // without CLI validation.
+  // Clamp libpng compression to [0,9].
   int level = std::clamp(compressionLevel, 0, 9);
   png_set_compression_level(png, level);
   if (level <= 1)
@@ -189,14 +168,10 @@ int writePngCore(png_structp png, png_infop *outInfo, FILE *fp,
   png_init_io(png, fp);
   png_set_IHDR(png, info, w, h, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
                PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-  // Embed metadata as tEXt chunks (if provided). Must be called before
-  // png_write_info() so the chunks are written in the file header.
   if (textChunks && numText > 0)
     png_set_text(png, info, textChunks, numText);
   png_write_info(png, info);
 
-  // Raw pointer — no destructor, safe across longjmp. Tracked via
-  // outRows so the caller can free it if longjmp fires.
   size_t rowsBytes = 0;
   if (!checkedMul(static_cast<size_t>(h), sizeof(png_bytep), rowsBytes))
     return -1;
@@ -225,13 +200,6 @@ static_assert(
     std::is_standard_layout_v<JpegErrCtx>,
     "JpegErrCtx must be standard-layout for reinterpret_cast from base");
 
-// Core JPEG writer: same pattern as writePngCore — setjmp/longjmp with
-// only trivial locals. Returns 0 on success, -1 on libjpeg error.
-// On error, *outRowPtrs is set if the row array was allocated (caller frees).
-// *outCreated is set to true after jpeg_create_compress succeeds, so the
-// caller knows whether jpeg_destroy_compress is safe to call.
-// jerr must outlive cinfo (jpeg_destroy_compress may access cinfo->err),
-// so it is declared in the caller and passed by pointer.
 int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr,
                      FILE *fp, const uint8_t *rgb, uint32_t w, uint32_t h,
                      int quality, JSAMPROW **outRowPtrs, bool *outCreated,
@@ -260,15 +228,12 @@ int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr,
   jpeg_set_quality(cinfo, quality, TRUE);
   jpeg_start_compress(cinfo, TRUE);
 
-  // Write EXIF APP1 marker after jpeg_start_compress and before
-  // writing scanlines. jpeg_write_marker inserts the marker code
-  // (0xE1), the 2-byte length, and the data bytes into the bitstream.
+  // Insert EXIF APP1 marker.
   if (exifData && exifSize > 0) {
     jpeg_write_marker(cinfo, 0xE1, reinterpret_cast<const JOCTET *>(exifData),
                       static_cast<unsigned int>(exifSize));
   }
 
-  // Raw pointer — tracked via outRowPtrs for cleanup on longjmp.
   size_t rowPtrsBytes = 0;
   if (!checkedMul(static_cast<size_t>(h), sizeof(JSAMPROW), rowPtrsBytes))
     return -1;
@@ -299,20 +264,8 @@ int writeJpegRgbCore(struct jpeg_compress_struct *cinfo, JpegErrCtx *jerr,
   return compressOk ? 0 : -1;
 }
 
-// Open a file for writing with O_CREAT|O_EXCL|O_NOFOLLOW to prevent
-// symlink attacks and accidental overwrites. On EEXIST (race with another
-// process or a same-ms collision), retries with _2, _3, ... suffixes
-// atomically (no lstat probe, so no TOCTOU race). Returns a FILE* or
-// nullptr. The fd is kept open and handed to fdopen() — no close/reopen race.
-// On success, `outPath` is set to the actual file path (may differ from
-// `path` if a suffix was needed). Callers should unlink(outPath) on write
-// failure to avoid leaving partial files.
+// Atomic O_EXCL file open with _N suffix collision retry.
 FILE *safeFileOpen(const std::string &path, std::string &outPath) {
-  // Try open(O_CREAT|O_EXCL) directly — no lstat probe, so there's
-  // no TOCTOU race between checking existence and creating. On EEXIST,
-  // increment the suffix (_2, _3, ...) and retry. The stem/ext split
-  // and candidate construction are shared with safeOfstream and
-  // safeFileOpenFd via splitPathStemExt/suffixedCandidate.
   const PathStemExt se = splitPathStemExt(path);
 
   for (int i = 1; i <= kMaxNameRetries; ++i) {
@@ -339,9 +292,7 @@ FILE *safeFileOpen(const std::string &path, std::string &outPath) {
   return nullptr;
 }
 
-// Flush stdio buffer to kernel, then kernel buffer to disk, then close.
-// Same durability discipline as FdOutStreamBuf::finish() and writeDng().
-// On any I/O error, unlinks localPath (no partial files) and returns false.
+// Flush, fsync, close; unlink on error.
 bool finishFile(FILE *fp, const std::string &localPath, const char *tag) {
   if (fflush(fp) != 0) {
     std::cerr << tag << ": fflush() failed: " << errnoString(errno) << "\n";
@@ -363,11 +314,7 @@ bool finishFile(FILE *fp, const std::string &localPath, const char *tag) {
   return true;
 }
 
-// Portable fd-based output streambuf. Replaces __gnu_cxx::stdio_filebuf
-// (a libstdc++/GCC-only extension) with a minimal standard-library
-// implementation. The fd is closed on destruction; the buffer is flushed
-// via overflow/sync calls. This avoids the TOCTOU race of close()+reopen()
-// — the fd stays open for the stream's lifetime.
+// Portable fd-based output streambuf (avoids close()+reopen() TOCTOU race).
 class FdOutStreamBuf : public std::streambuf {
 public:
   explicit FdOutStreamBuf(int fd) : fd_(fd) {
@@ -376,9 +323,6 @@ public:
   ~FdOutStreamBuf() override {
     if (fd_ >= 0) {
       sync();
-      // fsync before close so data survives power cuts even on
-      // exception paths where finish() was never called. Ignore
-      // errors — destructors must not throw.
       (void)::fsync(fd_);
       close(fd_);
     }
@@ -386,11 +330,7 @@ public:
   FdOutStreamBuf(const FdOutStreamBuf &) = delete;
   FdOutStreamBuf &operator=(const FdOutStreamBuf &) = delete;
 
-  // Flush pending data and close the fd, returning false on any I/O
-  // error (including deferred errors reported by close()). Call this
-  // before destruction to detect write-back failures.
-  // Note: finish() is the authoritative success check — ostream::good()
-  // may not reflect sync() failures if flush() was not called.
+  // Flush, fsync, close, returning I/O status.
   bool finish() {
     if (fd_ < 0)
       return true;
@@ -399,10 +339,6 @@ public:
       fd_ = -1;
       return false;
     }
-    // fsync before close so captures survive power cuts (camera appliance
-    // may be turned off immediately after a capture). Without fsync,
-    // close() only flushes to the kernel page cache — a sudden power-off
-    // can leave a partial file on the SD card.
     if (::fsync(fd_) != 0) {
       close(fd_);
       fd_ = -1;
@@ -410,9 +346,7 @@ public:
     }
     int rc = close(fd_);
     fd_ = -1;
-    // On Linux, close() always deallocates the fd even if it returns
-    // EINTR — retrying would close a different fd (fd reuse). Treat
-    // EINTR as success to avoid false-negative write failures.
+    // Treat EINTR as success.
     if (rc != 0 && errno == EINTR)
       rc = 0;
     return rc == 0;
@@ -485,14 +419,7 @@ private:
   char buffer_[4096];
 };
 
-// Open a file for writing with O_CREAT|O_EXCL|O_NOFOLLOW, returning an ostream
-// that writes directly to the safe fd via FdOutStreamBuf. This avoids
-// the TOCTOU race of close()+reopen() — the fd stays open for the stream's
-// lifetime, so a symlink swap between open and write is impossible.
-//
-// The streambuf owns the fd and closes it on destruction. The returned
-// unique_ptr wraps a struct holding both the streambuf and ostream, ensuring
-// both are destroyed together (the ostream does NOT own its rdbuf by default).
+// O_EXCL ostream wrapper over a safe fd.
 class SafeOstream {
 public:
   SafeOstream(std::unique_ptr<FdOutStreamBuf> b,
@@ -511,9 +438,6 @@ private:
   std::string path_; // actual file path (for unlink on failure)
 };
 std::unique_ptr<SafeOstream> safeOfstream(const std::string &path) {
-  // Try open(O_CREAT|O_EXCL) directly — no lstat probe, no TOCTOU race.
-  // Stem/ext split and candidate construction shared via
-  // splitPathStemExt/suffixedCandidate (see safeFileOpen).
   const PathStemExt se = splitPathStemExt(path);
 
   for (int i = 1; i <= kMaxNameRetries; ++i) {
@@ -536,20 +460,13 @@ std::unique_ptr<SafeOstream> safeOfstream(const std::string &path) {
 } // namespace
 
 std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
-  // Layout (all offsets relative to the TIFF header start, i.e., after
-  // the 6-byte "Exif\0\0" prefix):
-  //   [0..8)        TIFF header ("II" + 42 + offset to IFD0 = 8)
-  //   [8..8+I0)     IFD0: count(2) + N*12 + nextIFD(4)
-  //   [..+D0)       IFD0 data area (strings that don't fit inline)
-  //   [..+I1)       ExifIFD: count(2) + M*12 + nextIFD(4)
-  //   [..+D1)       ExifIFD data area (rational + string)
+  // Layout (offsets relative to TIFF header, after "Exif\0\0"):
+  //   TIFF header | IFD0 + data | ExifIFD + data
 
   const std::string dateStr = formatExifDateTime(meta.timestampSec);
   const bool hasDate = !dateStr.empty();
   const bool hasCopyright = !meta.copyright.empty();
 
-  // IFD0 entries: Make, Model, Software, DateTime (if present), Copyright (if
-  // present), ExifIFD ptr.
   const uint16_t ifd0Count =
       static_cast<uint16_t>(4 + (hasDate ? 1 : 0) + (hasCopyright ? 1 : 0));
   const uint32_t ifd0Size = 2 + static_cast<uint32_t>(ifd0Count) * 12 + 4;
@@ -569,8 +486,6 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
     addAsciiEntry(ifd0Entries, ifd0Data, ifd0DataStart, ExifTagCopyright,
                   meta.copyright);
 
-  // ExifIFD pointer (LONG, inline). Offset filled after computing the
-  // ExifIFD start position.
   const uint32_t exifIfdStart =
       ifd0DataStart + static_cast<uint32_t>(ifd0Data.size());
   ifd0Entries.push_back({ExifTagExifIFD, ExifTypeLong, 1, exifIfdStart});
@@ -582,8 +497,6 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
             });
 
   // --- ExifIFD ---
-  // Entries: ExposureTime (if present), ISOSpeedRatings, DateTimeOriginal (if
-  // present).
   const bool hasExposure =
       (meta.exposureTimeUs > 0 &&
        meta.exposureTimeUs <= std::numeric_limits<uint32_t>::max());
@@ -595,7 +508,6 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
   std::vector<uint8_t> exifIfdData;
   std::vector<ExifIfdEntry> exifIfdEntries;
 
-  // ExposureTime (0x829A) — RATIONAL (num/den in seconds)
   if (hasExposure) {
     uint32_t num = static_cast<uint32_t>(meta.exposureTimeUs);
     uint32_t den = 1000000;
@@ -611,7 +523,6 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
     exifIfdEntries.push_back({ExifTagExposureTime, ExifTypeRational, 1, off});
   }
 
-  // ISOSpeedRatings (0x8827) — SHORT, inline (low 16 bits of the 4-byte field)
   {
     uint32_t iso;
     if (meta.analogueGain > 0) {
@@ -627,13 +538,11 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
     exifIfdEntries.push_back({ExifTagISOSpeed, ExifTypeShort, 1, iso});
   }
 
-  // ColorSpace (0xA001) — SHORT, inline. sRGB = 1, AdobeRGB = 2 (uncalibrated).
   {
     uint32_t cs = (meta.colorSpace == 1) ? 0x0002 : 0x0001;
     exifIfdEntries.push_back({ExifTagColorSpace, ExifTypeShort, 1, cs});
   }
 
-  // DateTimeOriginal (0x9003) — ASCII, 20 bytes
   if (hasDate)
     addAsciiEntry(exifIfdEntries, exifIfdData, exifIfdDataStart,
                   ExifTagDateTimeOriginal, dateStr);
@@ -645,7 +554,6 @@ std::vector<uint8_t> buildExifData(const ExifMetadata &meta) {
 
   // --- Serialize the complete EXIF buffer ---
   std::vector<uint8_t> buf;
-  // "Exif\0\0" header (6 bytes)
   buf.push_back('E');
   buf.push_back('x');
   buf.push_back('i');
@@ -702,9 +610,7 @@ bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w,
   if (!checkedMul(rgbSize, 3, rgbSize))
     return false;
 
-  // Build PNG tEXt chunks from metadata (if provided). The strings
-  // must stay alive until writePngCore returns — they're declared
-  // here in the caller's scope, outside the setjmp/longjmp boundary.
+  // Build tEXt chunks; strings must outlive writePngCore.
   std::string dateStr;
   std::string expStr;
   std::string isoStr;
@@ -755,10 +661,6 @@ bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w,
     return false;
   }
 
-  // info is created inside writePngCore (after setjmp) so that an
-  // OOM during png_create_info_struct is caught by the longjmp guard
-  // instead of aborting the process. Initialized to nullptr so
-  // png_destroy_write_struct is safe even if creation never happened.
   png_infop info = nullptr;
   png_bytep *rows = nullptr;
   int rc = writePngCore(png, &info, fp, rgb, w, h, compressionLevel, &rows,
@@ -887,8 +789,7 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
   if (!checkedMul(expectedSize, 3, expectedSize))
     return false;
 
-  // Build EXIF APP1 data from metadata (if provided). The buffer
-  // stays alive in this scope until writeJpegRgbCore returns.
+  // Build EXIF APP1 data.
   std::vector<uint8_t> exifData;
   if (meta) {
     ExifMetadata exifMeta = *meta;
@@ -913,8 +814,7 @@ bool writeJpegRgb(const uint8_t *rgb, uint32_t w, uint32_t h,
   int rc = writeJpegRgbCore(&cinfo, &jerr, fp, rgb, w, h, quality, &rowPtrs,
                             &cinfoCreated, exifData.data(), exifData.size());
 
-  // Only destroy if jpeg_create_compress actually succeeded — calling
-  // jpeg_destroy_compress on an uninitialized cinfo is undefined behavior.
+  // jpeg_destroy_compress only safe after jpeg_create_compress succeeded.
   if (cinfoCreated)
     jpeg_destroy_compress(&cinfo);
   std::free(static_cast<void *>(

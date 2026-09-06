@@ -23,13 +23,8 @@
 //   1. callbacksMtx_  — held during callback dispatch / stop() wait
 //   2. stillMtx_ / vfMtx_  — per-stream state (still capture / viewfinder)
 //   3. cfgMtx_  — still config (written by UI thread, read by callback)
-// stop() acquires callbacksMtx_ then stillMtx_; applyControls() acquires
-// cfgMtx_ only. Never hold a lower-numbered lock while acquiring a
-// higher-numbered one.
 namespace picamera {
 
-// Targeted imports for the libcamera names used in this TU, instead of a
-// file-scope `using namespace libcamera;` (SF.7).
 using libcamera::CameraConfiguration;
 using libcamera::FrameBufferAllocator;
 using libcamera::Request;
@@ -54,41 +49,24 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
   if (!handle_.camera())
     return false;
 
-  // Validate dimensions to prevent zero-size or overflow-prone configurations.
   if (vfW == 0 || vfH == 0 || capW == 0 || capH == 0)
     return false;
   if (capW > kMaxSensorWidth || capH > kMaxSensorHeight)
     return false;
 
-  // Reset per-start state. swJpegEncode_ is set to true below if the
-  // pipeline handler rejects HW MJPEG; without this reset, a previous
-  // fallback would persist across reconfigureStill() calls and cause
-  // SwJpegWriter to be selected for an MJPEG stream (garbage output).
+  // Reset fallback flag before reconfiguring.
   swJpegEncode_ = false;
 
   stillFmt_ = capFmt;
   stillCfg_.width = capW;
   stillCfg_.height = capH;
   stillCfg_.format = capFmt;
-  // Preserve AE/AWB enable flags across reconfigureStill() — the CLI may
-  // have disabled them (--ae-disable/--awb-disable) via updateStillConfig(),
-  // and resetting them here would re-enable AE/AWB in the viewfinder until
-  // the next capture. CameraConfig defaults them to true, so the initial
-  // start() still gets AE/AWB on unless the CLI explicitly disabled them.
 
-  // Configure both Viewfinder + StillCapture roles on one camera.
-  // The Pi ISP drives both from the same sensor, sharing AE/AWB.
+  // Role map: DNG uses Raw, else StillCapture (NV12/MJPEG).
   std::vector<StreamRole> roles;
   if (capFmt == OutputFormat::DNG) {
-    // DNG needs raw Bayer — use Raw + Viewfinder.
     roles = {StreamRole::Viewfinder, StreamRole::Raw};
   } else {
-    // All other formats (JPEG, PNG, PPM, RAW_NV12, RawJpeg, DngJpeg) use
-    // NV12 still capture. RawJpeg saves both JPEG and raw NV12 from the
-    // same NV12 frame (not raw Bayer) so both files are valid.
-    // DngJpeg uses sequential captures: first NV12 (JPEG), then
-    // reconfigures to raw Bayer (DNG) — see captureDngJpegAsync in
-    // preview.cpp. The initial stream is NV12 for the JPEG phase.
     roles = {StreamRole::Viewfinder, StreamRole::StillCapture};
   }
 
@@ -98,14 +76,12 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
     return false;
   }
 
-  // Viewfinder stream (slot 0): low-res NV12, continuous.
   auto &vfSc = cfg->at(0);
   vfSc.size.width = vfW;
   vfSc.size.height = vfH;
   vfSc.pixelFormat = formats::NV12;
   vfSc.bufferCount = kVfBufferCount;
 
-  // Still stream (slot 1): full-res.
   auto &stillSc = cfg->at(1);
   stillSc.size.width = capW;
   stillSc.size.height = capH;
@@ -116,7 +92,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
   } else if (capFmt == OutputFormat::DNG) {
     stillSc.pixelFormat = formats::SRGGB10_CSI2P;
   } else {
-    // PNG, PPM, RAW_NV12, RawJpeg all use NV12.
     stillSc.pixelFormat = formats::NV12;
   }
   stillSc.bufferCount = kStillBufferCount;
@@ -127,7 +102,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
     return false;
   }
 
-  // Detect HW MJPEG fallback (Pi VC4 may reject MJPEG at high res).
   if (wantJpeg && stillSc.pixelFormat != formats::MJPEG) {
     std::cerr << "DualStream: HW MJPEG unavailable (got " << stillSc.pixelFormat
               << "), using software JPEG encode\n";
@@ -159,9 +133,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
         std::cerr << "DualStream: NV12 reconfigure failed\n";
         return false;
       }
-      // Verify the fallback actually resulted in NV12 — the pipeline
-      // handler could substitute yet another format. Check the stream's
-      // configured pixel format (stillSc may be stale after configure()).
+      // Confirm the fallback stuck.
       if (stillSc.stream()->configuration().pixelFormat != formats::NV12) {
         std::cerr << "DualStream: NV12 fallback rejected by pipeline (got "
                   << stillSc.stream()->configuration().pixelFormat << ")\n";
@@ -190,25 +162,18 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
     return false;
   }
 
-  // Install the completion callback BEFORE starting the camera — the
-  // safer libcamera pattern ensures no completion can fire before the
-  // signal is connected (even though no buffers are queued until after).
+  // Connect completion callback before start().
   handle_.camera()->requestCompleted.connect(this, [this](Request *r) {
-    // Track in-flight callbacks so stop() can wait for all
-    // callbacks to exit before destroying Request objects.
+    // Track in-flight callbacks for stop() sync.
     callbacksInFlight_.fetch_add(1, std::memory_order_acq_rel);
     CallbackGuard cbGuard{callbacksInFlight_, callbacksCv_, callbacksMtx_};
 
-    // If shutdown is in progress, don't touch any state or re-queue.
-    // The request will be cleaned up by stop().
+    // Skip requeue during shutdown.
     if (shuttingDown_.load(std::memory_order_acquire)) {
       r->reuse(Request::ReuseBuffers);
       return;
     }
 
-    // Hold a shared_ptr snapshot of the camera for the whole callback
-    // body so that shutdown() can't release it between the top-of-callback
-    // check and any queueRequest below.
     auto cam = handle_.camera();
     if (!cam)
       return;
@@ -220,7 +185,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
       return;
     }
 
-    // Check if this is a still capture completion (still stream).
     bool isStill = false;
     for (const auto &[s, b] : buffers) {
       if (s == stillStream_) {
@@ -238,7 +202,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
     }
   });
 
-  // Start camera.
   if (handle_.camera()->start()) {
     std::cerr << "DualStream: cam->start() failed\n";
     handle_.camera()->requestCompleted.disconnect();
@@ -247,7 +210,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
   }
   started_.store(true, std::memory_order_release);
 
-  // Queue all VF buffers.
   const auto &vfBuffers = allocator_->buffers(vfStream_);
   vfRequests_.reserve(vfBuffers.size());
   for (size_t i = 0; i < vfBuffers.size(); ++i) {
@@ -286,7 +248,6 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
     vfRequests_.push_back(std::move(req));
   }
 
-  // Store still buffer reference for captureStill().
   const auto &stillBufs = allocator_->buffers(stillStream_);
   if (!stillBufs.empty()) {
     stillBuffer_ = stillBufs[0].get();
@@ -299,9 +260,7 @@ bool DualStream::start(uint32_t vfW, uint32_t vfH, uint32_t capW, uint32_t capH,
 
 void DualStream::failStart() {
   stop();
-  // stop() returns early when !started_ (e.g., if camera->start() failed),
-  // so the requestCompleted signal may still be connected. Disconnect it
-  // explicitly to avoid a dangling slot bound to this DualStream instance.
+  // stop() returns early when !started_, so disconnect the signal explicitly.
   if (handle_.camera()) {
     try {
       handle_.camera()->requestCompleted.disconnect();
@@ -317,6 +276,7 @@ void DualStream::failStart() {
 }
 
 void DualStream::safeRequeue(libcamera::Camera *cam, Request *r) {
+  // Retry queueRequest up to 3 times, then set fatal error.
   if (shuttingDown_.load(std::memory_order_acquire))
     return;
   if (!started_.load(std::memory_order_acquire))
@@ -342,9 +302,6 @@ void DualStream::safeRequeue(libcamera::Camera *cam, Request *r) {
 }
 
 void DualStream::handleStillFrame(Request *r) {
-  // Still capture completed — save it.
-  // Copy the filename under the lock, then save without holding
-  // it (saveFrame can be slow — don't block captureStill()).
   std::string filename;
   {
     std::lock_guard<std::mutex> lk(stillMtx_);
@@ -352,9 +309,7 @@ void DualStream::handleStillFrame(Request *r) {
   }
   bool saved = false;
   if (r->status() == Request::RequestComplete) {
-    // Wrap in try/catch: saveFrame allocates large buffers
-    // (30+ MB for full-res conversion) and std::bad_alloc
-    // would std::terminate() inside this libcamera callback.
+    // Catch OOM from saveFrame.
     try {
       saved = saveFrame(r, filename);
     } catch (const std::bad_alloc &) {
@@ -369,17 +324,9 @@ void DualStream::handleStillFrame(Request *r) {
     stillDone_ = true;
     stillCv_.notify_one();
   }
-  // Release the buffer back to the pool by reusing the request.
-  // Without this, the buffer stays attached to the completed
-  // request and the next captureStill() can't addBuffer it.
+  // Detach buffer, free request, clear in-progress state.
   r->reuse(Request::ReuseBuffers);
-  // Free the old request — a fresh one is created in the next
-  // captureStill() call. This must happen after reuse() so the
-  // buffer is detached before the Request is destroyed.
   stillRequest_.reset();
-  // Clear stillInProgress_ AFTER the buffer is released, so a new
-  // captureStill() can't addBuffer(stillBuffer_) while the previous
-  // request still owns it.
   stillInProgress_.store(false);
   // Clear bracketing overrides after the still capture completes.
   stillEvOverride_.store(0.0f, std::memory_order_release);
@@ -389,8 +336,6 @@ void DualStream::handleStillFrame(Request *r) {
 }
 
 void DualStream::requeueVf(Request *r) {
-  // If applyControls throws, skip the requeue to avoid streaming with
-  // wrong exposure/AWB settings.
   r->reuse(Request::ReuseBuffers);
   bool controlsOk = true;
   try {
@@ -400,8 +345,6 @@ void DualStream::requeueVf(Request *r) {
     controlsOk = false;
   }
   if (controlsOk && !shuttingDown_.load(std::memory_order_acquire)) {
-    // Snapshot the camera to avoid a race if shutdown() resets the
-    // handle between the check and queueRequest.
     auto cam = handle_.camera();
     if (cam)
       safeRequeue(cam.get(), r);
@@ -414,13 +357,10 @@ void DualStream::handleVfError(Request *r, libcamera::Camera *cam) {
 }
 
 void DualStream::handleVfFrame(Request *r) {
-  // Read exposure metadata before the buffer copy so the UI thread sees
-  // consistent values paired with the frame they describe.
+  // Copy metadata before frame data.
   const auto &md = r->metadata();
   if (auto exp = md.get(controls::ExposureTime)) {
-    // ExposureTime is int32 microseconds; convert to ms (round up so
-    // sub-ms exposures display as "1/<n>"). int64_t avoids overflow
-    // when us is near INT32_MAX (~2.1s, us+999 would overflow).
+    // µs → ms, rounded up.
     int32_t us = *exp;
     lastShutterMs_.store(
         us > 0 ? static_cast<uint32_t>((static_cast<int64_t>(us) + 999) / 1000)
@@ -429,10 +369,7 @@ void DualStream::handleVfFrame(Request *r) {
   }
   if (auto gain = md.get(controls::AnalogueGain)) {
     float g = std::max(0.0f, *gain);
-    // gain*100 -> ISO (1x=ISO100). Clamp below UINT32_MAX before llround
-    // — float(UINT32_MAX) may round to 2^32 and wrap to 0. llround (not
-    // lround) because long is 32-bit on some platforms (UINT32_MAX-1 >
-    // LONG_MAX there).
+    // gain×100 → ISO, clamped to 32-bit.
     float isoF = std::min(g * 100.0f, static_cast<float>(UINT32_MAX - 1));
     long long iso = std::llround(isoF);
     lastIso_.store(
@@ -455,8 +392,6 @@ void DualStream::handleVfFrame(Request *r) {
 
     size_t ySize = 0;
     size_t uvSize = 0;
-    // NV12 UV plane has ceil(height/2) rows — (height+1)/2 avoids
-    // truncating the last UV row for odd heights.
     if (!checkedMul(static_cast<size_t>(vfStride_), vfHeight_, ySize) ||
         !checkedMul(static_cast<size_t>(vfStride_), (vfHeight_ + 1) / 2,
                     uvSize)) {
@@ -465,8 +400,7 @@ void DualStream::handleVfFrame(Request *r) {
     if (yPlane.size() < ySize || uvPlane.size() < uvSize)
       continue;
 
-    // resize() can throw std::bad_alloc on the 512MB Pi, which would
-    // std::terminate inside this callback.
+    // resize() may throw; catch in callback.
     try {
       std::lock_guard<std::mutex> lk(vfMtx_);
       vfYData_.resize(ySize);
@@ -498,10 +432,7 @@ bool DualStream::saveFrame(Request *req, const std::string &filename) {
 
   const auto &sc = stillStream_->configuration();
 
-  // Override exposure/gain with the actual converged values from the
-  // request metadata so DNG/EXIF tags are accurate even when AE is on.
-  // Snapshot stillCfg_ under the mutex to avoid a data race with
-  // updateStillConfig() which may run on the UI thread.
+  // Use converged metadata for EXIF/DNG tags.
   CameraConfig writerCfg;
   {
     std::lock_guard<std::mutex> lk(cfgMtx_);
@@ -537,10 +468,7 @@ bool DualStream::saveFrame(Request *req, const std::string &filename) {
   frame.plane1 = p1.valid() ? p1.data() : nullptr;
   frame.plane1Size = p1.valid() ? p1.size() : 0;
 
-  // Ask the writer for the actual saved path — it may differ from
-  // `filename` if a uniqueness suffix (_2, _3, ...) was needed. The
-  // caller (requestCompleted callback) stores this so waitCaptureDone()
-  // can report the real path for the review screen to decode.
+  // Capture actual path (with uniqueness suffix).
   std::string actualPath;
   bool ok = writer->write(frame, filename, &actualPath);
   if (ok) {
@@ -551,8 +479,6 @@ bool DualStream::saveFrame(Request *req, const std::string &filename) {
 }
 
 bool DualStream::captureStill(const std::string &filename) {
-  // Atomically test-and-set stillInProgress_ to prevent a TOCTOU race
-  // where two callers both see false and both proceed to queue.
   bool expected = false;
   if (!stillInProgress_.compare_exchange_strong(expected, true))
     return false;
@@ -597,11 +523,7 @@ bool DualStream::captureStill(const std::string &filename) {
     stillSavedPath_.clear();
   }
 
-  // Store the request BEFORE queueing so the callback can safely access
-  // stillRequest_ without racing with the assignment below. The callback
-  // fires on the libcamera thread and resets stillRequest_ at completion;
-  // if we moved after queueRequest, the callback could fire between the
-  // queue and the move, creating a data race on the unique_ptr.
+  // Assign before queueRequest to avoid callback race.
   stillRequest_ = std::move(req);
 
   try {
@@ -642,14 +564,9 @@ bool DualStream::waitCaptureDone(int timeoutMs, std::string *savedPath) {
 bool DualStream::captureInProgress() const { return stillInProgress_.load(); }
 
 void DualStream::updateStillConfig(const CameraConfig &cfg) {
-  // Only update the encoder-relevant fields (quality, format). The stream
-  // geometry (width/height/pixelFormat) is fixed at start() time and can't
-  // change without a full stop/reconfigure/restart.
   std::lock_guard<std::mutex> lk(cfgMtx_);
   stillCfg_.jpegQuality = cfg.jpegQuality;
   stillCfg_.pngLevel = cfg.pngLevel;
-  // Also propagate exposure/gain/AWB settings so manual shutter/ISO
-  // from the settings menu or CLI are applied to still captures.
   stillCfg_.aeEnable = cfg.aeEnable;
   stillCfg_.exposureTime = cfg.exposureTime;
   stillCfg_.analogueGain = cfg.analogueGain;
@@ -678,8 +595,7 @@ void DualStream::updateStillConfig(const CameraConfig &cfg) {
 
 bool DualStream::reconfigureStill(uint32_t vfW, uint32_t vfH, uint32_t capW,
                                   uint32_t capH, OutputFormat capFmt) {
-  // Full stop + restart with the new format. The camera must be released
-  // before reconfiguring.
+  // Stop, then restart with the new format.
   stop();
   // If stop() timed out with stuck callbacks, do NOT free the allocator
   // or streams — a callback may still be using them (use-after-free).
@@ -711,10 +627,8 @@ void DualStream::setStillGainOverride(float gain) {
 
 void DualStream::applyControls(Request *req) const {
   auto &ctrls = req->controls();
-  // Clear stale controls: libcamera reuses Request objects, so settings
-  // from a prior frame (e.g. AeEnable=false) could persist unexpectedly.
+  // libcamera reuses requests; clear old controls.
   ctrls.clear();
-  // Bracketing overrides (EV, WB, gain) only apply to still requests.
   bool isStill = false;
   if (stillStream_) {
     for (const auto &[s, b] : req->buffers()) {
@@ -724,8 +638,6 @@ void DualStream::applyControls(Request *req) const {
       }
     }
   }
-  // Snapshot stillCfg_ under the lock (updateStillConfig writes from UI
-  // thread).
   CameraConfig cfg;
   {
     std::lock_guard<std::mutex> lk(cfgMtx_);
@@ -739,7 +651,6 @@ void DualStream::applyControls(Request *req) const {
     float wbRed = stillWbRedOverride_.load(std::memory_order_acquire);
     float wbBlue = stillWbBlueOverride_.load(std::memory_order_acquire);
     if (wbRed > 0.0f) {
-      // WB bracket: force manual WB with the override gains.
       cfg.awbEnable = false;
       cfg.wbRedGain = wbRed;
       cfg.wbBlueGain = wbBlue;
@@ -747,17 +658,12 @@ void DualStream::applyControls(Request *req) const {
     }
     float gainOverride = stillGainOverride_.load(std::memory_order_acquire);
     if (gainOverride > 0.0f) {
-      // ISO bracket: force manual gain (AE off so the ISP doesn't
-      // auto-adjust it back). Shutter stays configured or auto.
       cfg.analogueGain = gainOverride;
       cfg.aeEnable = false;
     }
   }
   if (meteringLocked_.load(std::memory_order_acquire)) {
-    // Half-press metering lock (mirrorless-style):
-    //   AeEnable=false -> AE holds the last converged shutter + gain.
-    //   AwbEnable=true + AwbLocked=true -> AWB runs but holds its current
-    //   gains (AwbEnable=false would drop to manual and ignore AwbLocked).
+    // Metering lock: AE off, AWB locked, keep set gains.
     ctrls.set(controls::AeEnable, false);
     ctrls.set(controls::AwbEnable, true);
     ctrls.set(controls::AwbLocked, true);
@@ -772,23 +678,17 @@ void DualStream::applyControls(Request *req) const {
   const bool manualShutter = cfg.exposureTime > 0;
   const bool manualGain = cfg.analogueGain > 0.0f;
   if (!cfg.aeEnable || manualGain) {
-    // Manual exposure or AE disabled: AE off, set shutter + gain as given.
+    // Manual exposure: clamp to INT32_MAX, set gain.
     ctrls.set(controls::AeEnable, false);
     if (manualShutter) {
-      // ExposureTime is int32 µs; INT32_MAX ≈ 35.8 min — well beyond any
-      // practical IMX477 bulb exposure. Clamp handles the theoretical
-      // cfg.exposureTime > INT32_MAX case.
       ctrls.set(controls::ExposureTime, static_cast<int32_t>(std::min<uint64_t>(
                                             cfg.exposureTime, INT32_MAX)));
     }
     if (manualGain) {
-      // Clamp to the user's ISO range (ISO = gain*100). libcamera has no
-      // AeAnalogueGainMin/Max, so isoMin/isoMax are enforced here only.
       ctrls.set(controls::AnalogueGain,
                 clampGainToIsoRange(cfg.analogueGain, cfg.isoMin, cfg.isoMax));
     }
   } else {
-    // AE on (Program/Auto, or shutter priority: manual shutter, auto gain).
     ctrls.set(controls::AeEnable, true);
     if (manualShutter) {
       ctrls.set(controls::ExposureTime, static_cast<int32_t>(std::min<uint64_t>(
@@ -814,8 +714,6 @@ void DualStream::applyControls(Request *req) const {
   ctrls.set(controls::Sharpness, cfg.sharpness);
   ctrls.set(controls::draft::NoiseReductionMode,
             static_cast<int32_t>(cfg.noiseReductionMode));
-  // Digital gain is post-processing, not exposure — set independently so
-  // --digital-gain doesn't disable AE.
   if (cfg.digitalGain > 0.0f) {
     ctrls.set(controls::DigitalGain, cfg.digitalGain);
   }
@@ -834,8 +732,6 @@ StreamFrame DualStream::grabFrame(int timeoutMs) {
   }
   vfFrameReady_ = false;
 
-  // Copy the frame data while holding the lock so the callback can't
-  // overwrite it while the caller is using the returned frame.
   frame.yData = vfYData_;
   frame.uvData = vfUvData_;
   frame.width = vfWidth_;
@@ -860,14 +756,7 @@ void DualStream::stop() noexcept {
   }
   started_.store(false, std::memory_order_release);
 
-  // Wait for any in-flight callbacks to exit before destroying Request
-  // objects. camera->stop() cancels pending requests and fires their
-  // callbacks, but doesn't guarantee they've returned. Use a 60s timeout
-  // (saveFrame can be slow for full-res JPEG/DNG writes on slow SD cards).
-  // If callbacks haven't exited, set fatalError_ so the caller exits
-  // gracefully (systemd Restart=on-failure handles the restart).
-  // Wrap in try/catch: mutex/CV ops can throw std::system_error,
-  // which would std::terminate() inside this noexcept function.
+  // Signal shutdown, stop camera, wait up to 60s, clean up.
   try {
     std::unique_lock<std::mutex> lk(callbacksMtx_);
     if (!callbacksCv_.wait_for(lk, std::chrono::seconds(60), [this] {
@@ -876,12 +765,6 @@ void DualStream::stop() noexcept {
       std::cerr << "DualStream: FATAL: callbacks stuck after 60s — requesting "
                    "shutdown\n";
       fatalError_.store(true, std::memory_order_release);
-      // Do NOT clear vfRequests_/stillRequest_ — a callback may still
-      // be dereferencing them. Leak until process death (systemd
-      // Restart=on-failure handles cleanup). Freeing under a live
-      // callback would be use-after-free.
-      // Wake any thread blocked in waitCaptureDone() so it returns
-      // promptly instead of waiting for the full 5s timeout.
       {
         std::lock_guard<std::mutex> lk(stillMtx_);
         stillInterrupted_ = true;
@@ -895,10 +778,6 @@ void DualStream::stop() noexcept {
     std::cerr << "DualStream: callback wait threw: " << e.what() << "\n";
   }
 
-  // Wake any thread blocked in waitCaptureDone() so it returns promptly
-  // instead of waiting for the full timeout. Use stillInterrupted_ rather
-  // than overwriting stillDone_/stillSaved_ — the callback may still be
-  // in saveFrame() and should remain the sole writer of stillSaved_.
   {
     std::lock_guard<std::mutex> lk(stillMtx_);
     stillInterrupted_ = true;
@@ -915,11 +794,7 @@ void DualStream::stop() noexcept {
 
 void DualStream::shutdown() noexcept {
   stop();
-  // If stop() timed out with stuck callbacks, fatalError_ is set and
-  // vfRequests_/stillRequest_ were intentionally leaked (a callback may
-  // still be dereferencing them). Do NOT free the allocator or clear
-  // streams — that would be use-after-free. Let the process exit and
-  // systemd Restart=on-failure handle cleanup.
+  // If callbacks stuck, allocator may still be in use; do not free.
   if (fatalError_.load(std::memory_order_acquire))
     return;
   allocator_.reset();

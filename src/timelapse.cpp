@@ -19,8 +19,8 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
   };
 
   bool hasIntConv = false;
-  bool hasOtherConv = false; // any %-specifier that isn't an int conv or %%
-  int intConvCount = 0;      // must be exactly 1 to match the single `int` arg
+  bool hasOtherConv = false;
+  int intConvCount = 0;
 
   for (size_t p = 0; p < pattern.size(); ++p) {
     if (pattern[p] != '%')
@@ -32,8 +32,7 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
     if (next == '%') {
       ++p;
       continue;
-    } // literal %
-    // Skip printf flags/width/precision: [-+ 0#]*[0-9]*.?[0-9]*
+    }
     size_t q = p + 1;
     while (q < pattern.size() &&
            (pattern[q] == '-' || pattern[q] == '+' || pattern[q] == ' ' ||
@@ -72,7 +71,6 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
   }
 
   if (hasIntConv) {
-    // Reject patterns with more than one integer conversion.
     if (intConvCount != 1) {
       throw std::invalid_argument(
           "output pattern must contain exactly one integer conversion");
@@ -80,7 +78,6 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
     // Instead of passing the user pattern as a snprintf format string
     // (CWE-134: externally-controlled format string), split the pattern
     // at the %d/%i specifier and format the integer separately.
-    // Find the specifier location (already validated above).
     size_t specStart = std::string::npos;
     size_t specEnd = 0;
     for (size_t p = 0; p < pattern.size(); ++p) {
@@ -112,16 +109,12 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
           "internal error: could not locate int conversion");
     }
 
-    // Extract the format specifier to determine width/zero-padding.
     std::string fmtSpec = pattern.substr(specStart, specEnd - specStart);
-    // Parse: %[flags][width][.precision](d|i)
-    // Only '0' flag (zero-padding) is supported. Other printf flags
-    // ('-', '+', ' ', '#') and precision are rejected to avoid
-    // silently producing output that doesn't match user expectations.
+    // Only '0' flag (zero-padding) is supported; other printf flags and
+    // precision are rejected to avoid unexpected output.
     size_t width = 0;
     bool zeroPad = false;
     size_t fp = 1; // skip '%'
-    // Parse flags — only '0' is supported.
     while (fp < fmtSpec.size() &&
            (fmtSpec[fp] == '-' || fmtSpec[fp] == '+' || fmtSpec[fp] == ' ' ||
             fmtSpec[fp] == '0' || fmtSpec[fp] == '#')) {
@@ -133,8 +126,7 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
       zeroPad = true;
       ++fp;
     }
-    // Parse width with overflow protection — cap at 511 (max useful
-    // given the 512-byte result limit).
+    // Parse width with overflow protection — cap at 511.
     while (fp < fmtSpec.size() && fmtSpec[fp] >= '0' && fmtSpec[fp] <= '9') {
       width = width * 10 + static_cast<size_t>(fmtSpec[fp] - '0');
       if (width > 511) {
@@ -142,7 +134,7 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
       }
       ++fp;
     }
-    // Reject precision (dot followed by digits) — not supported.
+    // Reject precision — not supported.
     if (fp < fmtSpec.size() && fmtSpec[fp] == '.') {
       throw std::invalid_argument(
           "output pattern: precision not supported for integer conversion");
@@ -168,9 +160,7 @@ std::string formatTimelapseName(const std::string &pattern, int i) {
       }
     }
 
-    // Assemble: prefix + number + suffix
-    // Unescape %% → % in prefix and suffix (matching printf/strftime
-    // semantics for literal percent signs).
+    // Unescape %% → % in prefix and suffix.
     auto unescapePct = [](std::string s) {
       std::string out;
       out.reserve(s.size());

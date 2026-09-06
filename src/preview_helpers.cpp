@@ -59,14 +59,13 @@ bool hasDiskSpace(const std::string &dir, uint64_t minBytes) {
               << errnoString(errno) << "\n";
     return false;
   }
-  // Use checked multiplication to prevent theoretical overflow on
-  // filesystems with very large block sizes or block counts.
-  // f_frsize is the POSIX-correct block size for free-space calculations
-  // (f_bsize is an FS-optimal I/O size that may differ on some filesystems).
+  // Checked multiplication prevents overflow on filesystems with very large
+  // block sizes/counts. f_frsize is the POSIX-correct block size for free-space
+  // calculations (f_bsize is an FS-optimal I/O size that may differ).
   uint64_t avail = 0;
   if (!checkedMul(static_cast<uint64_t>(stat.f_bavail),
                   static_cast<uint64_t>(stat.f_frsize), avail)) {
-    // Overflow — can't safely determine free space, fail closed.
+    // Overflow — fail closed.
     std::cerr << "Preview: disk space check overflowed — denying capture\n";
     return false;
   }
@@ -84,19 +83,15 @@ std::vector<std::string> listCaptures(const std::string &dir) {
       // Handle per-entry errors gracefully — a single bad symlink or
       // permission-denied file should not empty the entire listing.
       try {
-        // Use symlink_status to avoid following symlinks — a symlink
-        // pointing outside the capture dir should not appear as a
-        // capturable image in the playback browser.
+        // symlink_status avoids following symlinks — a symlink pointing
+        // outside the capture dir should not appear as a capturable image.
         if (!fs::is_regular_file(entry.symlink_status()))
           continue;
         std::string ext = toLower(entry.path().extension().string());
         if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".dng" ||
             ext == ".ppm" || ext == ".raw") {
-          // Use the error_code overload of last_write_time so a
-          // stale NFS handle or permission issue on one entry
-          // doesn't throw (the outer try/catch would swallow it,
-          // but being explicit avoids the exception overhead and
-          // makes the skip intent clear).
+          // error_code overload avoids exception overhead on stale NFS
+          // handles or permission issues.
           std::error_code mtimeEc;
           auto mtime = fs::last_write_time(entry, mtimeEc);
           if (mtimeEc)
@@ -104,7 +99,6 @@ std::vector<std::string> listCaptures(const std::string &dir) {
           entries.emplace_back(mtime, entry.path().string());
         }
       } catch (const std::exception &e) {
-        // Skip this entry, keep iterating
         (void)e;
       }
     }
@@ -205,8 +199,6 @@ std::string ensureDateSubfolder(const std::string &dir,
   return sub.string();
 }
 
-// --- File protection ---
-
 namespace {
 
 std::string protectedListPath(const std::string &dir) {
@@ -283,8 +275,6 @@ bool toggleFileProtection(const std::string &dir, const std::string &filename) {
   }
   return nowProtected;
 }
-
-// --- File rating ---
 
 namespace {
 // Build the .rating sidecar path for a file: dir/.<basename>.rating

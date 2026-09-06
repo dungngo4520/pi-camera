@@ -416,8 +416,6 @@ void adjustIso(CameraSettings &s, int direction) {
   s.aeEnable = (s.shutterUs == 0 && s.analogueGain == 0.0f);
 }
 
-// Auto-ISO bounds. No "0" sentinel (unlike kIsoSteps) — min/max are real
-// values.
 constexpr int kIsoBoundValues[] = {100, 200, 400, 800, 1600, 3200, 6400};
 
 int cycleIsoBound(int current, int direction) {
@@ -626,9 +624,7 @@ void adjustImgWbBlue(CameraSettings &s, int direction) {
 }
 
 void adjustImgWbSet(CameraSettings &s, int /*direction*/) {
-  // One-touch custom white balance: arm the measure flag (consumed by the
-  // viewfinder, which reads the live frame's chroma) and switch to manual
-  // R/B gain mode so the computed gains take effect.
+  // arm custom WB measurement
   s.wbMeasurePending = true;
   s.awbEnable = false;
 }
@@ -702,10 +698,6 @@ void adjustSysPowerSave(CameraSettings &s, int direction) {
 
 void adjustExpMode(CameraSettings &s, int direction) {
   s.exposureMode = cycleEnum(s.exposureMode, direction, kExposureModeCount);
-  // Apply exposure mode semantics:
-  // P/Auto: AE on, shutter+ISO auto
-  // S: AE on, shutter manual, ISO auto (shutter priority)
-  // M: AE off, shutter+ISO manual
   switch (s.exposureMode) {
   case ExposureMode::Program:
   case ExposureMode::Auto:
@@ -985,8 +977,6 @@ std::string_view valWbBlue(const CameraSettings &s, std::string &buf) {
 }
 
 std::string_view valWbSet(const CameraSettings &s, std::string &) {
-  // "SET" while a measurement is pending (armed in settings, awaiting the
-  // next viewfinder frame); "OFF" once consumed.
   return s.wbMeasurePending ? "SET" : "OFF";
 }
 
@@ -1260,9 +1250,8 @@ void adjustSetting(SettingsTab tab, int item, CameraSettings &s,
     items[item].adjustFn(s, direction);
 }
 
-// Basic menu: a flat list of the most important items. Each entry maps a
-// basic-menu index to an Advanced tab + item index. The last two items
-// (FORMAT CARD, ADVANCED) are special and handled directly in preview.cpp.
+// Basic menu: flat list mapping to Advanced tab + item indices.
+// Last two items (FORMAT CARD, ADVANCED) are handled directly in preview.cpp.
 struct BasicItemRef {
   SettingsTab tab;
   int itemIdx;
@@ -1472,10 +1461,6 @@ CameraConfig settingsToCameraConfig(const CameraSettings &s,
   cfg.wbGmShift = s.wbGmShift;
   cfg.grainEffect = s.grainEffect;
 
-  // Apply exposure mode semantics to the config.
-  // P/Auto: AE on, shutter+ISO auto (already defaults).
-  // S: AE on, shutter manual, ISO auto (shutter priority).
-  // M: AE off, shutter+ISO manual.
   switch (s.exposureMode) {
   case ExposureMode::Program:
   case ExposureMode::Auto:
@@ -1851,7 +1836,6 @@ bool saveSettings(const CameraSettings &s, const std::string &path) {
   writeKeyInt(f, "videoBitrate", s.videoBitrate);
   writeKeyInt(f, "sensorMode", static_cast<int>(s.sensorMode));
   writeKeyInt(f, "menuMode", static_cast<int>(s.menuMode));
-  // bracketEv is a vector — serialize as a comma-separated list
   f << "bracketEv=";
   for (size_t i = 0; i < s.bracketEv.size(); ++i) {
     if (i > 0)
@@ -1902,8 +1886,7 @@ bool loadSettings(CameraSettings &s, const std::string &path) {
       applySettingsKey(s, key, val);
     }
   }
-  // Re-apply picture style preset to B/C/S/Sharp — selecting a style resets
-  // those values to the style defaults, matching real camera behavior.
+  // Re-apply picture style defaults
   auto params = pictureStyleParams(s.pictureStyle);
   s.brightness = params.brightness;
   s.contrast = params.contrast;

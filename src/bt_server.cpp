@@ -24,8 +24,6 @@ namespace picamera {
 
 namespace {
 
-// --- String helpers ---
-
 std::string_view trim(std::string_view s) {
   while (!s.empty() && (s.front() == ' ' || s.front() == '\t' ||
                         s.front() == '\r' || s.front() == '\n'))
@@ -50,8 +48,6 @@ bool ieq(std::string_view a, std::string_view b) {
 }
 
 } // namespace
-
-// --- Pure-logic helper implementations ---
 
 bool parseBtCommand(std::string_view line, BtCommand &out) {
   out.type = BtCommandType::Unknown;
@@ -120,8 +116,6 @@ std::string btSetToJson(std::string_view key, std::string_view value) {
   return oss.str();
 }
 
-// --- BtServer implementation ---
-
 BtServer::BtServer() = default;
 
 BtServer::~BtServer() { stop(); }
@@ -151,7 +145,6 @@ bool BtServer::start(int channel, const std::string &captureDir,
   struct sockaddr_rc addr{};
   addr.rc_family = AF_BLUETOOTH;
   addr.rc_channel = static_cast<uint8_t>(channel);
-  // rc_bdaddr defaults to BDADDR_ANY (00:00:00:00:00:00)
   if (::bind(listenFd_, reinterpret_cast<struct sockaddr *>(&addr),
              sizeof(addr)) < 0) {
     std::cerr << "BtServer: bind() failed on channel " << channel << ": "

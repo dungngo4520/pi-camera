@@ -6,8 +6,7 @@ namespace picamera {
 
 namespace {
 
-// IMX477 sensor modes. The 2028x1080 mode is the closest to 1080p; the
-// 4056x3040 mode is the closest to 4K (but capped at 10fps).
+// IMX477 sensor modes. 2028x1080 ≈ 1080p; 4056x3040 ≈ 4K (capped at 10fps).
 constexpr SensorModeInfo kSensorModes[kSensorModeCount] = {
     {1332, 990, 120},
     {2028, 1080, 50},
@@ -20,7 +19,6 @@ constexpr SensorModeInfo kSensorModes[kSensorModeCount] = {
 const SensorModeInfo *sensorModeTable() { return kSensorModes; }
 
 SensorMode videoResolutionToSensorMode(VideoResolution r) {
-  // Requested target dimensions.
   uint32_t targetW = 0;
   uint32_t targetH = 0;
   switch (r) {
@@ -41,10 +39,8 @@ SensorMode videoResolutionToSensorMode(VideoResolution r) {
     targetH = 1080;
     break;
   }
-  // Pick the smallest sensor mode that can cover the request (both width
-  // and height >= target). If none covers it (e.g. 1080p > 1332x990 in
-  // height), fall back to the largest mode. For sub-QVGA requests the
-  // smallest mode (1332x990) is used and the ISP scales down.
+  // Pick the smallest sensor mode that covers the request. If none
+  // covers it, fall back to the largest mode.
   SensorMode best = SensorMode::Mode1332x990;
   uint32_t bestArea = 0;
   bool found = false;
@@ -61,8 +57,6 @@ SensorMode videoResolutionToSensorMode(VideoResolution r) {
   }
   if (found)
     return best;
-  // Request larger than every mode (shouldn't happen with the current
-  // enum) — use the largest mode and let the ISP/crop handle it.
   return SensorMode::Mode4056x3040;
 }
 
@@ -84,7 +78,6 @@ int videoBitrateToJpegQuality(int bitrateMbps) {
 std::chrono::microseconds videoFrameInterval(int fps) {
   if (fps <= 0)
     return std::chrono::microseconds(0);
-  // 1e6 / fps, rounded to the nearest microsecond.
   return std::chrono::microseconds(1000000 / fps);
 }
 
@@ -111,10 +104,8 @@ int clampFpsToSensorMode(int fps, SensorMode mode) {
 }
 
 const char *videoCodecExtension(VideoCodec c) {
-  // MJPEG and H264 both produce a .mjpeg container: H264 has no HW
-  // encoder via libcamera on Pi Zero 2 W, so it falls back to MJPEG-
-  // encoded JPEG frames. Never write JPEG frames to a .h264 file
-  // (that would be an invalid H.264 bitstream).
+  // H264 has no HW encoder via libcamera on Pi Zero 2 W, so it falls back
+  // to MJPEG-encoded JPEG frames. Never write JPEG frames to a .h264 file.
   if (c == VideoCodec::YUV)
     return ".yuv";
   return ".mjpeg";

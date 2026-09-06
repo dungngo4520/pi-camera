@@ -27,9 +27,6 @@
 
 namespace picamera {
 
-// Targeted imports for the libcamera names used in this TU, instead of a
-// file-scope `using namespace libcamera;` (SF.7). Only the specific types
-// and sub-namespaces referenced below are imported.
 using libcamera::CameraConfiguration;
 using libcamera::FrameBufferAllocator;
 using libcamera::Request;
@@ -57,8 +54,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
     return false;
   }
   config_ = cfg;
-  // Reset software-JPEG flag so a previous fallback configure doesn't
-  // leak into a new configuration that actually gets hardware MJPEG.
   swJpegEncode_ = false;
 
   // DNG capture needs a raw Bayer stream; everything else uses StillCapture.
@@ -78,10 +73,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
   auto &sc = camCfg->at(0);
   sc.size.width = cfg.width;
   sc.size.height = cfg.height;
-  // JPEG output uses the Pi ISP's hardware MJPEG encoder — the buffer
-  // contains a complete JPEG bitstream, no NV12->RGB conversion needed.
-  // DNG output uses raw Bayer (SRGGB10_CSI2P on the Pi ISP).
-  // Everything else uses NV12 and converts in software.
   if (cfg.format == OutputFormat::JPEG) {
     sc.pixelFormat = formats::MJPEG;
   } else if (cfg.format == OutputFormat::DNG) {
@@ -91,11 +82,7 @@ bool CameraApp::configure(const CameraConfig &cfg) {
   }
   sc.bufferCount = kDefaultBufferCount;
 
-  // For high-res captures (e.g. 4056x3040), the Pi may not have enough
-  // memory for 4 buffers. Use 1 buffer for any high-resolution still
-  // format (NV12, DNG raw, or MJPEG fallback). DNG raw at full res is
-  // ~23 MB per buffer, so 4 buffers = ~90 MB on a 512 MB Pi Zero 2 W.
-  // Use uint64_t to avoid overflow on large dimensions.
+  // 1 buffer on high-res stills to save RAM on 512 MB Pi.
   if (static_cast<uint64_t>(cfg.width) * cfg.height > kHighResPixelThreshold) {
     sc.bufferCount = kHighResBufferCount;
   }
@@ -132,13 +119,12 @@ bool CameraApp::configure(const CameraConfig &cfg) {
   stream_ = sc.stream();
 
   // Double-check: configure() may silently change the pixel format even
-  // if validate() accepted MJPEG. Check the actual stream configuration.
+  // if validate() accepted MJPEG.
   if (cfg.format == OutputFormat::JPEG && !swJpegEncode_) {
     const auto &actualFmt = stream_->configuration().pixelFormat;
     if (actualFmt != formats::MJPEG) {
       std::cerr << "Warning: HW MJPEG unavailable after configure (got "
                 << actualFmt << "), reconfiguring with NV12\n";
-      // Reconfigure with NV12
       sc.pixelFormat = formats::NV12;
       if (static_cast<uint64_t>(cfg.width) * cfg.height >
           kHighResPixelThreshold)
@@ -155,8 +141,6 @@ bool CameraApp::configure(const CameraConfig &cfg) {
       // Re-fetch stream_ — the second configure() may invalidate the
       // StreamConfiguration pointer captured before the fallback.
       stream_ = sc.stream();
-      // Verify the fallback actually resulted in NV12 — the pipeline
-      // handler could theoretically substitute yet another format.
       if (stream_->configuration().pixelFormat != formats::NV12) {
         std::cerr << "NV12 fallback rejected by pipeline handler (got "
                   << stream_->configuration().pixelFormat << ")\n";
@@ -194,9 +178,6 @@ bool CameraApp::capture(const std::string &filename, std::string *actualPath) {
   if (buffers.empty())
     return false;
 
-  // RAII guard: ensures the signal is disconnected on all exit paths,
-  // including exceptions, so the callback can't fire after capture()
-  // returns or after the CameraApp is destroyed.
   class SignalDisconnectGuard {
   public:
     explicit SignalDisconnectGuard(libcamera::Camera *c) : cam_(c) {}
@@ -216,9 +197,7 @@ bool CameraApp::capture(const std::string &filename, std::string *actualPath) {
     libcamera::Camera *cam_;
   } signalGuard{handle_.camera().get()};
 
-  // Connect the completion callback BEFORE starting the camera — the
-  // safer libcamera pattern ensures no completion can fire before the
-  // signal is connected (matches DualStream::start).
+  // connect before start to avoid missed completions.
   const uint32_t warmup = config_.warmupFrames;
   capCompleted_.store(0, std::memory_order_relaxed);
   capDone_ = false;
@@ -294,12 +273,7 @@ bool CameraApp::capture(const std::string &filename, std::string *actualPath) {
     capRequests_.push_back(std::move(req));
   }
 
-  // Compute timeout from exposure time plus a margin for warmup/processing.
-  // A fixed 60s timeout breaks long exposures (e.g. --shutter 120000000).
-  // Add 3s per warmup frame (exposure + readout + overhead) and a 90s base
-  // margin for multi-MB DNG save on slow SD cards. Clamp the exposure
-  // contribution to 1h — more than any real exposure, and avoids overflow
-  // for huge programmatic exposureTime values.
+  // timeout = exposure + 90 s base + 3 s per warmup frame, capped at 1 h.
   long long exposureSecs =
       config_.exposureTime > 0
           ? std::min<long long>(
@@ -359,15 +333,7 @@ bool CameraApp::capture(const std::string &filename, std::string *actualPath) {
 }
 
 bool CameraApp::captureBracket(const std::string &baseFilename) {
-  // HDR bracketing: capture one frame per EV offset in cfg.bracketEv.
-  // For each frame, we adjust the exposure time by 2^ev relative to the
-  // base exposure. This requires manual exposure (--shutter set);
-  // under AE the EV offset has no effect and all frames would be
-  // identical, so reject the combination rather than silently producing
-  // wrong output.
-  //
-  // Filenames: baseFilename with _evN suffix inserted before the extension.
-  // e.g. "photo.png" -> "photo_ev-2.png", "photo_ev0.png", "photo_ev+2.png"
+  // bracketing requires manual exposure; insert _evN before extension.
   if (config_.bracketEv.empty()) {
     return capture(baseFilename);
   }
@@ -453,12 +419,6 @@ bool CameraApp::captureBracket(const std::string &baseFilename) {
   }
   // Restore the original config — configure() overwrites config_ each
   // iteration, so without this the last bracket exposure would persist.
-  // Also restore swJpegEncode_ since configure() may flip it during
-  // MJPEG→NV12 fallback; otherwise the next capture() would use the wrong
-  // OutputWriter for the original format.
-  // Reconfigure the live libcamera pipeline back to the base config so
-  // subsequent capture() calls use the original exposure, not the last
-  // bracket frame's. configure() also resets config_/swJpegEncode_.
   if (!configure(baseConfig)) {
     std::cerr << "Failed to restore base config after bracket sequence\n";
     allOk = false;
@@ -493,9 +453,6 @@ void CameraApp::listControls() {
 }
 
 void CameraApp::requeueRequest(libcamera::Camera *cam, Request *r) {
-  // Re-queue with controls, catching exceptions from applyControls
-  // (ControlList::set throws if a control is not supported by the
-  // pipeline handler, which would std::terminate inside this callback).
   // If applyControls throws, skip the requeue — streaming with partially
   // configured controls could produce wrong exposure/AWB for many frames.
   bool controlsOk = true;
@@ -602,14 +559,7 @@ void CameraApp::stopCamera() noexcept {
     }
     started_ = false;
   }
-  // Wait for any in-flight callbacks to exit before returning —
-  // stop() cancels requests and fires callbacks, but doesn't
-  // guarantee they've returned. This prevents UAF if the caller
-  // immediately destroys Request objects. Use a CV with a 60s
-  // timeout (saveFrame can be slow for full-res JPEG/DNG writes
-  // on slow SD cards). If callbacks haven't exited after 60s,
-  // the system is broken — set fatalError_ so the caller exits
-  // gracefully (systemd Restart=on-failure handles the restart).
+  // wait up to 60 s for in-flight callbacks to drain.
   // Wrap in try/catch: mutex/CV ops can throw std::system_error,
   // which would std::terminate() inside this noexcept function.
   try {
@@ -655,10 +605,7 @@ void CameraApp::applyControls(Request *req, const CameraConfig &cfg) {
   // Clear any stale controls from a previous request lifecycle.
   ctrls.clear();
 
-  // If the user asked for a manual shutter or gain, AE must be off or
-  // libcamera will ignore ExposureTime/AnalogueGain. Auto-disable AE in
-  // that case so --shutter / --iso do what the user expects without
-  // requiring an explicit --ae-disable.
+  // disable AE when manual shutter/gain requested.
   const bool manualExposure =
       !cfg.aeEnable || cfg.exposureTime > 0 || cfg.analogueGain > 0.0f;
   if (manualExposure) {

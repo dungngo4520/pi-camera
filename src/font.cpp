@@ -12,7 +12,6 @@
 
 namespace picamera {
 
-// ========================================================================== //
 // FreeType-based renderer (DejaVu Sans Mono)
 // ========================================================================== //
 
@@ -30,9 +29,9 @@ struct FtState {
 struct GlyphCache {
   int width = 0;
   int height = 0;
-  int left = 0;                // bitmap_left from FreeType
-  int top = 0;                 // bitmap_top from FreeType
-  int advanceX = 0;            // advance in pixels
+  int left = 0;       // bitmap_left from FreeType
+  int top = 0;        // bitmap_top from FreeType
+  int advanceX = 0;   // advance in pixels
   std::vector<uint8_t> bitmap; // grayscale, width*height bytes
 };
 
@@ -61,7 +60,6 @@ FtState &ftState() {
       return;
 
     // 8px pixel size — compact but readable on 128x128 LCD.
-    // DejaVu Sans Mono at 8px gives ~5px advance, 7px height.
     if (FT_Set_Pixel_Sizes(state.face, 0, 8) != 0)
       return;
 
@@ -95,9 +93,8 @@ const GlyphCache *getGlyph(unsigned long ch) {
   if (it != cache.end())
     return &it->second;
 
-  // Use monochrome rendering (no anti-aliasing) for crisp, thin glyphs
-  // at small pixel sizes. Anti-aliasing at 8px makes text look bold on
-  // the 128x128 LCD. FT_LOAD_TARGET_MONO produces 1-bit bitmaps.
+  // Monochrome rendering for crisp glyphs at small pixel sizes.
+  // FT_LOAD_TARGET_MONO produces 1-bit packed bitmaps (MSB first).
   if (FT_Load_Char(ft.face, ch, FT_LOAD_RENDER | FT_LOAD_TARGET_MONO) != 0)
     return nullptr;
 
@@ -114,9 +111,8 @@ const GlyphCache *getGlyph(unsigned long ch) {
   size_t bmpSize = static_cast<size_t>(gc.width) * gc.height;
   gc.bitmap.resize(bmpSize);
   if (g->bitmap.buffer && bmpSize > 0) {
-    // FT_LOAD_TARGET_MONO produces 1-bit packed bitmaps (MSB first,
-    // 8 pixels per byte, rows padded to byte boundaries). Unpack to
-    // 1 byte per pixel: 0 = off, 255 = on.
+    // Unpack 1-bit packed bitmaps (MSB first, 8px/byte, rows padded to
+    // byte boundaries) to 1 byte per pixel: 0 = off, 255 = on.
     int pitch = g->bitmap.pitch; // bytes per row (may be negative)
     const uint8_t *row = g->bitmap.buffer;
     for (int r = 0; r < gc.height; ++r) {
@@ -143,24 +139,21 @@ inline void setPixel(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
       static_cast<uint32_t>(y) >= fbH)
     return;
   size_t idx = (static_cast<size_t>(y) * fbW + x) * 2;
-  rgb565[idx] = static_cast<uint8_t>(color >> 8);       // MSB
-  rgb565[idx + 1] = static_cast<uint8_t>(color & 0xFF); // LSB
+  rgb565[idx] = static_cast<uint8_t>(color >> 8);
+  rgb565[idx + 1] = static_cast<uint8_t>(color & 0xFF);
 }
 
-// Blend foreground and background based on alpha (0-255).
 inline uint16_t blend565(uint16_t fg, uint16_t bg, uint8_t alpha) {
   if (alpha == 0)
     return bg;
   if (alpha == 255)
     return fg;
-  // Extract RGB components
   uint8_t fr = (fg >> 11) & 0x1F;
   uint8_t fg_g = (fg >> 5) & 0x3F;
   uint8_t fb = fg & 0x1F;
   uint8_t br = (bg >> 11) & 0x1F;
   uint8_t bg_g = (bg >> 5) & 0x3F;
   uint8_t bb = bg & 0x1F;
-  // Blend
   uint8_t a = alpha;
   uint8_t ia = 255 - a;
   uint8_t r = (fr * a + br * ia) / 255;
@@ -181,10 +174,8 @@ void drawChar(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
   if (!gc)
     return;
 
-  // FreeType renders glyphs with bearing offsets. The glyph bitmap's
-  // top-left is at (x + gc->left, y + gc->top - 1) relative to the
-  // baseline at (x, y + ft.glyphTop). We simplify by placing the
-  // bitmap at (x, y) with vertical adjustment for the ascender.
+  // FreeType glyph bearing: bitmap top-left is at (x + gc->left,
+  // y + gc->top - 1) relative to baseline at (x, y + ft.glyphTop).
   int drawX = x + gc->left;
   int drawY = y + (ft.glyphTop - gc->top);
 
@@ -257,17 +248,12 @@ int drawText(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
   return cx - x;
 }
 
-// ========================================================================== //
 // Battery icon (shared by both renderers)
 // ========================================================================== //
 
 void drawBatteryIcon(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
                      int percent) {
-  // Battery icon: 16px wide body + 2px terminal nub = 18px total, 9px tall
-  // Body: x to x+15, y to y+8
-  // Terminal: x+16 to x+17, y+2 to y+6
-
-  // Clamp percent
+  // 16px body + 2px terminal = 18px total, 9px tall
   percent = std::max(0, std::min(100, percent));
 
   // Fill color based on charge level
@@ -295,16 +281,15 @@ void drawBatteryIcon(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, int x, int y,
     setPixel(rgb565, fbW, fbH, x + 17, y + dy, kColorWhite);
   }
 
-  // Draw fill bar (inside the outline: x+1 to x+14, y+1 to y+7)
-  // Fill width proportional to percent
-  int fillW = (14 * percent) / 100; // max 14px interior width
+  // Draw fill bar (interior: x+1 to x+14, y+1 to y+7)
+  int fillW = (14 * percent) / 100;
   for (int dx = 0; dx < fillW; ++dx) {
     for (int dy = 1; dy <= 7; ++dy) {
       setPixel(rgb565, fbW, fbH, x + 1 + dx, y + dy, fillColor);
     }
   }
 
-  // Clear unfilled portion to black
+  // Clear unfilled portion
   for (int dx = fillW; dx < 14; ++dx) {
     for (int dy = 1; dy <= 7; ++dy) {
       setPixel(rgb565, fbW, fbH, x + 1 + dx, y + dy, kColorBlack);

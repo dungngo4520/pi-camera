@@ -296,10 +296,7 @@ void drawOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 void drawHistogram(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                    size_t rgb565Size, const uint8_t *yPlane, uint32_t w,
                    uint32_t h, uint32_t stride, size_t ySize) {
-  // Luminance-only histogram from the NV12 Y plane. An RGB histogram would
-  // triple per-frame sampling cost on the Pi Zero 2 W (~15fps viewfinder).
-  // The Y plane is already mapped for zebra/focus-peaking, so reusing it
-  // avoids an extra framebuffer pass. See docs/mirrorless-feature-research.md.
+  // Luma-only histogram from the Y plane (cheap on Pi Zero).
   if (!rgb565 || !yPlane || w == 0 || h == 0 || stride < w)
     return;
   size_t needFb = 0;
@@ -431,7 +428,6 @@ void drawGrid(uint8_t *rgb565, uint32_t fbW, uint32_t fbH, GridType type) {
       rgb565[idx2 + 1] = static_cast<uint8_t>(color & 0xFF);
     }
   } else if (type == GridType::GoldenRatio) {
-    // Golden ratio grid: lines at ~0.382 and ~0.618 (1/phi)
     int g1 = static_cast<int>(w * 0.382f);
     int g2 = static_cast<int>(w * 0.618f);
     vLine(rgb565, fbW, fbH, g1, 0, h, color);
@@ -639,8 +635,7 @@ void drawImageView(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
     return;
   if (totalBytes > rgb565Size)
     return;
-  // Rotate-tall: when enabled and the source image is portrait, rotate
-  // the RGB565 buffer 90° CW so it displays upright.
+  // Rotate portrait RGB565 90° CW if requested.
   std::vector<uint8_t> rotated;
   if (rotateTall && imageRgb565 && imageSize >= totalBytes) {
     if (isPortrait(fbW, fbH)) {
@@ -682,9 +677,6 @@ void drawImageViewZoomed(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
   zoom = std::max(zoom, 1);
   zoom = std::min(zoom, 4);
 
-  // Rotate-tall: when enabled and the source image is portrait, rotate
-  // the RGB565 buffer 90° CW so it displays upright. The rotated buffer
-  // becomes the source for both 1x and zoomed rendering.
   std::vector<uint8_t> rotated;
   if (rotateTall && imageRgb565 && imageW > 0 && imageH > 0 &&
       isPortrait(imageW, imageH)) {
@@ -915,8 +907,6 @@ void drawAspectRatioMask(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
   // Display is square (128x128) — mask black bars to crop to target aspect.
   float target = 1.0f;
   switch (ratio) {
-  case AspectRatio::Native:
-    break;
   case AspectRatio::Ratio43:
     target = 4.0f / 3.0f;
     break;
@@ -925,6 +915,8 @@ void drawAspectRatioMask(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
     break;
   case AspectRatio::Ratio11:
     target = 1.0f;
+    break;
+  default:
     break;
   }
   float dispAspect = static_cast<float>(fbW) / fbH;
@@ -962,11 +954,7 @@ void drawFocusMagnifyIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawImageViewHistogramAndBlinkies(uint8_t *rgb565, uint32_t fbW,
                                        uint32_t fbH, size_t rgb565Size) {
-  // NOTE: Computed from the 128x128 display framebuffer, not the full-res
-  // image. On the Pi Zero 2 W (512MB RAM), decoding a 4056x3040 image just
-  // for a histogram would need ~37MB and several seconds — impractical for
-  // playback review. The downsampled FB suffices for a rough histogram and
-  // blinkie check, matching entry-level camera behavior.
+  // Histogram from 128×128 FB, not full-res image.
   size_t needFb = 0;
   if (!checkedMul(static_cast<size_t>(fbW), fbH, needFb) ||
       !checkedMul(needFb, 2, needFb))
@@ -1040,25 +1028,20 @@ void drawProtectionIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH) {
 
 void drawCopyrightEditOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                               const std::string &buf, int cursor) {
-  // Semi-transparent dark background for the edit area.
   int boxY = static_cast<int>(fbH) / 2 - kRowStep * 2;
   int boxH = kRowStep * 4;
   fillRect(rgb565, fbW, fbH, 0, boxY, static_cast<int>(fbW), boxH,
            kColorBlack);
   rectOutline(rgb565, fbW, fbH, 0, boxY, static_cast<int>(fbW), boxH,
               kColorWhite);
-  // Title
   drawTextWithBg(rgb565, fbW, fbH, kMargin, boxY + 2, "COPYRIGHT",
                  kColorYellow, kColorBlack);
-  // Edit buffer text
   int textY = boxY + kRowStep + 2;
   std::string display = buf;
-  // Pad with spaces to show full width.
   while (display.size() < 20)
     display += ' ';
   drawTextWithBg(rgb565, fbW, fbH, kMargin, textY, display, kColorWhite,
                  kColorBlack);
-  // Cursor indicator (inverse video block under the current char)
   if (cursor >= 0 && cursor < static_cast<int>(display.size())) {
     int cx = kMargin + cursor * kTextWidth;
     fillRect(rgb565, fbW, fbH, cx - 1, textY - 1, kTextWidth + 2, kRowStep,
@@ -1066,7 +1049,6 @@ void drawCopyrightEditOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
     drawChar(rgb565, fbW, fbH, cx, textY, display[cursor], kColorBlack,
              kColorWhite, false);
   }
-  // Hints
   drawTextWithBg(rgb565, fbW, fbH, kMargin, textY + kRowStep,
                  "U/D=CHAR L/R=MOVE OK=SAVE", kColorGray, kColorBlack);
 }
@@ -1100,7 +1082,6 @@ void drawQuickFnOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawRecIndicator(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       uint32_t seconds) {
-  // Red REC dot + timer at top-left.
   fillRect(rgb565, fbW, fbH, kMargin, kMargin, 6, 6, kColorRed);
   char timer[16];
   uint32_t mm = seconds / 60;

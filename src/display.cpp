@@ -172,30 +172,16 @@ bool St7735Display::init(const DisplayConfig &cfg) {
     ok = false;
 
   // MADCTL: rotation + color order
-  // The ST7735S MADCTL register (0x36) controls memory access:
-  //   Bit 7 (MY): row address order (bottom-to-top when set)
-  //   Bit 6 (MX): column address order (right-to-left when set)
-  //   Bit 5 (MV): row/column exchange (swap X/Y when set)
-  //   Bit 3 (BGR): color order (BGR when set)
-  //
-  // The Waveshare 1.44" LCD HAT's panel is physically mounted rotated
-  // 90° CCW on the PCB. With MADCTL=0 (no MV/MX/MY), the panel maps
-  // controller address (X,Y) → screen position (Y, 127-X).
-  //
-  // We do NOT use the MV bit because it changes the auto-increment
-  // direction (column-by-column instead of row-by-row), which transposes
-  // the pixel data and makes text appear rotated 90°. Instead, we keep
-  // MADCTL=0 and rotate the framebuffer in software (90° CW) before
-  // sending, so the physical rotation is corrected without any MV issues.
+  // software rotation; MADCTL=0 (no MV/MX/MY bits).
+  // The Waveshare panel is physically rotated 90° CCW; we rotate the
+  // framebuffer in software instead of using MV (which transposes pixels).
   uint8_t madctl = 0;
   if (ok && !sendCommand(MADCTL))
     ok = false;
   if (ok) {
     if (cfg_.bgr)
       madctl |= 0x08;
-    // No MV/MX/MY bits — rotation is handled entirely in software.
-    // needsTranspose_ is set for rotation 90/270 to enable the
-    // software rotation in blit()/blitRegion().
+    // No MV/MX/MY bits — rotation handled in software.
     if (cfg_.rotation == 90 || cfg_.rotation == 270) {
       needsTranspose_ = true;
     }
@@ -263,8 +249,7 @@ bool St7735Display::sendCommand(uint8_t cmd) {
 bool St7735Display::sendData(const uint8_t *data, size_t len) {
   if (spiFd_ < 0 || !gpioReq_)
     return false;
-  // spi_ioc_transfer.len is a __u32 field — reject transfers that
-  // would silently truncate a 64-bit size_t.
+  // len must fit in __u32
   if (len > std::numeric_limits<uint32_t>::max()) {
     std::cerr << "Display: SPI transfer too large (" << len << " bytes)\n";
     return false;
@@ -287,9 +272,7 @@ bool St7735Display::setAddrWindow() {
 }
 
 bool St7735Display::setAddrWindow(int x, int y, int w, int h) {
-  // Range-check: ST7735S addresses are 8-bit (0-255). Reject values
-  // that would wrap silently via static_cast<uint8_t>.
-  // Use int64_t for the sums to avoid int overflow on extreme inputs.
+  // guard 8-bit address window bounds
   int64_t colStart = static_cast<int64_t>(cfg_.colOffset) + x;
   int64_t rowStart = static_cast<int64_t>(cfg_.rowOffset) + y;
   int64_t colEnd = colStart + w - 1;
@@ -345,9 +328,7 @@ bool St7735Display::blit(const uint8_t *rgb565) {
     return false; // overflow — dimensions too large
   }
 
-  // When needsTranspose_ is set (rotation 90/270), the panel is
-  // physically rotated. With MADCTL=0, we pre-rotate the framebuffer
-  // in software so the image appears upright.
+  // needsTranspose_ (rotation 90/270): pre-rotate framebuffer in software.
   //   90° CW:  dst(x, H-1-y) = src(y, x)   — transpose + Y-flip
   //   270° CW: dst(W-1-x, y) = src(y, x)   — transpose + X-flip
   const uint8_t *sendBuf = rgb565;
@@ -359,8 +340,6 @@ bool St7735Display::blit(const uint8_t *rgb565) {
       for (uint32_t y = 0; y < cfg_.height; ++y) {
         for (uint32_t x = 0; x < cfg_.width; ++x) {
           size_t srcIdx = (static_cast<size_t>(y) * cfg_.width + x) * 2;
-          // Transposed destination has (width) rows × (height) cols,
-          // so the row stride is cfg_.height, not cfg_.width.
           size_t dstIdx =
               (static_cast<size_t>(cfg_.width - 1 - x) * cfg_.height + y) * 2;
           transposeBuf_[dstIdx] = rgb565[srcIdx];
@@ -372,8 +351,6 @@ bool St7735Display::blit(const uint8_t *rgb565) {
         uint32_t flippedY = cfg_.height - 1 - y;
         for (uint32_t x = 0; x < cfg_.width; ++x) {
           size_t srcIdx = (static_cast<size_t>(y) * cfg_.width + x) * 2;
-          // Transposed destination has (width) rows × (height) cols,
-          // so the row stride is cfg_.height, not cfg_.width.
           size_t dstIdx = (static_cast<size_t>(x) * cfg_.height + flippedY) * 2;
           transposeBuf_[dstIdx] = rgb565[srcIdx];
           transposeBuf_[dstIdx + 1] = rgb565[srcIdx + 1];
@@ -383,10 +360,7 @@ bool St7735Display::blit(const uint8_t *rgb565) {
     sendBuf = transposeBuf_.data();
   }
 
-  // Send pixel data in larger chunks for better SPI throughput.
-  // The spidev driver on the Pi handles transfers up to ~4096 bytes
-  // efficiently; larger transfers may fail or require DMA. 4096 is
-  // a good balance between throughput and reliability.
+  // chunk at 4096 bytes for SPI reliability
   const size_t chunkSize = 4096;
   for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
     size_t len = std::min(chunkSize, totalBytes - offset);
@@ -427,9 +401,8 @@ bool St7735Display::blitRegion(const uint8_t *rgb565, uint32_t srcW,
       return false;
   }
 
-  // When needsTranspose_ is set (rotation 90/270), pre-rotate the
-  // sub-region in software. The transposed region is h×w (h wide,
-  // w tall), so the address window uses (h, w) — not (w, h).
+  // needsTranspose_ (rotation 90/270): pre-rotate sub-region in software.
+  // Transposed region is h×w (h wide, w tall); address window uses (h, w).
   //   90° CW:  dst(col, h-1-row) = src(row, col)
   //   270° CW: dst(w-1-col, row) = src(row, col)
   if (needsTranspose_) {

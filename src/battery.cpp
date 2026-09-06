@@ -18,7 +18,6 @@
 namespace picamera {
 
 namespace {
-// Retry short writes on I2C up to 3 times. Returns total bytes written, or -1.
 ssize_t i2cWrite(int fd, const void *buf, size_t len) {
   size_t done = 0;
   int errors = 0;
@@ -36,7 +35,6 @@ ssize_t i2cWrite(int fd, const void *buf, size_t len) {
       continue;
     }
     done += static_cast<size_t>(n);
-    // Reset error count on successful progress.
     errors = 0;
   }
   if (done != len) {
@@ -47,10 +45,9 @@ ssize_t i2cWrite(int fd, const void *buf, size_t len) {
 }
 } // namespace
 
-// --- LiPo discharge curve (voltage -> SOC%) ---
-// Piecewise-linear approximation of a typical 1000mAh LiPo discharge.
-// Points are (voltage, percent). Voltage is open-circuit rest voltage;
-// under load the voltage sags, so readings are approximate (±5-10%).
+// LiPo discharge curve: piecewise-linear approximation of a typical 1000mAh
+// LiPo. Voltage is open-circuit rest voltage; under load readings are
+// approximate (±5-10%).
 struct VoltagePoint {
   double v;
   int pct;
@@ -65,13 +62,11 @@ int lipoVoltageToPercent(double voltage) {
   // NaN/Inf from a corrupt ADC read should not silently report 0%.
   if (!std::isfinite(voltage))
     return -1;
-  // Clamp to curve range
   if (voltage >= kLipoCurve[0].v)
     return 100;
   if (voltage <= kLipoCurve[kLipoCurveLen - 1].v)
     return 0;
 
-  // Find the segment containing this voltage and interpolate
   for (int i = 0; i < kLipoCurveLen - 1; ++i) {
     const auto &hi = kLipoCurve[i];
     const auto &lo = kLipoCurve[i + 1];
@@ -83,7 +78,7 @@ int lipoVoltageToPercent(double voltage) {
   return 0; // unreachable
 }
 
-// --- ADS1115 register addresses ---
+// ADS1115 register addresses
 enum Ads1115Reg : uint8_t {
   ADS_CONV = 0x00,  // Conversion register
   ADS_CFG = 0x01,   // Config register
@@ -114,19 +109,17 @@ uint16_t buildConfig(uint8_t channel, uint16_t pgaGain) {
   cfg |= 0x0003; // CQUE: disable comparator
   return cfg;
 }
-
 } // namespace
 
 bool BatteryMonitor::init(const BatteryConfig &cfg) {
   cfg_ = cfg;
 
-  // Validate the device path (defense-in-depth — parseArgs also checks).
+  // Defense-in-depth — parseArgs also checks.
   if (!isSafeDevicePath(cfg_.i2cDevice)) {
     std::cerr << "Battery: unsafe device path: " << cfg_.i2cDevice << "\n";
     return false;
   }
 
-  // Determine LSB size from PGA gain.
   // ADS1115 only supports PGA codes 0-3; values 4-7 are reserved.
   switch (cfg_.pgaGain) {
   case 0x0000:
@@ -179,7 +172,6 @@ bool BatteryMonitor::init(const BatteryConfig &cfg) {
     return false;
   }
 
-  // Write initial config to start continuous conversions
   if (!writeConfig(buildConfig(cfg_.channel, cfg_.pgaGain))) {
     close(fd_);
     fd_ = -1;
@@ -212,7 +204,7 @@ void BatteryMonitor::shutdown() {
 bool BatteryMonitor::writeConfig(uint16_t config) const {
   uint8_t buf[3];
   buf[0] = ADS_CFG;
-  buf[1] = static_cast<uint8_t>(config >> 8); // MSB first
+  buf[1] = static_cast<uint8_t>(config >> 8);
   buf[2] = static_cast<uint8_t>(config & 0xFF);
   if (i2cWrite(fd_, buf, 3) < 0) {
     std::cerr << "Battery: config write failed: " << errnoString(errno) << "\n";
@@ -257,8 +249,7 @@ bool BatteryMonitor::readConversion(uint16_t &raw) const {
 }
 
 double BatteryMonitor::rawToVoltage(uint16_t raw) const {
-  // ADS1115 is 16-bit signed. Single-ended reads are positive (0–0x7FFF).
-  // read() rejects out-of-range values before calling this.
+  // ADS1115 is 16-bit signed; single-ended reads are positive (0–0x7FFF).
   int16_t signed_raw = static_cast<int16_t>(raw);
   double millivolts = static_cast<double>(signed_raw) * lsbMillivolts_;
   return millivolts / 1000.0;

@@ -16,10 +16,9 @@ bool CameraHandle::init(std::string_view logPrefix) {
   auto cameras = cm_->cameras();
   if (cameras.empty()) {
     std::cerr << logPrefix << ": No cameras found\n";
-    // Don't call cm_->stop() here — the destructor's shutdown() handles
-    // the Camera-before-Manager destruction order. Calling cm_->stop()
-    // while the CameraManager holds internal Camera references causes
-    // a segfault ("Removing media device while still in use").
+    // Don't call cm_->stop() here — calling it while the CameraManager
+    // holds internal Camera references causes a segfault. The destructor
+    // handles cleanup ordering.
     cm_.reset();
     return false;
   }
@@ -27,7 +26,7 @@ bool CameraHandle::init(std::string_view logPrefix) {
   cam_ = cameras[0];
   if (cam_->acquire()) {
     std::cerr << logPrefix << ": Failed to acquire camera\n";
-    // Same as above — let the destructor handle cleanup ordering.
+    // Let the destructor handle cleanup ordering.
     cam_.reset();
     cm_.reset();
     return false;
@@ -39,8 +38,7 @@ bool CameraHandle::init(std::string_view logPrefix) {
 
 void CameraHandle::shutdown() noexcept {
   // Snapshot under lock, then release outside the lock to avoid
-  // invoking libcamera callbacks while holding the mutex (which
-  // could deadlock if a callback thread is blocked on camera()).
+  // invoking libcamera callbacks while holding the mutex.
   std::shared_ptr<libcamera::Camera> camLocal;
   std::shared_ptr<libcamera::CameraManager> cmLocal;
   {
@@ -50,11 +48,8 @@ void CameraHandle::shutdown() noexcept {
   }
   try {
     if (camLocal) {
-      // Stop the camera before releasing it. release() on a
-      // started camera is undefined in libcamera. Callers should
-      // have already called stop(), but this is a safety net.
-      // stop() on an unstarted camera is safe (no-op or throws,
-      // caught by the try/catch below).
+      // Stop before releasing — release() on a started camera is UB.
+      // stop() on an unstarted camera is safe (no-op or throws, caught below).
       try {
         camLocal->stop();
       } catch (const std::exception &e) {
@@ -65,12 +60,9 @@ void CameraHandle::shutdown() noexcept {
   } catch (const std::exception &e) {
     std::cerr << "CameraHandle: camera release threw: " << e.what() << "\n";
   }
-  // Destroy the Camera BEFORE stopping/destroying the CameraManager.
-  // The Camera object references media devices and other resources owned
-  // by the manager. If the manager is stopped first, the Camera destructor
-  // touches freed resources → "Removing media device while still in use"
-  // followed by a segfault. Explicitly reset camLocal here to guarantee
-  // destruction order regardless of declaration order.
+  // Destroy the Camera BEFORE stopping the CameraManager — the Camera
+  // references media devices owned by the manager. If the manager is
+  // stopped first, the Camera destructor touches freed resources → segfault.
   camLocal.reset();
   try {
     if (cmLocal) {

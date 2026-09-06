@@ -22,13 +22,10 @@ namespace picamera {
 namespace {
 
 // Cap decoded image dimensions to prevent OOM from malicious/corrupt files.
-// 8192 is well above any real camera capture (IMX477 max is 4056x3040) but
-// bounds the allocation to a manageable ~200MB worst case (8192*8192*3).
+// 8192 bounds allocation to ~200MB worst case (8192*8192*3).
 constexpr uint32_t kMaxDecodeDim = 8192;
 
-// RAII guard for std::malloc-allocated buffers. Used by both PNG and JPEG
-// decoders to ensure the buffer is freed if an exception fires before
-// ownership is transferred to the caller.
+// RAII guard for std::malloc-allocated buffers.
 class MallocGuard {
 public:
   explicit MallocGuard(uint8_t *p) : p_(p) {}
@@ -49,15 +46,12 @@ private:
   uint8_t *p_;
 };
 
-// Core PNG decoder: contains the setjmp/longjmp and uses ONLY raw pointers
-// and trivial types. No C++ objects with non-trivial destructors are in
-// scope when longjmp could fire, avoiding UB (C++ [support.runtime]/3).
-// On success, fills *outRgb (caller must free) and *w/*h. On error, any
-// allocations are returned via *outRgb/*outRows so the caller can free them
-// (longjmp skips cleanup in this function). *outInfo is set if the info
-// struct was created (caller destroys). png_create_info_struct is called
-// AFTER setjmp so that an OOM-triggered png_error longjmp is caught.
-// Returns 0 on success, -1 on error.
+// Core PNG decoder: setjmp/longjmp with ONLY raw pointers and trivial types
+// in scope (no C++ objects with non-trivial destructors when longjmp could
+// fire — UB per C++ [support.runtime]/3). On success fills *outRgb/*w/*h.
+// On error, allocations are returned via out-params so the caller can free
+// them (longjmp skips cleanup in this function). png_create_info_struct is
+// called AFTER setjmp so OOM-triggered png_error is caught.
 int decodePngCore(png_structp png, png_infop *outInfo, FILE *fp,
                   uint8_t **outRgb, png_bytep **outRows, uint32_t *w,
                   uint32_t *h) {
@@ -105,7 +99,7 @@ int decodePngCore(png_structp png, png_infop *outInfo, FILE *fp,
   uint8_t *rgb = static_cast<uint8_t *>(std::malloc(rgbSize));
   if (!rgb)
     return -1;
-  *outRgb = rgb; // Track for cleanup on longjmp
+  *outRgb = rgb;
 
   png_bytep *rows = static_cast<png_bytep *>(
       std::malloc(static_cast<size_t>(height) * sizeof(png_bytep)));
@@ -198,7 +192,7 @@ int decodeJpegCore(struct jpeg_decompress_struct *cinfo, JpegErrCtx *jerr,
   }
 
   if (!jpeg_finish_decompress(cinfo))
-    return -1; // rgb freed by caller
+    return -1;
 
   *w = width;
   *h = height;
@@ -206,7 +200,7 @@ int decodeJpegCore(struct jpeg_decompress_struct *cinfo, JpegErrCtx *jerr,
 }
 
 // Convert RGB24 to big-endian RGB565, scaled to dispW x dispH with
-// center-crop + nearest-neighbor. Used by both PNG and JPEG decoders.
+// center-crop + nearest-neighbor.
 std::vector<uint8_t> rgb24ToRgb565Scaled(const uint8_t *rgb, uint32_t srcW,
                                          uint32_t srcH, uint32_t dispW,
                                          uint32_t dispH) {
@@ -273,7 +267,7 @@ std::vector<uint8_t> rgb24ToRgb565Scaled(const uint8_t *rgb, uint32_t srcW,
 }
 
 // Decode PNG to RGB24. Returns a malloc'd buffer (caller must free) or
-// nullptr on failure. Sets w/h on success.
+// nullptr on failure.
 uint8_t *decodePngToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
   unsigned char sig[8];
   if (fread(sig, 1, 8, fp) != 8 || !png_check_sig(sig, 8)) {
@@ -289,10 +283,8 @@ uint8_t *decodePngToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
   // Defense-in-depth: cap PNG dimensions at the libpng level too.
   png_set_user_limits(png, kMaxDecodeDim, kMaxDecodeDim);
 
-  // info is created inside decodePngCore (after setjmp) so that an
-  // OOM during png_create_info_struct is caught by the longjmp guard
-  // instead of aborting the process. Initialized to nullptr so
-  // png_destroy_read_struct is safe even if creation never happened.
+  // info is created inside decodePngCore (after setjmp) so OOM during
+  // png_create_info_struct is caught by the longjmp guard.
   png_infop info = nullptr;
   uint8_t *rgb = nullptr;
   png_bytep *rows = nullptr;
@@ -300,17 +292,14 @@ uint8_t *decodePngToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
 
   png_destroy_read_struct(&png, &info, nullptr);
 
-  // Free row pointer array if it was allocated (always, since it's
-  // just an array of pointers — the pixel data is in rgb).
   std::free(static_cast<void *>(rows));
   if (rc != 0) {
     std::free(rgb);
     return nullptr;
   }
 
-  // RAII guard so rgb is freed if anything throws before return.
   MallocGuard guard{rgb};
-  return guard.release(); // ownership transferred to caller
+  return guard.release();
 }
 
 // Decode JPEG to RGB24. Returns a malloc'd buffer (caller must free) or
@@ -332,9 +321,8 @@ uint8_t *decodeJpegToRgb24(FILE *fp, uint32_t &w, uint32_t &h) {
     return nullptr;
   }
 
-  // RAII guard so rgb is freed if anything throws before return.
   MallocGuard guard{rgb};
-  return guard.release(); // ownership transferred to caller
+  return guard.release();
 }
 
 } // namespace
@@ -372,18 +360,12 @@ std::vector<uint8_t> decodeJpegFileToRgb24(const std::string &path,
 std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
                                          uint32_t dispW, uint32_t dispH) {
   // Determine format by file signature (magic bytes), not extension.
-  // This prevents misnamed files from being routed to the wrong decoder,
-  // which could cause silent failures or parser confusion.
-  // JPEG: FF D8 (SOI marker)
-  // PNG:  89 50 4E 47 0D 0A 1A 0A (8-byte signature)
-  //
-  // The fd is kept open across magic detection and decoding to eliminate
-  // a TOCTOU window (file could be swapped between close and reopen).
+  // The fd is kept open across detection and decoding to eliminate a TOCTOU
+  // window (file could be swapped between close and reopen).
   int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW);
   if (fd < 0)
     return {};
-  // Reject non-regular files (devices, FIFOs, sockets) that could
-  // block or produce unexpected behavior in the decoder.
+  // Reject non-regular files (devices, FIFOs, sockets).
   struct stat st;
   if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
     ::close(fd);
@@ -427,7 +409,7 @@ std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
     return {};
   }
 
-  // RAII guard for FILE* so it is closed even if the decoder throws.
+  // RAII guard for FILE*.
   class FileGuard {
   public:
     explicit FileGuard(FILE *fp) : fp_(fp) {}
@@ -466,8 +448,6 @@ std::vector<uint8_t> decodeImageToRgb565(const std::string &path,
   }
 
   // Scale directly from the malloc'd buffer — no intermediate vector copy.
-  // MallocGuard keeps ownership so rgb24 is freed even if the scaling
-  // std::vector allocation throws std::bad_alloc.
   MallocGuard guard{rgb24};
   return rgb24ToRgb565Scaled(guard.get(), w, h, dispW, dispH);
 }

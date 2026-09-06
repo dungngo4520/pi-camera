@@ -17,12 +17,7 @@ namespace picamera {
 
 namespace {
 
-// Apply ImageSize downscale and AspectRatio crop to an NV12 FrameView.
-// Returns a processed FrameView (pointing into processedData if scaling/
-// cropping was needed, or the original frame if no processing was applied).
-// For non-NV12 frames (raw Bayer, HW MJPEG), returns the original frame
-// unchanged — downscale/crop only applies to processed NV12 captures.
-// processedData holds the ownership of any newly allocated buffer.
+// apply image size + aspect crop to NV12
 FrameView processNv12Frame(const FrameView &f, const CameraConfig &cfg,
                            std::vector<uint8_t> &processedData) {
   // Only process two-plane NV12 frames. Single-plane formats (DNG raw, HW
@@ -193,12 +188,7 @@ public:
                   "uint16_t must be 2 bytes for DNG packing");
     std::vector<uint16_t> unpacked(numPixels);
     // Unpack row-by-row, advancing by stride in the source buffer.
-    // SRGGB10_CSI2P packs 4 10-bit pixels into 5 bytes. Each 5-byte
-    // group: [b0 b1 b2 b3 | b4]
-    //   pixel0 = b0 | ((b4 & 0x03) << 8)
-    //   pixel1 = b1 | ((b4 & 0x0C) << 6)
-    //   pixel2 = b2 | ((b4 & 0x30) << 4)
-    //   pixel3 = b3 | ((b4 & 0xC0) << 2)
+    // SRGGB10_CSI2P packs 4 10-bit pixels into 5 bytes: [b0 b1 b2 b3 | b4]
     for (uint32_t y = 0; y < f.height; ++y) {
       const uint8_t *row = rawData + y * stride;
       uint16_t *out = unpacked.data() + static_cast<size_t>(y) * f.width;
@@ -220,8 +210,6 @@ public:
         size_t bitOff = static_cast<size_t>(x) % 4;
         uint16_t val = row[p + bitOff];
         uint8_t bits = row[p + 4];
-        // Bit extraction pattern for each pixel position within the
-        // 4-pixel group: shifts the 2-bit component from byte 4.
         constexpr uint8_t kBitMasks[4] = {0x03, 0x0C, 0x30, 0xC0};
         constexpr int kBitShifts[4] = {8, 6, 4, 2};
         val |= (bits & kBitMasks[bitOff]) << kBitShifts[bitOff];
@@ -229,11 +217,7 @@ public:
       }
     }
 
-    // IMX477-specific DNG metadata. The Bayer pattern (RGGB), black
-    // level (64), and white level (1023 for 10-bit) are fixed
-    // properties of this sensor. If picamera is ever ported to a
-    // different sensor, these should be queried from
-    // libcamera::Camera::properties() instead of hardcoded.
+    // IMX477 defaults (would query libcamera for other sensors)
     DngMetadata dngMeta;
     dngMeta.width = f.width;
     dngMeta.height = f.height;
@@ -252,11 +236,7 @@ public:
     dngMeta.activeRight = f.width;
     dngMeta.exposureTimeUs = cfg_.exposureTime;
     dngMeta.analogueGain = cfg_.analogueGain;
-    // Clamp ISO below UINT32_MAX before llround — float(UINT32_MAX)
-    // may round to 2^32 which wraps to 0 in uint32_t. Also guard
-    // non-finite gains (NaN/Inf) to prevent llround UB. Use llround
-    // (long long) instead of lround (long) for 32-bit platform safety
-    // (Pi Zero 2 W armhf has 32-bit long; UINT32_MAX-1 > LONG_MAX).
+    // clamp and round ISO to uint32
     float isoF = std::max(0.0f, cfg_.analogueGain) * 100.0f;
     if (!std::isfinite(isoF))
       isoF = 0.0f;
@@ -306,9 +286,7 @@ public:
       std::cerr << "HwJpegWriter: buffer missing SOI marker\n";
       return false;
     }
-    // Find the JPEG End-Of-Image marker to trim padding/unused buffer.
-    // If no EOI is found, the buffer is truncated/corrupt — reject it
-    // rather than writing an oversized or incomplete JPEG.
+    // Find the JPEG EOI marker (FFD9) to trim padding.
     size_t writeLen = 0;
     for (size_t i = 0; i + 1 < f.plane0Size; ++i) {
       if (data[i] == 0xFF && data[i + 1] == 0xD9) {
@@ -498,19 +476,15 @@ public:
 
   [[nodiscard]] bool write(const FrameView &f, const std::string &filename,
                            std::string *actualPath) override {
-    // Save the JPEG first so we can derive the companion .raw filename
-    // from the actual saved JPEG path. The JPEG writer may append a
-    // _2/_3 suffix (O_EXCL collision), so deriving the .raw name from
-    // the original `filename` would leave the pair mismatched.
+    // Derive .raw filename from the actual saved JPEG path (may have
+    // a _2/_3 suffix from O_EXCL collision handling).
     std::unique_ptr<OutputWriter> jpg;
     jpg = std::make_unique<SwJpegWriter>(cfg_);
     bool jpgOk = jpg->write(f, filename, actualPath);
     if (!jpgOk)
       std::cerr << "RawJpegWriter: JPEG save failed\n";
 
-    // Derive the raw NV12 filename from the actual JPEG path (which may
-    // carry a uniqueness suffix) when available; fall back to the
-    // requested filename otherwise.
+    // Derive the raw NV12 filename from the actual JPEG path.
     const std::string &jpegPath =
         (actualPath && !actualPath->empty()) ? *actualPath : filename;
     auto se = splitPathStemExt(jpegPath);

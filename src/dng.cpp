@@ -15,9 +15,6 @@
 #include <string>
 #include <vector>
 
-// DNG uses little-endian ("II") byte order. The raw pixel data is
-// written directly from the uint16_t buffer, so the build target must
-// be little-endian. Pi (ARM) is always little-endian.
 static_assert(std::endian::native == std::endian::little,
               "DNG writer requires little-endian host");
 #include <unistd.h>
@@ -76,9 +73,7 @@ struct IfdEntry {
       valueOrOffset; // inline if total <= 4 bytes, else offset into data area
 };
 
-// Pack up to 4 bytes into a uint32_t as little-endian, for the IFD inline
-// value field. Avoids host-endian memcpy which would produce wrong byte
-// order on big-endian hosts when serialized via putU32.
+// Pack bytes as little-endian for the IFD inline value field.
 inline uint32_t packLe32(const uint8_t *bytes, size_t len) {
   uint32_t val = 0;
   for (size_t i = 0; i < len; ++i) {
@@ -99,10 +94,6 @@ void putU32(std::vector<uint8_t> &buf, uint32_t v) {
   buf.push_back((v >> 24) & 0xFF);
 }
 
-// Build a list of IFD entries + a data area for the main IFD.
-// Returns the entries (sorted by tag) and fills `data` with the extra data.
-// `dataBase` is the file offset where the data area will be written,
-// so that offsets in entries point to absolute file positions.
 struct IfdResult {
   std::vector<IfdEntry> entries;
   std::vector<uint8_t> data;
@@ -168,8 +159,7 @@ IfdResult buildMainIfd(const DngMetadata &m, uint32_t stripOffset,
   uint8_t dngBw[] = {1, 1, 0, 0};
   addData(TagDNGBackwardVersion, TypeByte, 4, dngBw, 4);
 
-  // Camera model string — pad to a fixed 32-byte buffer (NUL-padded)
-  // so the DNG count field matches the actual data written.
+  // Camera model string — fixed 32-byte NUL-padded buffer.
   const char *model = "Raspberry Pi HQ Camera (IMX477)";
   char modelBuf[32] = {};
   std::snprintf(modelBuf, sizeof(modelBuf), "%s", model);
@@ -177,8 +167,6 @@ IfdResult buildMainIfd(const DngMetadata &m, uint32_t stripOffset,
           reinterpret_cast<const uint8_t *>(modelBuf), 32);
 
   // CFA pattern — validate against the four canonical 2x2 Bayer orders.
-  // A syntactically valid but non-canonical pattern (e.g. "RRRR") would
-  // produce a DNG that raw processors reject.
   addInline(TagCFARepeatDim, TypeShort, 2, 2 | (2 << 16)); // 2x2 inline
   uint8_t cfa[4];
   for (int i = 0; i < 4; ++i) {
@@ -208,14 +196,12 @@ IfdResult buildMainIfd(const DngMetadata &m, uint32_t stripOffset,
   addData(TagActiveArea, TypeLong, 4, activeArea, 16);
 
   // DefaultCropOrigin: 2 RATIONALs (0/1, 0/1) = 16 bytes
-  // Denominators must be non-zero; 0/0 is an invalid rational.
   uint8_t cropOrigin[16] = {};
   cropOrigin[4] = 1;  // denominator of first rational (0/1)
   cropOrigin[12] = 1; // denominator of second rational (0/1)
   addData(TagDefaultCropOrigin, TypeRational, 2, cropOrigin, 16);
 
   // DefaultCropSize: 2 RATIONALs (cropW/1, cropH/1) = 16 bytes
-  // Use explicit LE packing to avoid host-endian dependency.
   uint8_t cropSize[16] = {};
   {
     uint32_t cw = cropW;
@@ -272,7 +258,7 @@ IfdResult buildExifIfd(const DngMetadata &m, uint32_t dataBase) {
     }
   };
 
-  // ExposureTime as RATIONAL (num/den in seconds)
+  // ExposureTime as RATIONAL (num/den in seconds), reduced via GCD.
   if (m.exposureTimeUs > 0 &&
       m.exposureTimeUs <= std::numeric_limits<uint32_t>::max()) {
     uint32_t num = static_cast<uint32_t>(m.exposureTimeUs);
@@ -286,7 +272,6 @@ IfdResult buildExifIfd(const DngMetadata &m, uint32_t dataBase) {
     }
     num /= a;
     den /= a;
-    // Explicit LE packing for the RATIONAL (num/den).
     uint8_t rat[8];
     rat[0] = num & 0xFF;
     rat[1] = (num >> 8) & 0xFF;
@@ -299,10 +284,7 @@ IfdResult buildExifIfd(const DngMetadata &m, uint32_t dataBase) {
     addData(TagExposureTime, TypeRational, 1, rat, 8);
   }
 
-  // ISOSpeedRatings (SHORT, inline) — clamp to 16-bit range since the
-  // tag type is TypeShort and values above 0xFFFF would be truncated.
-  // Clamp the float before the cast to avoid UB from out-of-range
-  // floating-to-integer conversion (C++20 [conv.fpint]).
+  // ISOSpeedRatings (SHORT, inline) — clamp to 16-bit to avoid truncation UB.
   uint32_t iso;
   if (m.isoSpeed > 0) {
     iso = m.isoSpeed;
@@ -408,14 +390,7 @@ bool writeDng(const char *path, const uint8_t *rawData, size_t rawSize,
     }
   }
 
-  // Layout:
-  //   [0..8)        TIFF header
-  //   [8..8+I0)     IFD0: count(2) + N*12 + nextIFD(4)
-  //   [..+D0)       IFD0 data area
-  //   [..+I1)       EXIF IFD: count(2) + M*12 + nextIFD(4)
-  //   [..+D1)       EXIF data area
-  //   [..)          raw pixel data
-
+  // Layout: TIFF header → IFD0+data → EXIF IFD+data → raw pixels.
   // First pass: build with dummy offsets to measure data area sizes.
   auto measureMain = buildMainIfd(meta, 0, 0, 0);
   auto measureExif = buildExifIfd(meta, 0);
@@ -505,10 +480,7 @@ bool writeDng(const char *path, const uint8_t *rawData, size_t rawSize,
   if (buf.size() % 2 != 0)
     buf.push_back(0);
 
-  // Write to file with O_EXCL|O_NOFOLLOW to prevent symlink attacks.
-  // On EEXIST (same-ms collision), retry with _2, _3, ... suffixes.
-  // Uses safeFileOpenFd (atomic open loop, no lstat probe) to avoid
-  // TOCTOU races.
+  // O_EXCL|O_NOFOLLOW via safeFileOpenFd (no TOCTOU); retry with _2/_3 on collision.
   std::string p;
   int fd = safeFileOpenFd(path, p);
   if (fd < 0)
@@ -542,8 +514,7 @@ bool writeDng(const char *path, const uint8_t *rawData, size_t rawSize,
     unlink(p.c_str());
     return false;
   }
-  // fsync before close so DNG captures survive power cuts (camera appliance
-  // may be turned off immediately after a capture).
+  // fsync before close — DNG captures must survive power cuts.
   if (::fsync(fd) != 0) {
     std::cerr << "DNG: fsync() failed: " << errnoString(errno) << "\n";
     close(fd);

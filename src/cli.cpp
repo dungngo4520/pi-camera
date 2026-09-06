@@ -11,7 +11,7 @@
 namespace picamera {
 
 namespace {
-// Parse argv[i+1] into T; on error prints and returns false, advancing i.
+// consumes next argv
 template <typename T, typename Conv>
 bool parseIntArg(int argc, char **argv, int &i, const char *flag, Conv conv,
                  T &out) {
@@ -29,8 +29,6 @@ bool parseIntArg(int argc, char **argv, int &i, const char *flag, Conv conv,
   return true;
 }
 
-// Parse argv[i+1] into a std::string; on missing value prints and returns
-// false.
 bool parseStrArg(int argc, char **argv, int &i, const char *flag,
                  std::string &out) {
   if (i + 1 >= argc) {
@@ -41,11 +39,7 @@ bool parseStrArg(int argc, char **argv, int &i, const char *flag,
   return true;
 }
 
-// Parse a string into uint32_t with range checking. std::stoul returns
-// unsigned long (64-bit on x86-64), so a naive static_cast<uint32_t>
-// silently wraps values >= 2^32 and bypasses downstream max-value checks.
-// This helper parses into uint64_t and rejects anything > UINT32_MAX.
-// Also verifies the entire token was consumed (no trailing garbage).
+// full-token uint32 parser
 uint32_t parseUint32(const char *s) {
   if (!s || !s[0])
     throw std::invalid_argument("empty value");
@@ -66,9 +60,7 @@ uint32_t parseUint32(const char *s) {
   return static_cast<uint32_t>(v);
 }
 
-// Parse a hex string into uint8_t with range checking.
-// Also verifies the entire token was consumed. Accepts an optional
-// "0x"/"0X" prefix (commonly typed by users for hex values).
+// hex string → uint8_t; accepts optional 0x prefix.
 uint8_t parseUint8Hex(const char *s) {
   if (!s || !s[0])
     throw std::invalid_argument("empty value");
@@ -97,8 +89,7 @@ uint8_t parseUint8Hex(const char *s) {
   return static_cast<uint8_t>(v);
 }
 
-// Parse a string into uint64_t with range checking (shutter/exposure).
-// Also verifies the entire token was consumed.
+// full-token uint64 parser (shutter/exposure).
 uint64_t parseUint64(const char *s) {
   if (!s || !s[0])
     throw std::invalid_argument("empty value");
@@ -132,8 +123,7 @@ int parseInt32(const char *s) {
   return v;
 }
 
-// Parse a string into float with full-token validation.
-// Rejects inf/nan — libcamera controls expect finite values.
+// full-token float parser; rejects inf/nan.
 float parseFloat(const char *s) {
   if (!s || !s[0])
     throw std::invalid_argument("empty value");
@@ -309,10 +299,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
       if (!parseIntArg(argc, argv, i, "--shutter", parseUint64,
                        cfg.exposureTime))
         return false;
-      // libcamera's ExposureTime control is int32_t microseconds.
-      // applyControls clamps to INT32_MAX, but the capture timeout
-      // is derived from config_.exposureTime — reject values that
-      // would produce an unbounded timeout on a pipeline stall.
+      // libcamera exposure is int32 us
       constexpr uint64_t kMaxShutterUs =
           static_cast<uint64_t>(std::numeric_limits<int32_t>::max());
       if (cfg.exposureTime > kMaxShutterUs) {
@@ -324,10 +311,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
       std::string mode;
       if (!parseStrArg(argc, argv, i, "--awb", mode))
         return false;
-      // Normalize to lowercase — kAwbModes and kAwbTable use lowercase
-      // keys, so case-insensitive input (e.g. "Daylight") would fail
-      // validation without this. parseOutputFormat is already
-      // case-insensitive; this makes --awb consistent with --format.
+      // case-insensitive AWB mode
       for (auto &c : mode)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       if (!isValidAwbMode(mode)) {
@@ -374,7 +358,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
       cfg.awbEnable = false;
     } else if (arg == "--bracket") {
       // Format: --bracket count,ev1,ev2,...
-      // e.g. --bracket 3,-2,0,+2  (3 frames at -2EV, 0EV, +2EV)
       if (i + 1 >= argc) {
         std::cerr << "--bracket requires an argument\n";
         return false;
@@ -466,7 +449,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
       if (!parseIntArg(argc, argv, i, "--warmup", parseUint32,
                        cfg.warmupFrames))
         return false;
-      // Cap to a sane maximum to prevent infinite warmup loops.
+      // Cap to prevent infinite warmup loops.
       constexpr uint32_t kMaxWarmup = 1000;
       if (cfg.warmupFrames > kMaxWarmup) {
         std::cerr << "picamera: --warmup capped to " << kMaxWarmup << "\n";
@@ -545,8 +528,6 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
     return false;
   }
 
-  // Validate preview FPS (must be > 0 to prevent division by zero in
-  // frame-delay calculation; cap at a reasonable max to avoid busy-looping).
   if (opts.previewFps == 0 || opts.previewFps > 120) {
     std::cerr << "--preview-fps must be 1-120, got " << opts.previewFps << "\n";
     return false;
@@ -562,9 +543,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
       std::cerr << "--count must be >= 0, got " << opts.timelapseCount << "\n";
       return false;
     }
-    // --bracket is only supported in --capture mode (captureBracket).
-    // runTimelapse uses single-shot capture, so bracket settings would
-    // be silently ignored — reject explicitly to avoid user confusion.
+    // --bracket is only supported in --capture mode.
     if (!cfg.bracketEv.empty()) {
       std::cerr << "--bracket cannot be used with --timelapse\n";
       return false;
@@ -606,10 +585,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
     return false;
   }
 
-  // Derive default timelapse output pattern from --format so the
-  // filename extension matches the actual file content (e.g. --format
-  // jpeg -> capture_%04d.jpeg). If the user explicitly set --output,
-  // their pattern is used as-is.
+  // Default timelapse output pattern derives extension from --format.
   if (opts.mode == "timelapse" && opts.outputPattern.empty()) {
     opts.outputPattern =
         std::string("capture_%04d.") + std::string(extensionFor(cfg.format));
@@ -627,10 +603,7 @@ bool parseArgs(int argc, char **argv, CliOptions &opts, CameraConfig &cfg) {
     }
   }
 
-  // Validate and canonicalize capture directory for path safety.
-  // First reject ".." as a path component (defense in depth), then
-  // canonicalize to resolve symlinks so that later isPathInside
-  // checks can't be bypassed via symlinks to sensitive directories.
+  // canonicalize and reject ".."
   if (!opts.captureDir.empty()) {
     // Check for ".." as a path component, not as a substring —
     // legitimate directory names like "a..b" should be allowed.

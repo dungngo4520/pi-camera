@@ -58,8 +58,6 @@ std::string jsonEscape(std::string_view s) {
 
 namespace {
 
-// --- HTTP response helpers ---
-
 std::string httpResponse(int status, const std::string &contentType,
                          const std::string &body) {
   const char *reason = (status == 200)   ? "OK"
@@ -75,8 +73,6 @@ std::string httpResponse(int status, const std::string &contentType,
       << body;
   return oss.str();
 }
-
-// --- JSON helpers (simple string formatting, no JSON library) ---
 
 std::string jsonStr(std::string_view key, std::string_view val) {
   std::ostringstream oss;
@@ -95,8 +91,6 @@ std::string jsonBool(std::string_view key, bool val) {
   oss << '"' << key << "\":" << (val ? "true" : "false");
   return oss.str();
 }
-
-// --- Enum to string (for JSON serialization) ---
 
 const char *driveModeStr(DriveMode d) {
   switch (d) {
@@ -240,10 +234,7 @@ const char *bracketTypeStr(BracketType b) {
   return "unknown";
 }
 
-// --- JSON value extraction (simple parser for flat key-value objects) ---
-
-// Find the value for a key in a JSON object string. Handles string and
-// numeric/bool values. Returns nullopt if the key is not found.
+// Find the value for a key in a JSON object string.
 std::optional<std::string> jsonFindValue(std::string_view json,
                                          std::string_view key) {
   std::string needle = "\"";
@@ -279,7 +270,6 @@ std::optional<std::string> jsonFindValue(std::string_view json,
     }
     return val;
   }
-  // Numeric/bool value — read until comma or closing brace
   std::string val;
   while (pos < json.size() && json[pos] != ',' && json[pos] != '}' &&
          json[pos] != '\n' && json[pos] != '\r') {
@@ -316,8 +306,6 @@ std::optional<bool> jsonBoolValue(std::string_view s) {
     return false;
   return std::nullopt;
 }
-
-// --- Enum from string (for JSON deserialization) ---
 
 std::optional<DriveMode> parseDriveModeJson(std::string_view s) {
   if (s == "single")
@@ -451,8 +439,6 @@ std::optional<CustomMode> parseCustomModeJson(std::string_view s) {
   return std::nullopt;
 }
 
-// Serialize a bracket EV vector as a comma-separated string (e.g. "-0.5,0,0.5").
-// Matches the on-disk settings-file format for bracketEv.
 std::string bracketEvStr(const std::vector<float> &evs) {
   std::ostringstream oss;
   for (size_t i = 0; i < evs.size(); ++i) {
@@ -463,8 +449,7 @@ std::string bracketEvStr(const std::vector<float> &evs) {
   return oss.str();
 }
 
-// Parse a comma-separated bracket EV string into a vector of floats.
-// Returns nullopt if any token fails to parse.
+// CSV float list
 std::optional<std::vector<float>> parseBracketEvJson(std::string_view s) {
   std::vector<float> out;
   if (s.empty())
@@ -485,8 +470,6 @@ std::optional<std::vector<float>> parseBracketEvJson(std::string_view s) {
 }
 
 } // namespace
-
-// --- Pure-logic helper implementations ---
 
 bool parseHttpRequest(const std::string &raw, HttpRequest &out) {
   auto lineEnd = raw.find("\r\n");
@@ -865,8 +848,6 @@ std::string extractFileName(const std::string &path) {
     raw = raw.substr(0, q);
   return urlDecode(raw);
 }
-
-// --- WifiServer implementation ---
 
 WifiServer::WifiServer() = default;
 

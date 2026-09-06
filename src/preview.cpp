@@ -36,44 +36,20 @@ namespace picamera {
 
 namespace {
 
-// --- Preview-mode constants ---
+// Preview-mode constants.
 constexpr int kFrameTimeoutMs = 2000;
 constexpr int kBatteryReadIntervalSec = 3;
 constexpr uint32_t kStatsIntervalFrames = 60;
-
-// Splash screen duration (ms)
 constexpr int kSplashDurationMs = 1500;
-// Review screen duration (ms) — how long the last capture is shown
 constexpr int kReviewDurationMs = 2000;
-// Shutter press duration threshold: below = capture (quick tap), at/above =
-// metering lock.
+// Below = capture (quick tap), at/above = metering lock.
 constexpr int kShutterHoldMs = 500;
-// Number of playback entries visible without scrolling.
 constexpr int kPlaybackVisible = 8;
-// Max burst frames for continuous shooting (Pi Zero CPU limit).
+// Pi Zero CPU limit for continuous shooting.
 constexpr int kMaxBurstFrames = 3;
-// Number of settings tabs (Capture, Exposure, Color, Display, Video, System).
 constexpr int kSettingsTabCount = 6;
 
-// Non-blocking capture: queues the still and launches a background thread
-// to wait for completion. The viewfinder keeps streaming. The caller polls
-// captureDone to check completion, then reads captureSuccess/captureFilename.
-// Like a real camera: shutter fires, "CAPTURING..." shows briefly, VF
-// continues.
-//
-// Returns the worker thread (joinable). The caller MUST join it before
-// destroying the referenced arguments (cam, the atomics, the strings) —
-// typically by calling joinCaptureThread() before shutdown/reconfigure.
-// On early-failure paths (no disk space, filename collision, queue
-// failure) no thread is launched and a non-joinable std::thread is
-// returned; captureDone is set to true and errorMsg is filled in.
-//
-// Thread-safety: errorMsg, captureFilename are protected by captureMtx.
-// The worker thread locks captureMtx when writing the strings, then stores
-// captureDone=true (release). The main thread loads captureDone=true
-// (acquire), joins the thread, then locks captureMtx to read the strings.
-// Forward declaration — captureDngJpegAsync is defined below but called
-// from captureStillAsync when the format is DngJpeg with no overrides.
+// Forward declaration for DngJpeg+JPEG capture helper.
 std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
                                  const CameraSettings &settings,
                                  std::atomic<bool> &captureDone,
@@ -95,17 +71,13 @@ std::jthread captureStillAsync(
     errorMsg.clear();
   }
 
-  // Use the actual still stream format (not the UI setting) to build
-  // the filename extension — the file content is determined by stillFmt_,
-  // which only changes on reconfigureStill(). This prevents mismatched
-  // extensions when the user changes the format in settings but hasn't
-  // exited settings yet (which triggers reconfigureStill).
+  // Use the actual still stream format (not the UI setting) for the filename
+  // extension — the file content is determined by stillFmt_, which only
+  // changes on reconfigureStill().
   OutputFormat fmt = cam.stillFormat();
 
-  // DngJpeg format: use sequential DNG+JPEG capture for single shots.
-  // For bracket/burst (non-zero EV/WB overrides), fall through to the
-  // normal JPEG-only path — DngJpeg bracketing would produce too many
-  // files and the reconfigure overhead would be excessive.
+  // DngJpeg single shots use sequential DNG+JPEG capture; bracket/burst
+  // (non-zero EV/WB overrides) fall through to JPEG-only.
   if (fmt == OutputFormat::DngJpeg && evOverride == 0.0f &&
       wbRedOverride == 0.0f) {
     return captureDngJpegAsync(cam, pcfg, settings, captureDone, captureSuccess,
@@ -113,11 +85,8 @@ std::jthread captureStillAsync(
                                exposureOverride);
   }
 
-  // Size the disk-space threshold to the capture format:
-  // - JPEG/PNG: full-res ~5-10 MB, 50 MB is generous.
-  // - DNG/RAW: full-res IMX477 10-bit ~15-20 MB, need 64 MB headroom.
-  // - DngJpeg: needs both DNG + JPEG, so use the larger DNG threshold.
-  // - RawJpeg: needs NV12 + JPEG, use the larger threshold.
+  // Disk-space threshold by format: DNG/RAW/DngJpeg/RawJpeg need 64 MB,
+  // JPEG/PNG need 50 MB.
   uint64_t minBytes =
       (fmt == OutputFormat::DNG || fmt == OutputFormat::RAW_NV12 ||
        fmt == OutputFormat::DngJpeg || fmt == OutputFormat::RawJpeg)
@@ -133,24 +102,19 @@ std::jthread captureStillAsync(
     return {};
   }
 
-  // Start from the CLI camera config (preserves exposure/gain/AWB)
-  // and override with the full settings menu config.
+  // Start from the settings menu config (preserves exposure/gain/AWB),
+  // merge CLI-only jpegQuality, and apply bulb-mode exposure override.
   CameraConfig stillCfg =
       settingsToCameraConfig(settings, pcfg.captureWidth, pcfg.captureHeight);
-  // Merge in CLI-only fields that settingsToCameraConfig doesn't set
   stillCfg.jpegQuality = settings.jpegQuality;
-  // Bulb mode: override the exposure time with the user-measured value
-  // and force manual exposure (AE off) for this single capture.
   if (exposureOverride > 0) {
     stillCfg.exposureTime = exposureOverride;
     stillCfg.aeEnable = false;
   }
   cam.updateStillConfig(stillCfg);
 
-  // Set bracketing overrides (EV for AE bracket, WB gains for WB bracket,
-  // analogue gain for ISO bracket). These are applied by
-  // DualStream::applyControls() for the still request and cleared
-  // automatically after the capture completes.
+  // Bracketing overrides (EV/WB/gain) applied by applyControls() for the
+  // still request and cleared after the capture completes.
   cam.setStillEvOverride(evOverride);
   if (wbRedOverride > 0.0f) {
     cam.setStillWbOverride(wbRedOverride, wbBlueOverride);
@@ -187,18 +151,10 @@ std::jthread captureStillAsync(
     return {};
   }
 
-  // Launch a background thread to wait for the capture to complete.
-  // The viewfinder keeps streaming while this runs. The thread is
-  // returned to the caller, which must join it before shutdown so the
-  // captured-by-reference locals are not destroyed while it runs.
-  // DualStream::stop() notifies stillCv_ so this thread unblocks
-  // promptly even if the capture never completes.
-  //
-  // We ask waitCaptureDone for the actual saved path — the writer may
-  // have appended a _2/_3 suffix if the requested filename collided
-  // (rare, but possible under burst shooting or same-ms timestamps).
-  // Using the real path ensures the review screen decodes the file
-  // that was actually written, not a nonexistent one.
+  // Background thread waits for capture completion while the VF keeps
+  // streaming. DualStream::stop() notifies stillCv_ so it unblocks promptly.
+  // We ask waitCaptureDone for the actual saved path (may have a _2/_3
+  // suffix on filename collision) so the review screen decodes the real file.
   return std::jthread([&cam, &captureDone, &captureSuccess, &captureFilename,
                        &errorMsg, &captureMtx, filename]() {
     constexpr int kStillTimeoutMs = 5000;
@@ -223,21 +179,9 @@ std::jthread captureStillAsync(
   });
 }
 
-// Sequential DNG+JPEG capture (true mirrorless RAW+JPEG). The camera starts
-// in NV12 still mode (for JPEG). This function:
-//   1. Captures NV12 still → saves JPEG (viewfinder keeps streaming)
-//   2. Reconfigures to raw Bayer → captures → saves DNG (VF pauses briefly)
-//   3. Reconfigures back to NV12 still (VF resumes)
-// The viewfinder continues during phase 1; phases 2-3 cause a brief blackout
-// (~2-4s) while the camera stops/restarts — acceptable for RAW+JPEG, like a
-// real camera's brief delay. The "SAVING..." indicator shows throughout.
-// Both files are valid: an openable JPEG and an openable DNG with real raw
-// Bayer data.
-//
-// Thread-safety: the main loop's grabFrame returns empty frames during
-// reconfigure (camera stopped), and checkCaptureCompletion won't fire until
-// captureDone is set (after all phases complete). The main loop handles
-// frame timeouts gracefully, so no deadlock or crash.
+// Sequential DNG+JPEG capture (true mirrorless RAW+JPEG): captures NV12
+// still→JPEG (VF keeps streaming), reconfigures to raw Bayer→DNG (brief VF
+// blackout), then reconfigures back. Both files are valid.
 std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
                                  const CameraSettings &settings,
                                  std::atomic<bool> &captureDone,
@@ -293,9 +237,8 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
     return {};
   }
 
-  // Derive the DNG filename inside the thread from the *actual* saved JPEG
-  // path (which may carry a _2/_3 suffix from O_EXCL collision handling) so
-  // the companion DNG always matches the JPEG that was really written.
+  // Derive the DNG filename inside the thread from the actual saved JPEG path
+  // (may carry a _2/_3 suffix) so the companion DNG matches the written JPEG.
   uint32_t vfW = pcfg.previewWidth;
   uint32_t vfH = pcfg.previewHeight;
   uint32_t capW = pcfg.captureWidth;
@@ -323,8 +266,6 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
     }
     std::cout << "Preview: DNG+JPEG — JPEG saved, capturing DNG...\n";
 
-    // Derive the DNG filename from the actual saved JPEG path so the
-    // companion pair stays in sync even when a _2/_3 suffix was added.
     const std::string &jpegPath =
         jpegSavedPath.empty() ? jpegFilename : jpegSavedPath;
     auto se = splitPathStemExt(jpegPath);
@@ -344,7 +285,7 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
       return;
     }
 
-    // Re-apply still config for the DNG capture (reconfigure resets it).
+    // Re-apply still config (reconfigure resets it).
     CameraConfig dngCfg = settingsToCameraConfig(settings, capW, capH);
     if (exposureOverride > 0) {
       dngCfg.exposureTime = exposureOverride;
@@ -371,7 +312,7 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
       captureDone.store(true, std::memory_order_release);
       return;
     }
-    // Re-apply still config after reconfigure back.
+    // Re-apply still config (reconfigure resets it).
     CameraConfig backCfg = settingsToCameraConfig(settings, capW, capH);
     if (exposureOverride > 0) {
       backCfg.exposureTime = exposureOverride;
@@ -403,19 +344,8 @@ std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
   });
 }
 
-// ---------------------------------------------------------------------------
-// Preview loop state + extracted helpers.
-//
-// runPreview() was a ~780-line monolith. The loop body is decomposed into
-// focused free functions below, each taking the loop state (PreviewState&) and
-// the service objects (DualStream&, St7735Display&, etc.) it needs. This is a
-// pure refactor — behavior is identical to the original inline code.
-// ---------------------------------------------------------------------------
-
-// All mutable state that lived as locals in runPreview()'s loop, bundled so
-// helpers can take a single state reference instead of ~25 loose parameters.
-// Pure-data aggregate (no member functions) — mirrors the existing
-// OverlayState/CameraSettings pattern.
+// All mutable state from runPreview()'s loop, bundled so helpers take a
+// single state reference instead of ~25 loose parameters.
 struct PreviewState {
   // Framebuffer + timing
   size_t dispPixels = 0;
@@ -443,15 +373,13 @@ struct PreviewState {
   int imageViewZoom = 1;
   int imageViewPanX = 0;
   int imageViewPanY = 0;
-  // Slideshow: auto-advance through playback images.
   bool slideshowActive = false;
   std::chrono::steady_clock::time_point slideshowNextAdvance;
 
-  // Image viewer state (decoded image for full-screen view)
   std::vector<uint8_t> imageViewPixels;
   std::string imageViewPath;
   // Delete confirmation: first Key3 press arms a 3s window; a second
-  // Key3 press within that window deletes. Epoch = no pending confirm.
+  // Key3 press within that window deletes.
   std::chrono::steady_clock::time_point deleteConfirmDeadline;
 
   // Review image state (decoded last capture for review screen)
@@ -479,15 +407,12 @@ struct PreviewState {
   // Metering lock state (AE/AWB lock via long shutter hold)
   bool meteringLocked = false;
 
-  // Focus magnifier pan offset (in viewfinder source pixels). When the
-  // focus magnifier is active (2x or 4x), the joystick pans the crop
-  // region within the 320x240 viewfinder. Pan range is clamped so the
-  // crop region stays within the frame.
+  // Focus magnifier pan offset (viewfinder source pixels). Clamped in
+  // renderViewfinder() so the crop region stays within the frame.
   int focusMagPanX = 0;
   int focusMagPanY = 0;
 
-  // File protection state (ImageView mode). True when the currently
-  // displayed image is protected (in the .protected list).
+  // True when the currently displayed image is protected.
   bool fileProtected = false;
 
   // Error message with expiry (for on-screen display)
@@ -666,9 +591,8 @@ void updateBatteryReading(PreviewState &s, BatteryMonitor &battery) {
   }
 }
 
-// While sleeping (backlight off, low-power): poll buttons with a blocking
-// timeout so we wake promptly on any press. Returns true if the main loop
-// should `continue` (skip render + normal button handling to consume the wake).
+// While sleeping (backlight off): poll buttons with a blocking timeout so we
+// wake promptly on any press. Returns true to skip render + normal handling.
 bool handleSleepPoll(PreviewState &s, ButtonInput &buttons,
                      St7735Display &display) {
   if (!s.sleeping)
@@ -708,10 +632,9 @@ void applyBrightnessDimming(uint8_t *rgb565, size_t dispPixels,
   }
 }
 
-// Merge bracket frame JPEGs into a single HDR JPEG. Decodes each bracket
-// frame to RGB24, extracts Y-planes, merges with hdrMergeY, reconstructs
-// RGB from merged Y + chroma from the middle frame, and saves as an
-// additional _HDR.jpg file. Returns the saved path on success.
+// Merge bracket frame JPEGs into a single HDR JPEG: decode each to RGB24,
+// extract Y-planes, merge with hdrMergeY, reconstruct RGB from merged Y +
+// middle-frame chroma, save as _HDR.jpg.
 void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
   auto &paths = s.bracketCapturePaths;
   if (paths.size() < 2)
@@ -797,11 +720,9 @@ void performHdrMerge(PreviewState &s, const PreviewConfig &pcfg) {
 }
 
 // Long-exposure noise reduction: estimate the sensor black level from the
-// optical-black border pixels of the main frame's Y-plane and subtract it
-// as a uniform offset. This removes the fixed-pattern dark current that
-// accumulates during long exposures without needing a separate dark-frame
-// capture (the Pi has no mechanical shutter to cover the sensor). The
-// corrected frame is re-encoded and overwrites the original JPEG.
+// optical-black border pixels and subtract it as a uniform offset, removing
+// fixed-pattern dark current without a separate dark-frame capture (the Pi
+// has no mechanical shutter). Re-encodes and overwrites the original JPEG.
 void performLenr(PreviewState &s, const std::string &mainPath,
                  const PreviewConfig &pcfg) {
   uint32_t mw = 0;
@@ -858,7 +779,6 @@ void performLenr(PreviewState &s, const std::string &mainPath,
 }
 
 // Join a completed capture worker and transition to review/error state.
-// The acquire load synchronizes with the worker's release store of captureDone.
 void checkCaptureCompletion(PreviewState &s, DualStream &cam,
                            St7735Display &display,
                            const PreviewConfig &pcfg) {
@@ -1023,8 +943,7 @@ void handleTimelapse(PreviewState &s, DualStream &cam,
 }
 
 // Render one viewfinder frame: grab, convert, dim, overlay, histogram, blit.
-// Returns true if the main loop should `continue` (stop requested mid-grab),
-// preserving the original early-`continue` on stop during a frame timeout.
+// Returns true to `continue` (stop requested mid-grab).
 // Forward declarations for functions defined after renderViewfinder.
 void adjustQuickFnItem(PreviewState &s, int idx, int direction);
 void buildQuickFnItems(const CameraSettings &s,
@@ -1112,14 +1031,12 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                         s.overlay.settings.aspectRatio);
   }
 
-  // Check capture completion BEFORE building the overlay state, so
-  // overlay.captureInProgress reflects the up-to-date value this frame.
+  // Check capture completion before building overlay state so
+  // overlay.captureInProgress is current this frame.
   checkCaptureCompletion(s, cam, display, pcfg);
 
-  // If capture completion switched us out of Viewfinder mode (e.g. to
-  // Review), return without blitting — the main loop will render the
-  // new mode on the next iteration. This avoids a one-frame viewfinder
-  // flash before the review screen appears.
+  // If capture completion switched us out of Viewfinder (e.g. to Review),
+  // return without blitting — avoids a one-frame VF flash before review.
   if (s.mode != CameraMode::Viewfinder)
     return false;
 
@@ -1142,10 +1059,8 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
     s.overlay.bulbSeconds = 0;
   }
 
-  // One-touch custom white balance: measure the current frame's average
-  // chroma and update the manual R/B gains. Armed by the WBSET settings
-  // action (wbMeasurePending); consumed here where the live frame is
-  // available. Switches AWB off so the computed gains take effect.
+  // One-touch custom WB: measure the live frame's average chroma and update
+  // manual R/B gains (armed by the WBSET settings action). Switches AWB off.
   if (s.overlay.settings.wbMeasurePending) {
     float red = 1.0f;
     float blue = 1.0f;
@@ -1223,11 +1138,9 @@ bool renderViewfinder(PreviewState &s, DualStream &cam, St7735Display &display,
                        labels, values, s.quickFnIdx);
   }
 
-  // Video recording: encode current frame and append to video file.
-  // Throttle to the selected frame rate (clamped to the sensor mode max)
-  // and scale each frame to the selected output resolution before
-  // encoding. MJPEG and H264 (fallback) write JPEG frames to a .mjpeg
-  // container; YUV writes raw NV12 planes to a .yuv file.
+  // Video recording: throttle to the selected FPS, scale each frame to the
+  // output resolution, and encode. MJPEG/H264 write JPEG frames to .mjpeg;
+  // YUV writes raw NV12 planes to .yuv.
   if (s.videoRecording && !s.videoPath.empty()) {
     auto now = std::chrono::steady_clock::now();
     auto interval = videoFrameInterval(s.videoEffectiveFps);
@@ -1443,15 +1356,13 @@ void checkSleepTimeout(PreviewState &s, St7735Display &display,
 }
 
 // Handle shutter release: quick tap = capture (or self-timer start),
-// long hold = AE/AWB metering lock (half-press emulation).
-// Drive mode dispatches: Single, SelfTimer, Bracket, Timelapse, Continuous.
+// long hold = AE/AWB metering lock. Dispatches by drive mode.
 void handleShutterRelease(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, St7735Display &display,
                           const ButtonEvent &evt) {
   // Video mode: shutter toggles recording.
   if (s.overlay.settings.driveMode == DriveMode::Video) {
     if (s.videoRecording) {
-      // Stop recording.
       s.videoRecording = false;
       std::cout << "Preview: video recording stopped (" << s.videoFrameCount
                 << " frames, " << s.videoPath << ")\n";
@@ -1569,7 +1480,6 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
       std::cout << "Preview: timelapse stopped by shutter press\n";
       s.screenDirty = true;
     } else if (s.overlay.settings.driveMode == DriveMode::Timelapse) {
-      // Start timelapse
       s.overlay.timelapseRunning = true;
       s.timelapseNextCapture = std::chrono::steady_clock::now();
       s.timelapseShotsTaken = 0;
@@ -1604,12 +1514,8 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
             static_cast<int>(s.overlay.settings.bracketEv.size()) - 1;
       }
     } else if (s.overlay.settings.driveMode == DriveMode::Bulb) {
-      // Bulb mode: two-press long exposure. First press starts a
-      // counting-up timer (the "shutter" is considered open); second
-      // press captures with the elapsed time as the exposure. This
-      // emulates holding the shutter open on a mechanical camera —
-      // electronic shutter can't truly stay open, so the user controls
-      // the exposure duration interactively.
+      // Bulb mode: two-press long exposure. First press starts a counting-up
+      // timer; second press captures with the elapsed time as the exposure.
       if (s.bulbActive) {
         // Second press — capture with the measured exposure time.
         auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1629,7 +1535,6 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
         std::cout << "Preview: bulb timer started — press again to capture\n";
       }
     } else if (s.overlay.settings.timerDuration > 0 && !s.timerActive) {
-      // Start self-timer countdown
       s.timerActive = true;
       s.timerEndTime = std::chrono::steady_clock::now() +
                        std::chrono::seconds(s.overlay.settings.timerDuration);
@@ -1652,7 +1557,6 @@ void handleShutterRelease(PreviewState &s, DualStream &cam,
   }
 }
 
-// Dispatch a button event in Viewfinder mode.
 // Adjust a Quick/Fn overlay item by direction (+1 or -1).
 // Items: 0=ISO, 1=WB, 2=EV, 3=Drive, 4=Format, 5=PictureStyle.
 void adjustQuickFnItem(PreviewState &s, int idx, int direction) {
@@ -1750,7 +1654,6 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
   if (evt.id == ButtonId::Shutter && !evt.pressed) {
     handleShutterRelease(s, cam, pcfg, display, evt);
   } else if (evt.pressed && evt.id == ButtonId::Key1) {
-    // Enter playback mode
     s.bulbActive = false; // cancel any pending bulb exposure
     s.playbackFiles = listCaptures(pcfg.captureDir);
     s.playbackIdx = 0;
@@ -1758,7 +1661,6 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
     s.mode = CameraMode::Playback;
     s.screenDirty = true;
   } else if (evt.pressed && evt.id == ButtonId::Key2) {
-    // Enter settings mode
     s.bulbActive = false; // cancel any pending bulb exposure
     s.mode = CameraMode::Settings;
     s.settingsIdx = 0;
@@ -1798,11 +1700,8 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
   } else if (evt.pressed && s.overlay.settings.focusMagnify > 0 &&
              (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
               evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
-    // Focus magnifier pan: joystick moves the crop region within the
-    // viewfinder. Pan step is 16 source pixels per press (enough to
-    // be noticeable at 320x240 without overshooting). Clamping is
-    // applied in renderViewfinder() where the frame dimensions are
-    // known, so we just adjust the raw offset here.
+    // Focus magnifier pan: joystick moves the crop region. Pan step is 16
+    // source pixels; clamping is applied in renderViewfinder().
     constexpr int kFocusPanStep = 16;
     if (evt.id == ButtonId::JoyUp)
       s.focusMagPanY -= kFocusPanStep;
@@ -1827,7 +1726,6 @@ void handleReviewButton(PreviewState &s, const ButtonEvent &evt) {
 void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg,
                           St7735Display &display, const ButtonEvent &evt) {
   if (evt.pressed && evt.id == ButtonId::Key1) {
-    // Exit playback
     s.mode = CameraMode::Viewfinder;
     s.screenDirty = true;
   } else if (evt.pressed && evt.id == ButtonId::JoyUp) {
@@ -1845,7 +1743,6 @@ void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg,
       s.screenDirty = true;
     }
   } else if (evt.pressed && evt.id == ButtonId::Shutter) {
-    // View the selected image full-screen.
     if (s.playbackFiles.empty())
       return;
     const std::string &sel = s.playbackFiles[s.playbackIdx];
@@ -1874,16 +1771,12 @@ void handlePlaybackButton(PreviewState &s, const PreviewConfig &pcfg,
   }
 }
 
-// Dispatch a button event in ImageView mode (delete on Key3, back otherwise).
-// Delete requires two Key3 presses within 3 seconds to prevent accidental
-// data loss from a mis-press — similar to many real cameras' trash flow.
-// Key1 toggles file protection (protected files can't be deleted).
-// Key2 cycles zoom (1x/2x/4x). Joystick pans when zoomed > 1x.
-// Shutter toggles slideshow.
+// ImageView button dispatch. Delete requires two Key3 presses within 3s
+// (prevents accidental data loss). Key1 toggles protection, Key2 cycles
+// zoom (1x/2x/4x), joystick pans when zoomed, shutter toggles slideshow.
 void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
                            const ButtonEvent &evt) {
   if (evt.pressed && evt.id == ButtonId::Key1) {
-    // Toggle file protection (like a camera's "protect" key).
     if (!s.imageViewPath.empty()) {
       bool nowProtected =
           toggleFileProtection(pcfg.captureDir, s.imageViewPath);
@@ -1960,7 +1853,6 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
     s.imageViewPanY = 0;
     s.screenDirty = true;
   } else if (evt.pressed && evt.id == ButtonId::Shutter) {
-    // Toggle slideshow
     s.slideshowActive = !s.slideshowActive;
     if (s.slideshowActive) {
       s.slideshowNextAdvance =
@@ -1971,7 +1863,6 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
              (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
               evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
     if (s.imageViewZoom > 1) {
-      // Pan when zoomed in
       int panStep = 8; // pixels per joystick press
       if (evt.id == ButtonId::JoyUp)
         s.imageViewPanY -= panStep;
@@ -2022,12 +1913,9 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
   }
 }
 
-// Dispatch a button event in Settings mode (navigate + adjust values, exit
-// reconfigures the still stream if the capture format changed).
-// Uses the tabbed settings menu API from settings_menu.cpp.
-// In Basic mode: flat list, Key1 does nothing (no tabs), Key3 toggles to
-// Advanced. In Advanced mode: Key1 cycles tabs, Key3 toggles to Basic.
-// JoyUp/Down navigate items. JoyLeft/Right adjust the selected item.
+// Settings button dispatch (navigate + adjust). Exit reconfigures the still
+// stream if the capture format/sensor mode changed. Basic mode: flat list;
+// Advanced mode: Key1 cycles tabs. JoyUp/Down navigate, JoyLeft/Right adjust.
 void handleSettingsButton(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, StopFlag &stop,
                           const ButtonEvent &evt) {
@@ -2078,10 +1966,9 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
                 << extensionFor(s.overlay.settings.captureFormat)
                 << " sensor "
                 << sensorModeLabel(s.overlay.settings.sensorMode) << "\n";
-      // Join any in-flight capture worker before reconfiguring:
-      // reconfigureStill() calls stop() (wakes the worker via stillCv_)
-      // then start(). The worker must be finished before start()
-      // re-installs the requestCompleted callback on the same `this`.
+      // Join any in-flight capture worker before reconfiguring: stop() wakes
+      // the worker via stillCv_, and it must finish before start() re-installs
+      // the requestCompleted callback on the same `this`.
       if (s.captureThread.joinable()) {
         cam.stop();
         s.captureThread.join();
@@ -2381,10 +2268,7 @@ bool runPreviewLoop(PreviewState &s, DualStream &cam,
 
       updateBatteryReading(s, battery);
 
-      // While sleeping (backlight off, low-power): poll buttons with a
-      // blocking timeout so we wake promptly on any press. We must NOT
-      // skip this — otherwise the wake-from-sleep handler is unreachable
-      // and the device can never wake up.
+      // While sleeping: poll buttons with a blocking timeout to wake on press.
       if (handleSleepPoll(s, buttons, display))
         continue;
 
@@ -2515,9 +2399,8 @@ bool runPreview(PreviewConfig &pcfg) {
     display.shutdown();
     return false;
   }
-  // Apply CLI exposure/gain/AWB settings to the still capture config.
-  // Both the viewfinder and still captures share these settings via
-  // applyControls() — manual exposure from the CLI affects both.
+  // Apply CLI exposure/gain/AWB to the still config (shared with VF via
+  // applyControls()).
   cam.updateStillConfig(pcfg.cameraCfg);
 
   BatteryMonitor battery;
@@ -2584,7 +2467,7 @@ bool runPreview(PreviewConfig &pcfg) {
   }
 
   // Initialize time-based state to "long ago" so the first iteration triggers
-  // a battery read and so review/timer/error entries are not pre-expired.
+  // a battery read and no entries are pre-expired.
   auto initNow = std::chrono::steady_clock::now();
   s.lastBatteryRead = initNow - std::chrono::hours(1);
   s.reviewStart = initNow - std::chrono::hours(1);
@@ -2598,8 +2481,7 @@ bool runPreview(PreviewConfig &pcfg) {
   std::cout << "Preview: shutter=capture, Key1=playback, Key2=settings, "
                "Ctrl+C=exit\n";
 
-  // Start Wi-Fi server if enabled (--wifi flag or wifi_enabled config key)
-  // and airplane mode is not active.
+  // Start Wi-Fi server if enabled and airplane mode is not active.
   if (pcfg.wifiEnabled && !s.overlay.settings.airplaneMode) {
     constexpr int kWifiPort = 8080;
     if (!s.wifiServer.start(kWifiPort, pcfg.captureDir, s.overlay.settings,
@@ -2610,8 +2492,8 @@ bool runPreview(PreviewConfig &pcfg) {
     }
   }
 
-  // Start Bluetooth server if enabled (--bt flag or bt_enabled config key).
-  // Shares the same settings mutex + CameraSettings as the Wi-Fi server.
+  // Start Bluetooth server if enabled (shares settings mutex + CameraSettings
+  // with the Wi-Fi server).
   if (pcfg.btEnabled && !s.overlay.settings.airplaneMode) {
     constexpr int kBtChannel = 1;
     if (!s.btServer.start(kBtChannel, pcfg.captureDir, s.overlay.settings,
@@ -2627,9 +2509,8 @@ bool runPreview(PreviewConfig &pcfg) {
   s.wifiServer.stop();
   s.btServer.stop();
 
-  // Shutdown: stop the camera first (wakes any blocked waitCaptureDone()
-  // via stillCv_.notify_all()), then join the capture worker thread so it
-  // doesn't touch freed state, then release the camera handle.
+  // Shutdown: stop the camera first (wakes blocked waitCaptureDone() via
+  // stillCv_), join the capture worker, then release the camera handle.
   cam.stop();
   if (s.captureThread.joinable())
     s.captureThread.join();

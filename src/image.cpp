@@ -19,9 +19,7 @@ inline uint8_t clamp8(int v) {
   return static_cast<uint8_t>(std::clamp(v, 0, 255));
 }
 
-// Sample one NV12 pixel at (sx, sy) and convert to RGB565 (RRRRRGGGGGGBBBBB).
-// Guards odd-width UV reads: if the V byte is past the luma width, use the
-// stride padding if available, else replicate the previous UV pair.
+// NV12 pixel → RGB565; guards odd-width UV reads.
 inline uint16_t nv12ToRgb565Pixel(const uint8_t *y, const uint8_t *uv,
                                   uint32_t stride, uint32_t sx, uint32_t sy) {
   int Y = y[static_cast<size_t>(sy) * stride + sx];
@@ -55,21 +53,11 @@ inline void storeRgb565Be(uint8_t *out, uint16_t pixel, size_t idx) {
   out[idx + 1] = static_cast<uint8_t>(pixel & 0xFF);
 }
 
-// ---------------------------------------------------------------------------
-// Scalar reference implementation — the tested path on x86 and the fallback
-// for odd-sized remainders on NEON builds.
-// ---------------------------------------------------------------------------
 void nv12ToRgbRowPair_scalar(const uint8_t *yRow0, const uint8_t *yRow1,
                              const uint8_t *uvRow, uint8_t *rgb0, uint8_t *rgb1,
                              uint32_t w, uint32_t stride, bool haveRow1) {
   for (uint32_t x = 0; x < w; x += 2) {
-    // For odd widths, the last iteration has x = w-1 and the V byte
-    // is at x+1 = w. Guard against the UV row bound (stride), not the
-    // luma width, because for odd w with stride > w the V byte at
-    // position w is valid (it's in the row padding). Only fall back to
-    // replicating the previous UV pair when the V byte is truly absent
-    // (stride == w, i.e. no padding). Use neutral chroma (U=V=128)
-    // when there is no previous UV pair.
+    // guard last UV read; fallback to previous pair or neutral
     int U;
     int V;
     if (x + 1 < stride) {
@@ -105,25 +93,9 @@ void nv12ToRgbRowPair_scalar(const uint8_t *yRow0, const uint8_t *yRow1,
 }
 
 #ifdef PICAMERA_HAS_NEON
-// ---------------------------------------------------------------------------
-// NEON SIMD path — processes 16 pixels per row-pair iteration on ARM.
-//
-// BT.601 limited-range NV12->RGB24:
-//   C = Y - 16,  D = U - 128,  E = V - 128
-//   R = clamp((298*C + 409*E + 128) >> 8)
-//   G = clamp((298*C - 100*D - 208*E + 128) >> 8)
-//   B = clamp((298*C + 516*D + 128) >> 8)
-//
-// The products (298*239, 516*127, etc.) overflow int16, so the multiply-
-// accumulate uses int32x4_t (vmull_n_s16 / vmlal_n_s16 / vmlsl_n_s16).
-// vqshrun_n_s32 does the saturating right-shift-by-8 directly to uint16,
-// which clamps to [0, 65535] — but since the math is designed to land in
-// [0, 255], the result fits in uint8 after narrowing.
-//
-// NV12 chroma subsampling: each UV pair covers a 2x2 Y block. For 16 Y
-// pixels there are 8 UV pairs (16 bytes). vld2_u8 deinterleaves them into
-// 8 U and 8 V values; vzip_u8 duplicates each to cover 2 pixels.
-// ---------------------------------------------------------------------------
+// NEON SIMD path — 16 pixels per row-pair iteration on ARM.
+// BT.601 limited-range NV12→RGB24; products overflow int16 so int32x4_t is used.
+// NV12 chroma: 8 UV pairs per 16 Y pixels; vld2_u8 deinterleaves, vzip_u8 duplicates.
 // Convert 8 Y pixels (one row) to 8 RGB triplets, given 8 U and 8 V values
 // (already deinterleaved and duplicated to per-pixel granularity).
 static inline void convert8pixels_neon(uint8x8_t y8, uint8x8_t u8, uint8x8_t v8,
@@ -235,14 +207,7 @@ void nv12ToRgbRowPair(const uint8_t *yRow0, const uint8_t *yRow1,
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Public API: convert a full NV12 frame to RGB24.
-//
-// Multi-threaded: splits the image into horizontal strips (one per thread,
-// up to hardware_concurrency) and converts them in parallel. Each strip is
-// a multiple of 2 rows (NV12 chroma subsampling). For small images or single-
-// core systems, falls back to single-threaded.
-// ---------------------------------------------------------------------------
+// Convert a full NV12 frame to RGB24 (multi-threaded, one strip per thread).
 std::vector<uint8_t> nv12ToRgb(const uint8_t *y, const uint8_t *uv, uint32_t w,
                                uint32_t h, uint32_t stride, size_t ySize,
                                size_t uvSize) {
@@ -334,13 +299,7 @@ std::vector<uint8_t> nv12ToRgb(const uint8_t *y, const uint8_t *uv, uint32_t w,
   return rgb;
 }
 
-// ---------------------------------------------------------------------------
-// NV12 -> RGB565 with center-crop + nearest-neighbor scaling.
-//
-// Output is big-endian RGB565 (high byte first) for SPI displays like the
-// ST7735S. The source is center-cropped to match the display aspect ratio,
-// then scaled to dispW x dispH.
-// ---------------------------------------------------------------------------
+// NV12 → RGB565 with center-crop + nearest-neighbor scaling (big-endian for SPI).
 bool nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv, uint32_t srcW,
                         uint32_t srcH, uint32_t stride, size_t ySize,
                         size_t uvSize, uint8_t *out, uint32_t dispW,
@@ -410,11 +369,8 @@ bool nv12ToRgb565Scaled(const uint8_t *y, const uint8_t *uv, uint32_t srcW,
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// NV12 -> RGB565 with explicit crop region + nearest-neighbor scaling.
-// Used by the focus magnifier: crop the center of the viewfinder and scale
-// to the display. cropX/cropY must be even (NV12 chroma 2x2 subsampling).
-// ---------------------------------------------------------------------------
+// NV12 → RGB565 with explicit crop region + nearest-neighbor scaling.
+// cropX/cropY must be even (NV12 chroma 2x2 subsampling).
 bool nv12ToRgb565CroppedScaled(const uint8_t *y, const uint8_t *uv,
                                uint32_t srcW, uint32_t srcH, uint32_t stride,
                                size_t ySize, size_t uvSize, uint32_t cropX,
@@ -461,14 +417,8 @@ bool nv12ToRgb565CroppedScaled(const uint8_t *y, const uint8_t *uv,
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Downscale NV12 by an integer factor (2 or 4) using block averaging.
-// Y plane: average factor x factor blocks. UV plane: average factor x factor
-// blocks (each UV sample covers a 2x2 Y block, so the UV block is
-// factor/2 x factor/2 in UV samples — but we just average the raw UV bytes
-// the same way as Y, treating the interleaved U,V pairs).
+// Downscale NV12 by integer factor (2 or 4) via block averaging.
 // Returns packed NV12 (Y then UV, stride == outW).
-// ---------------------------------------------------------------------------
 std::vector<uint8_t> downscaleNv12(const uint8_t *y, const uint8_t *uv,
                                    uint32_t srcW, uint32_t srcH,
                                    uint32_t stride, size_t ySize, size_t uvSize,
@@ -546,10 +496,8 @@ std::vector<uint8_t> downscaleNv12(const uint8_t *y, const uint8_t *uv,
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Crop an NV12 frame to (cropX, cropY, cropW, cropH).
-// cropX/cropY must be even. Returns packed NV12 (Y then UV, stride == cropW).
-// ---------------------------------------------------------------------------
+// Crop NV12 to (cropX, cropY, cropW, cropH); cropX/cropY must be even.
+// Returns packed NV12 (Y then UV, stride == cropW).
 std::vector<uint8_t> cropNv12(const uint8_t *y, const uint8_t *uv,
                               uint32_t srcW, uint32_t srcH, uint32_t stride,
                               size_t ySize, size_t uvSize, uint32_t cropX,
