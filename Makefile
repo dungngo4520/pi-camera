@@ -72,5 +72,5 @@ install-service:
 	@test -f build/picamera || { echo "run 'make build' first"; exit 1; }
 	install -m 0755 build/picamera /usr/local/bin/picamera
 	install -m 0644 config/systemd/picamera.service /lib/systemd/system/picamera.service
-	mkdir -p /home/pi/captures && chown pi:pi /home/pi/captures && chmod 700 /home/pi/captures
+	mkdir -p /home/pi/captures /home/pi/.config/picamera && chown pi:pi /home/pi/captures /home/pi/.config/picamera && chmod 700 /home/pi/captures /home/pi/.config/picamera
 	systemctl daemon-reload && systemctl enable picamera

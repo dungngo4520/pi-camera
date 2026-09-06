@@ -57,7 +57,7 @@ ProtectSystem=full
 # /home is read-only except for the captures directory — a compromised
 # process cannot modify the pi user's other files (SSH keys, etc.).
 ProtectHome=read-only
-ReadWritePaths=/home/pi/captures
+ReadWritePaths=/home/pi/captures /home/pi/.config/picamera
 # No network access needed — camera is a local appliance.
 RestrictAddressFamilies=AF_UNIX
 # Drop all capabilities (we run as pi, not root, but belt-and-suspenders).
