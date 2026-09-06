@@ -39,6 +39,7 @@ DeviceAllow=/dev/gpiochip0 rw
 DeviceAllow=/dev/dma_heap/linux,cma rw
 DeviceAllow=/dev/dma_heap/system rw
 DeviceAllow=/dev/dma_heap/default_cma_region rw
+DeviceAllow=/dev/dma_heap/reserved rw
 DeviceAllow=char-video4linux rw
 DeviceAllow=char-media rw
 # Wait for the SPI and GPIO device nodes to exist before starting.
