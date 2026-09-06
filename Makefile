@@ -61,6 +61,7 @@ hw-test: deploy
 	$(SSH) $(PI_REMOTE) "$(SUDO) systemctl start picamera && sleep 3 && systemctl is-active picamera"
 
 hw-deploy: deploy
+	$(SSH) $(PI_REMOTE) "$(SUDO) install -m 0644 $(PI_DIR)/config/systemd/picamera.service /usr/lib/systemd/system/picamera.service && $(SUDO) systemctl daemon-reload && $(SUDO) systemctl restart picamera && sleep 3 && systemctl is-active picamera"
 hw-restart:
 	$(SSH) $(PI_REMOTE) "$(SUDO) systemctl restart picamera && sleep 3 && systemctl is-active picamera"
 hw-status:
@@ -69,8 +70,6 @@ hw-logs:
 	$(SSH) $(PI_REMOTE) "$(SUDO) journalctl -u picamera --no-pager -n 30 2>&1"
 
 install-service:
-	@test -f build/picamera || { echo "run 'make build' first"; exit 1; }
-	install -m 0755 build/picamera /usr/local/bin/picamera
 	install -m 0644 config/systemd/picamera.service /lib/systemd/system/picamera.service
 	mkdir -p /home/pi/captures /home/pi/.config/picamera && chown pi:pi /home/pi/captures /home/pi/.config/picamera && chmod 700 /home/pi/captures /home/pi/.config/picamera
 	systemctl daemon-reload && systemctl enable picamera

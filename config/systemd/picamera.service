@@ -12,7 +12,7 @@ Type=simple
 # spi, and video groups (default on Raspberry Pi OS).
 User=pi
 Group=pi
-ExecStart=/usr/local/bin/picamera
+ExecStart=/home/pi/camera/build/picamera
 Restart=on-failure
 RestartSec=3
 # Captures go to /home/pi/captures by default (set in defaultPreviewConfig).
