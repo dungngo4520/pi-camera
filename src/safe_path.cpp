@@ -39,11 +39,7 @@ std::string safeCapturePath(std::string_view rootDir, std::string_view prefix,
                             std::string_view timestamp, std::string_view ext) {
   if (rootDir.empty())
     return {};
-  // Validate rootDir: reject path traversal and control characters.
-  // rootDir may contain slashes (it's a directory path), but must not
-  // contain ".." as a path component or control characters that could
-  // escape or manipulate the path. Use component-based checking (not
-  // substring) so legitimate names like "photos..archive" are not rejected.
+  // Component-based ".." and control-char check (allows "photos..archive").
   {
     size_t start = 0;
     while (start <= rootDir.size()) {

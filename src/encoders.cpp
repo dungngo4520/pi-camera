@@ -683,8 +683,7 @@ bool writePng(const std::string &path, const uint8_t *rgb, uint32_t w,
 
 bool writePpm(const uint8_t *rgb, size_t size, uint32_t w, uint32_t h,
               const std::string &path, std::string *actualPath) {
-  // Validate that size matches w*h*3 to prevent writing corrupt/truncated
-  // files.
+  // Validate size matches w*h*3.
   size_t expected = 0;
   if (!checkedMul(static_cast<size_t>(w), h, expected) ||
       !checkedMul(expected, 3, expected))
@@ -714,8 +713,6 @@ bool writePpm(const uint8_t *rgb, size_t size, uint32_t w, uint32_t h,
 
 bool writeRaw(const uint8_t *y, size_t ySize, const uint8_t *uv, size_t uvSize,
               const std::string &path, std::string *actualPath) {
-  // Validate non-zero sizes to prevent writing empty files from mismatched
-  // callers.
   if (ySize == 0)
     return false;
   if (y == nullptr)

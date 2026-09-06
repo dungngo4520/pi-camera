@@ -9,7 +9,7 @@ SSH := $(SSHPASS) ssh
 RSYNC := $(SSHPASS) rsync
 SUDO := echo $(PI_PASS) | sudo -S
 
-.PHONY: all build clean test test-sanitize tidy deploy hw-deploy hw-test hw-restart hw-status hw-logs install-service
+.PHONY: all build clean test test-sanitize tidy deploy remote-deploy remote-run remote-clean cross-build cross-deploy flash hw-deploy hw-test hw-restart hw-status hw-logs install-service
 
 all: build
 
@@ -35,6 +35,23 @@ tidy: build
 deploy:
 	$(RSYNC) -a --delete src CMakeLists.txt config tests $(PI_REMOTE):$(PI_DIR)/
 	$(SSH) $(PI_REMOTE) "cd $(PI_DIR) && mkdir -p build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DPICAMERA_BUILD_TESTS=ON .. && make -j1"
+
+remote-deploy: deploy
+remote-run:
+	$(SSH) $(PI_REMOTE) "$(PI_DIR)/build/picamera $(ARGS)"
+remote-clean:
+	$(SSH) $(PI_REMOTE) "rm -rf $(PI_DIR)/build"
+
+cross-build:
+	./scripts/cross-build.sh
+cross-deploy: cross-build
+	scp picamera-arm64 $(PI_REMOTE):$(PI_DIR)/build/picamera
+
+flash:
+	@echo "Flash Pi OS: insert microSD, connect Pi via USB, run sudo rpiboot,"
+	@echo "then xzcat raspios-lite-arm64.img.xz | sudo dd of=/dev/sdX bs=4M"
+	@echo "Mount boot partition, enable SSH, add wpa_supplicant.conf,"
+	@echo "add 'dtoverlay=imx477,gpu_mem=256' to config.txt"
 
 hw-test: deploy
 	-$(SSH) $(PI_REMOTE) "$(SUDO) systemctl stop picamera 2>/dev/null"
