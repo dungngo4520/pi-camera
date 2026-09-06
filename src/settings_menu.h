@@ -46,6 +46,15 @@ bool advancedMenuItemIsExit(SettingsTab tab, int item);
 bool advancedMenuItemIsAirplane(SettingsTab tab, int item);
 bool advancedMenuItemIsCustomMode(SettingsTab tab, int item);
 
+// Returns true if the item is an action (no value to adjust — press triggers
+// an action like FORMAT, RESET, COPYRIGHT edit, BASIC/EXIT toggle, VIDEO).
+bool settingsItemIsAction(SettingsTab tab, int item);
+bool basicMenuItemIsAction(int item);
+
+// Help/explanation text for a menu item (newline-separated lines).
+std::string_view settingsItemHelp(SettingsTab tab, int item);
+std::string_view basicMenuItemHelp(int item);
+
 bool settingsNeedsReconfigure(const CameraSettings &before,
                               const CameraSettings &after);
 

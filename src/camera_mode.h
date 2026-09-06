@@ -66,6 +66,13 @@ enum class MenuMode {
   Advanced = 1,
 };
 
+// Settings menu sub-mode: normal navigation, value adjustment, or help.
+enum class MenuSubMode {
+  Normal,
+  Adjust,
+  Help,
+};
+
 enum class ExposureMode {
   Program = 0,
   Shutter = 1,
@@ -289,7 +296,13 @@ void drawReviewScreen(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawSettingsMenu(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       const CameraSettings &settings, SettingsTab tab,
-                      int selectedItem);
+                      int selectedItem, int &scrollOffset,
+                      MenuSubMode subMode = MenuSubMode::Normal);
+
+// Draw a help overlay on top of the settings menu. Shows the item label
+// and its help text (newline-separated lines) in a centered box.
+void drawHelpOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                     std::string_view label, std::string_view helpText);
 
 void drawPlaybackBrowser(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                          const std::vector<std::string> &files, int selectedIdx,

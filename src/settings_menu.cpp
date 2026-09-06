@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace picamera {
 
@@ -48,6 +49,7 @@ constexpr int kCustomModeCount = 4;
 constexpr int kVideoResolutionCount = 4;
 constexpr int kVideoCodecCount = 3;
 constexpr int kSensorModeCount = 5;
+constexpr int kOutputFormatCount = 7; // PPM,RAW_NV12,PNG,JPEG,DNG,RawJpeg,DngJpeg
 constexpr int kVideoFpsSteps[] = {10, 24, 30, 50, 60};
 constexpr int kVideoFpsStepCount = 5;
 constexpr int kVideoBitrateSteps[] = {1, 5, 10, 20};
@@ -1138,90 +1140,157 @@ struct SettingItem {
   std::string_view label;
   std::string_view (*valueFn)(const CameraSettings &, std::string &buf);
   void (*adjustFn)(CameraSettings &, int);
+  std::string_view help;
 };
 
 constexpr std::array<SettingItem, 13> kCaptureTab = {{
-    {"FORMAT", valFormat, adjustImgFormat},
-    {"QUALITY", valQuality, adjustImgQuality},
-    {"PNG", valPngLevel, adjustImgPngLevel},
-    {"SIZE", valImgSize, adjustImgSize},
-    {"ASPECT", valAspect, adjustImgAspect},
-    {"SMODE", valSensorMode, adjustSensorMode},
-    {"DRIVE", valDrive, adjustDrive},
-    {"TIMER", valTimer, adjustTimer},
-    {"BRACKET", valBracket, adjustBracket},
-    {"BRKTYPE", valBracketType, adjustBracketType},
-    {"HDR", valHdrMerge, adjustHdrMerge},
-    {"INTERVAL", valInterval, adjustInterval},
-    {"COUNT", valCount, adjustCount},
+    {"FORMAT", valFormat, adjustImgFormat,
+     "Capture format\nJPEG/DNG/PNG"},
+    {"QUALITY", valQuality, adjustImgQuality,
+     "JPEG quality\nHigher=better, larger"},
+    {"PNG", valPngLevel, adjustImgPngLevel,
+     "PNG compression 0-9\nHigher=smaller, slower"},
+    {"SIZE", valImgSize, adjustImgSize,
+     "Resolution\nL:12MP M:6MP S:3MP"},
+    {"ASPECT", valAspect, adjustImgAspect,
+     "Aspect ratio (crops)\nNative=full sensor"},
+    {"SMODE", valSensorMode, adjustSensorMode,
+     "Sensor readout mode\nAuto=best for resolution"},
+    {"DRIVE", valDrive, adjustDrive,
+     "Shutter mode\nSingle/Timer/Bracket/etc"},
+    {"TIMER", valTimer, adjustTimer,
+     "Self-timer delay\n0/2/5/10 seconds"},
+    {"BRACKET", valBracket, adjustBracket,
+     "Exposure bracket EV steps\nLeft=OFF, Right=add"},
+    {"BRKTYPE", valBracketType, adjustBracketType,
+     "Bracket variable\nAE/WB/ISO"},
+    {"HDR", valHdrMerge, adjustHdrMerge,
+     "Merge bracket to HDR JPEG"},
+    {"INTERVAL", valInterval, adjustInterval,
+     "Timelapse interval (s)\n1-3600"},
+    {"COUNT", valCount, adjustCount,
+     "Timelapse frames\n0=unlimited"},
 }};
 
 constexpr std::array<SettingItem, 14> kExposureTab = {{
-    {"EXPMODE", valExpMode, adjustExpMode},
-    {"SHUTTER", valShutter, adjustShutter},
-    {"ISO", valIso, adjustIso},
-    {"ISO MIN", valIsoMin, adjustIsoMin},
-    {"ISO MAX", valIsoMax, adjustIsoMax},
-    {"DGAIN", valDigitalGain, adjustDigitalGain},
-    {"EV", valEv, adjustEv},
-    {"METER", valMeter, adjustMeter},
-    {"AEMODE", valAeMode, adjustAeMode},
-    {"AECONST", valAeConst, adjustAeConst},
-    {"FLICKER", valFlicker, adjustFlicker},
-    {"MIN SS", valMinShutter, adjustMinShutter},
-    {"SILENT", valSilentShutter, adjustSilentShutter},
-    {"LENR", valLongExposureNr, adjustLongExposureNr},
+    {"EXPMODE", valExpMode, adjustExpMode,
+     "P=program, S=shutter\nM=manual"},
+    {"SHUTTER", valShutter, adjustShutter,
+     "Shutter speed\nAUTO or manual"},
+    {"ISO", valIso, adjustIso,
+     "Sensor sensitivity\nAUTO or fixed, high=noisy"},
+    {"ISO MIN", valIsoMin, adjustIsoMin,
+     "Min auto-ISO limit"},
+    {"ISO MAX", valIsoMax, adjustIsoMax,
+     "Max auto-ISO limit\nLower=cleaner"},
+    {"DGAIN", valDigitalGain, adjustDigitalGain,
+     "Digital gain boost\nAdds noise at high values"},
+    {"EV", valEv, adjustEv,
+     "Exposure compensation\n+=brighter, -=darker"},
+    {"METER", valMeter, adjustMeter,
+     "Metering pattern\nMatrix/Centre/Spot"},
+    {"AEMODE", valAeMode, adjustAeMode,
+     "AE timing\nNormal/Short/Long"},
+    {"AECONST", valAeConst, adjustAeConst,
+     "AE constraint\nNormal/Highlight/Shadow"},
+    {"FLICKER", valFlicker, adjustFlicker,
+     "Anti-flicker\n50Hz EU / 60Hz US"},
+    {"MIN SS", valMinShutter, adjustMinShutter,
+     "Min auto shutter\nPrevents blur in low light"},
+    {"SILENT", valSilentShutter, adjustSilentShutter,
+     "Suppress capture sounds"},
+    {"LENR", valLongExposureNr, adjustLongExposureNr,
+     "Long exposure NR\nDark frame subtraction"},
 }};
 
 constexpr std::array<SettingItem, 14> kColorTab = {{
-    {"AWB", valAwb, adjustImgAwb},
-    {"KELVIN", valKelvin, adjustImgKelvin},
-    {"WBRED", valWbRed, adjustImgWbRed},
-    {"WBBLUE", valWbBlue, adjustImgWbBlue},
-    {"WBGM", valWbGm, adjustWbGm},
-    {"WBSET", valWbSet, adjustImgWbSet},
-    {"BRIGHT", valBrightness, adjustImgBrightness},
-    {"CONTRAST", valContrast, adjustImgContrast},
-    {"SAT", valSaturation, adjustImgSaturation},
-    {"SHARP", valSharpness, adjustImgSharpness},
-    {"NR", valNr, adjustImgNr},
-    {"PSTYLE", valPictureStyle, adjustPictureStyle},
-    {"GRAIN", valGrainEffect, adjustGrainEffect},
-    {"COLOR", valColorSpace, adjustColorSpace},
+    {"AWB", valAwb, adjustImgAwb,
+     "Auto white balance\nOFF=manual WB"},
+    {"KELVIN", valKelvin, adjustImgKelvin,
+     "Color temp (K)\nLow=warm, High=cool"},
+    {"WBRED", valWbRed, adjustImgWbRed,
+     "Red channel gain\nWarmer tones"},
+    {"WBBLUE", valWbBlue, adjustImgWbBlue,
+     "Blue channel gain\nCooler tones"},
+    {"WBGM", valWbGm, adjustWbGm,
+     "Green-magenta shift\n-=green, +=magenta"},
+    {"WBSET", valWbSet, adjustImgWbSet,
+     "One-touch custom WB\nPoint at neutral subject"},
+    {"BRIGHT", valBrightness, adjustImgBrightness,
+     "Brightness offset\n+=brighter, -=darker"},
+    {"CONTRAST", valContrast, adjustImgContrast,
+     "Contrast\nHigher=more punch"},
+    {"SAT", valSaturation, adjustImgSaturation,
+     "Saturation\n0=black & white"},
+    {"SHARP", valSharpness, adjustImgSharpness,
+     "Sharpening strength\n0=none"},
+    {"NR", valNr, adjustImgNr,
+     "Noise reduction\nOff/Fast/HQ/Minimal"},
+    {"PSTYLE", valPictureStyle, adjustPictureStyle,
+     "Picture style preset\nOverrides B/C/S/Sharp"},
+    {"GRAIN", valGrainEffect, adjustGrainEffect,
+     "Film grain effect\nAdds analog texture"},
+    {"COLOR", valColorSpace, adjustColorSpace,
+     "Color space\nsRGB / AdobeRGB"},
 }};
 
 constexpr std::array<SettingItem, 8> kFocusDispTab = {{
-    {"PEAK", valDispPeak, adjustDispPeak},
-    {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify},
-    {"GRID", valDispGrid, adjustDispGrid},
-    {"HIST", valDispHist, adjustDispHist},
-    {"ZEBRA", valDispZebra, adjustDispZebra},
-    {"NIGHT", valNightMode, adjustNightMode},
-    {"BRIGHT", valDispBright, adjustDispBright},
-    {"ROTATE", valRotateTall, adjustRotateTall},
+    {"PEAK", valDispPeak, adjustDispPeak,
+     "Focus peaking overlay\nHighlights sharp edges"},
+    {"FOCUSMAG", valFocusMagnify, adjustFocusMagnify,
+     "VF magnification 2x/4x\nPan with joystick"},
+    {"GRID", valDispGrid, adjustDispGrid,
+     "Composition grid\nThirds/Square/Diagonal"},
+    {"HIST", valDispHist, adjustDispHist,
+     "Live histogram overlay"},
+    {"ZEBRA", valDispZebra, adjustDispZebra,
+     "Zebra highlight warning\n70/80/100% levels"},
+    {"NIGHT", valNightMode, adjustNightMode,
+     "Night mode\nBoosts VF brightness"},
+    {"BRIGHT", valDispBright, adjustDispBright,
+     "Display backlight\n10-100%, lower=battery"},
+    {"ROTATE", valRotateTall, adjustRotateTall,
+     "Auto-rotate portraits\nin playback"},
 }};
 
 constexpr std::array<SettingItem, 5> kVideoTab = {{
-    {"VIDEO", valVideo, nullptr},
-    {"VIDRES", valVideoResolution, adjustVideoResolution},
-    {"VIDFPS", valVideoFps, adjustVideoFps},
-    {"VIDCODEC", valVideoCodec, adjustVideoCodec},
-    {"VIDBITRATE", valVideoBitrate, adjustVideoBitrate},
+    {"VIDEO", valVideo, nullptr,
+     "Toggle video mode\nShutter starts/stops"},
+    {"VIDRES", valVideoResolution, adjustVideoResolution,
+     "Video resolution\nHigher=more detail"},
+    {"VIDFPS", valVideoFps, adjustVideoFps,
+     "Frame rate\n24/30=cinema, 50/60=smooth"},
+    {"VIDCODEC", valVideoCodec, adjustVideoCodec,
+     "Codec: MJPEG/H264/YUV\nH264 falls back to MJPEG"},
+    {"VIDBITRATE", valVideoBitrate, adjustVideoBitrate,
+     "Bitrate (Mbps)\nHigher=better quality"},
 }};
 
 constexpr std::array<SettingItem, 12> kSystemTab = {{
-    {"BATTERY", valSysBattery, adjustSysBattery},
-    {"PWRSAVE", valPowerSave, adjustSysPowerSave},
-    {"FORMAT", valExit, nullptr},
-    {"RESET", valExit, nullptr},
-    {"AIRPLANE", valAirplaneMode, adjustAirplaneMode},
-    {"DATE", valExit, nullptr},
-    {"FILENAME", valFileNaming, adjustImgFileNaming},
-    {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders},
-    {"COPYRIGHT", valCopyright, nullptr},
-    {"C MODE", valCustomMode, adjustCustomMode},
-    {"BASIC", valExit, nullptr},
-    {"EXIT", valExit, nullptr},
+    {"BATTERY", valSysBattery, adjustSysBattery,
+     "Battery % overlay\nShows LiPo charge level"},
+    {"PWRSAVE", valPowerSave, adjustSysPowerSave,
+     "Auto-sleep timeout\n0=never, 30/60/300s"},
+    {"FORMAT", valExit, nullptr,
+     "Format card: delete ALL\nPress twice to confirm"},
+    {"RESET", valExit, nullptr,
+     "Reset to defaults\nPress twice to confirm"},
+    {"AIRPLANE", valAirplaneMode, adjustAirplaneMode,
+     "Airplane mode\nDisables WiFi/BT servers"},
+    {"DATE", valExit, nullptr,
+     "Current date/time\nRead-only (no RTC)"},
+    {"FILENAME", valFileNaming, adjustImgFileNaming,
+     "File naming\nTimestamp / Sequential"},
+    {"DATEFOLD", valDateSubfolders, adjustImgDateSubfolders,
+     "Date-based subfolders\n(YYYY-MM-DD)"},
+    {"COPYRIGHT", valCopyright, nullptr,
+     "Copyright in EXIF/DNG\nPress to edit text"},
+    {"C MODE", valCustomMode, adjustCustomMode,
+     "Custom mode C1/C2/C3\nSave/recall all settings"},
+    {"BASIC", valExit, nullptr,
+     "Switch to Basic menu"},
+    {"EXIT", valExit, nullptr,
+     "Exit to viewfinder"},
 }};
 
 std::span<const SettingItem> tabItems(SettingsTab tab) {
@@ -1408,6 +1477,39 @@ bool advancedMenuItemIsAirplane(SettingsTab tab, int item) {
 
 bool advancedMenuItemIsCustomMode(SettingsTab tab, int item) {
   return tab == SettingsTab::System && item == 9;
+}
+
+bool settingsItemIsAction(SettingsTab tab, int item) {
+  auto items = tabItems(tab);
+  if (item < 0 || item >= static_cast<int>(items.size()))
+    return false;
+  return items[item].adjustFn == nullptr;
+}
+
+std::string_view settingsItemHelp(SettingsTab tab, int item) {
+  auto items = tabItems(tab);
+  if (item >= 0 && item < static_cast<int>(items.size()))
+    return items[item].help;
+  return {};
+}
+
+bool basicMenuItemIsAction(int item) {
+  if (item == kBasicFormatCardIdx || item == kBasicAdvancedIdx)
+    return true;
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    return settingsItemIsAction(kBasicRefs[item].tab,
+                                kBasicRefs[item].itemIdx);
+  return false;
+}
+
+std::string_view basicMenuItemHelp(int item) {
+  if (item == kBasicFormatCardIdx)
+    return "Format card: delete ALL\nPress twice to confirm";
+  if (item == kBasicAdvancedIdx)
+    return "Switch to Advanced menu";
+  if (item >= 0 && item < static_cast<int>(kBasicRefs.size()))
+    return settingsItemHelp(kBasicRefs[item].tab, kBasicRefs[item].itemIdx);
+  return {};
 }
 
 bool settingsNeedsReconfigure(const CameraSettings &before,
@@ -1623,6 +1725,17 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
       return 0;
     }
   };
+  // Clamp an integer to [0, max] and cast to enum. Guards against malformed
+  // config files producing out-of-range enum values.
+  auto toEnum = [](std::string_view v, int max) -> int {
+    long long n = 0;
+    try {
+      n = std::stoll(std::string(v));
+    } catch (...) {
+      return 0;
+    }
+    return static_cast<int>(std::clamp(n, 0LL, static_cast<long long>(max)));
+  };
   auto toFloat = [](std::string_view v) -> float {
     try {
       return std::stof(std::string(v));
@@ -1634,7 +1747,7 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
     return v == "true" || v == "1" || v == "yes" || v == "on";
   };
   if (key == "driveMode")
-    s.driveMode = static_cast<DriveMode>(toInt(val));
+    s.driveMode = static_cast<DriveMode>(toEnum(val, kDriveModeCount - 1));
   else if (key == "aeEnable")
     s.aeEnable = toBool(val);
   else if (key == "shutterUs")
@@ -1650,11 +1763,14 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
   else if (key == "isoMax")
     s.isoMax = static_cast<int>(toInt(val));
   else if (key == "meteringMode")
-    s.meteringMode = static_cast<MeteringMode>(toInt(val));
+    s.meteringMode =
+        static_cast<MeteringMode>(toEnum(val, kMeteringModeCount - 1));
   else if (key == "aeExposureMode")
-    s.aeExposureMode = static_cast<AeExposureMode>(toInt(val));
+    s.aeExposureMode =
+        static_cast<AeExposureMode>(toEnum(val, kAeExposureModeCount - 1));
   else if (key == "aeConstraintMode")
-    s.aeConstraintMode = static_cast<AeConstraintMode>(toInt(val));
+    s.aeConstraintMode =
+        static_cast<AeConstraintMode>(toEnum(val, kAeConstraintModeCount - 1));
   else if (key == "antiFlicker")
     s.antiFlicker = toBool(val);
   else if (key == "flickerHz")
@@ -1666,15 +1782,17 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
   else if (key == "timelapseCount")
     s.timelapseCount = static_cast<int>(toInt(val));
   else if (key == "captureFormat")
-    s.captureFormat = static_cast<OutputFormat>(toInt(val));
+    s.captureFormat =
+        static_cast<OutputFormat>(toEnum(val, kOutputFormatCount - 1));
   else if (key == "jpegQuality")
     s.jpegQuality = static_cast<int>(toInt(val));
   else if (key == "pngLevel")
     s.pngLevel = static_cast<int>(toInt(val));
   else if (key == "imageSize")
-    s.imageSize = static_cast<ImageSize>(toInt(val));
+    s.imageSize = static_cast<ImageSize>(toEnum(val, kImageSizeCount - 1));
   else if (key == "aspectRatio")
-    s.aspectRatio = static_cast<AspectRatio>(toInt(val));
+    s.aspectRatio =
+        static_cast<AspectRatio>(toEnum(val, kAspectRatioCount - 1));
   else if (key == "awbEnable")
     s.awbEnable = toBool(val);
   else if (key == "awbMode")
@@ -1694,13 +1812,14 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
   else if (key == "sharpness")
     s.sharpness = toFloat(val);
   else if (key == "noiseReduction")
-    s.noiseReduction = static_cast<NoiseReductionMode>(toInt(val));
+    s.noiseReduction = static_cast<NoiseReductionMode>(
+        toEnum(val, kNoiseReductionModeCount - 1));
   else if (key == "gridType")
-    s.gridType = static_cast<GridType>(toInt(val));
+    s.gridType = static_cast<GridType>(toEnum(val, kGridTypeCount - 1));
   else if (key == "showHistogram")
     s.showHistogram = toBool(val);
   else if (key == "zebraMode")
-    s.zebraMode = static_cast<ZebraMode>(toInt(val));
+    s.zebraMode = static_cast<ZebraMode>(toEnum(val, kZebraModeCount - 1));
   else if (key == "focusPeaking")
     s.focusPeaking = toBool(val);
   else if (key == "displayBrightness")
@@ -1710,19 +1829,23 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
   else if (key == "powerSaveTimeout")
     s.powerSaveTimeout = static_cast<int>(toInt(val));
   else if (key == "fileNamingMode")
-    s.fileNamingMode = static_cast<FileNamingMode>(toInt(val));
+    s.fileNamingMode =
+        static_cast<FileNamingMode>(toEnum(val, kFileNamingCount - 1));
   else if (key == "useDateSubfolders")
     s.useDateSubfolders = toBool(val);
   else if (key == "focusMagnify")
     s.focusMagnify = static_cast<int>(toInt(val));
   else if (key == "exposureMode")
-    s.exposureMode = static_cast<ExposureMode>(toInt(val));
+    s.exposureMode =
+        static_cast<ExposureMode>(toEnum(val, kExposureModeCount - 1));
   else if (key == "bracketType")
-    s.bracketType = static_cast<BracketType>(toInt(val));
+    s.bracketType =
+        static_cast<BracketType>(toEnum(val, kBracketTypeCount - 1));
   else if (key == "pictureStyle")
-    s.pictureStyle = static_cast<PictureStyle>(toInt(val));
+    s.pictureStyle =
+        static_cast<PictureStyle>(toEnum(val, kPictureStyleCount - 1));
   else if (key == "colorSpace")
-    s.colorSpace = static_cast<ColorSpace>(toInt(val));
+    s.colorSpace = static_cast<ColorSpace>(toEnum(val, kColorSpaceCount - 1));
   else if (key == "wbGmShift")
     s.wbGmShift = toFloat(val);
   else if (key == "minShutterUs")
@@ -1744,19 +1867,21 @@ void applySettingsKey(CameraSettings &s, std::string_view key,
   else if (key == "hdrMerge")
     s.hdrMerge = toBool(val);
   else if (key == "customMode")
-    s.customMode = static_cast<CustomMode>(toInt(val));
+    s.customMode = static_cast<CustomMode>(toEnum(val, kCustomModeCount - 1));
   else if (key == "videoResolution")
-    s.videoResolution = static_cast<VideoResolution>(toInt(val));
+    s.videoResolution =
+        static_cast<VideoResolution>(toEnum(val, kVideoResolutionCount - 1));
   else if (key == "videoFps")
     s.videoFps = static_cast<int>(toInt(val));
   else if (key == "videoCodec")
-    s.videoCodec = static_cast<VideoCodec>(toInt(val));
+    s.videoCodec =
+        static_cast<VideoCodec>(toEnum(val, kVideoCodecCount - 1));
   else if (key == "videoBitrate")
     s.videoBitrate = static_cast<int>(toInt(val));
   else if (key == "sensorMode")
-    s.sensorMode = static_cast<SensorMode>(toInt(val));
+    s.sensorMode = static_cast<SensorMode>(toEnum(val, kSensorModeCount - 1));
   else if (key == "menuMode")
-    s.menuMode = static_cast<MenuMode>(toInt(val));
+    s.menuMode = static_cast<MenuMode>(toEnum(val, 1));
 }
 
 } // namespace
@@ -1850,6 +1975,7 @@ bool loadSettings(CameraSettings &s, const std::string &path) {
   std::ifstream f(path);
   if (!f.is_open())
     return false;
+  std::unordered_set<std::string> seenKeys;
   std::string line;
   while (std::getline(f, line)) {
     std::string_view sv(line);
@@ -1883,15 +2009,24 @@ bool loadSettings(CameraSettings &s, const std::string &path) {
         start = comma + 1;
       }
     } else {
+      seenKeys.emplace(key);
       applySettingsKey(s, key, val);
     }
   }
-  // Re-apply picture style defaults
-  auto params = pictureStyleParams(s.pictureStyle);
-  s.brightness = params.brightness;
-  s.contrast = params.contrast;
-  s.saturation = params.saturation;
-  s.sharpness = params.sharpness;
+  // Apply picture style defaults only if B/C/S/S were not present in the
+  // file. This preserves user-customized values that were saved alongside a
+  // picture style selection.
+  bool hasBcss = seenKeys.contains("brightness") ||
+                 seenKeys.contains("contrast") ||
+                 seenKeys.contains("saturation") ||
+                 seenKeys.contains("sharpness");
+  if (!hasBcss) {
+    auto params = pictureStyleParams(s.pictureStyle);
+    s.brightness = params.brightness;
+    s.contrast = params.contrast;
+    s.saturation = params.saturation;
+    s.sharpness = params.sharpness;
+  }
   return true;
 }
 

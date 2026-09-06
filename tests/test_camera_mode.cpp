@@ -17,6 +17,7 @@ using picamera::drawCaptureIndicator;
 using picamera::drawFocusMagnifyIndicator;
 using picamera::drawFocusPeaking;
 using picamera::drawGrid;
+using picamera::drawHelpOverlay;
 using picamera::drawHistogram;
 using picamera::drawCopyrightEditOverlay;
 using picamera::drawImageView;
@@ -35,6 +36,7 @@ using picamera::drawZebra;
 using picamera::GridType;
 using picamera::kColorGreen;
 using picamera::MenuMode;
+using picamera::MenuSubMode;
 using picamera::modeName;
 using picamera::OverlayState;
 using picamera::SettingsTab;
@@ -336,7 +338,9 @@ TEST(draw_histogram_draws_on_valid_input) {
 TEST(draw_settings_menu_renders_without_crash) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0,
+                   scroll);
   CHECK(fb.anyNonZero());
 }
 
@@ -344,7 +348,9 @@ TEST(draw_settings_menu_draws_tab_bar) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
   settings.menuMode = MenuMode::Advanced;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0,
+                   scroll);
   // Tab bar at top.
   bool found = false;
   for (uint32_t y = 0; y < 12 && !found; ++y)
@@ -358,7 +364,9 @@ TEST(draw_settings_menu_highlight_selected) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
   settings.menuMode = MenuMode::Advanced;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Color, 2);
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Color, 2,
+                   scroll);
   CHECK(fb.anyNonZero());
 }
 
@@ -366,7 +374,9 @@ TEST(draw_settings_menu_basic_mode_renders) {
   Framebuffer fb(128, 128);
   CameraSettings settings;
   settings.menuMode = MenuMode::Basic;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0);
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0,
+                   scroll);
   CHECK(fb.anyNonZero());
 }
 
@@ -374,7 +384,43 @@ TEST(draw_settings_menu_no_crash_small_buffer) {
   Framebuffer fb(32, 32);
   CameraSettings settings;
   settings.menuMode = MenuMode::Advanced;
-  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::FocusDisp, 0);
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::FocusDisp, 0,
+                   scroll);
+}
+
+TEST(draw_settings_menu_windowed_scroll) {
+  // With 13 items and ~8 visible, selecting item 5 should keep scroll at 0
+  // (selection within visible window). Selecting item 12 should scroll.
+  Framebuffer fb(128, 128);
+  CameraSettings settings;
+  settings.menuMode = MenuMode::Advanced;
+  int scroll = 0;
+  // Select item 5 — should not scroll (within first page).
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 5,
+                   scroll);
+  CHECK(scroll == 0);
+  // Select item 12 (last) — should scroll to keep it visible.
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 12,
+                   scroll);
+  CHECK(scroll > 0);
+}
+
+TEST(draw_settings_menu_adjust_mode_cyan_highlight) {
+  Framebuffer fb(128, 128);
+  CameraSettings settings;
+  settings.menuMode = MenuMode::Advanced;
+  int scroll = 0;
+  drawSettingsMenu(fb.ptr(), fb.w, fb.h, settings, SettingsTab::Capture, 0,
+                   scroll, MenuSubMode::Adjust);
+  CHECK(fb.anyNonZero());
+}
+
+TEST(draw_help_overlay_renders) {
+  Framebuffer fb(128, 128);
+  drawHelpOverlay(fb.ptr(), fb.w, fb.h, "ISO",
+                  "Sensor gain.\nHigher = brighter\nbut noisier");
+  CHECK(fb.anyNonZero());
 }
 
 // --- drawPlaybackBrowser tests ---

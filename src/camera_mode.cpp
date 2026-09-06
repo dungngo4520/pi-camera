@@ -472,105 +472,141 @@ void drawReviewScreen(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
 
 void drawSettingsMenu(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
                       const CameraSettings &settings, SettingsTab tab,
-                      int selectedItem) {
+                      int selectedItem, int &scrollOffset,
+                      MenuSubMode subMode) {
   fillRect(rgb565, fbW, fbH, 0, 0, fbW, fbH, kColorBlack);
+  bool adjusting = (subMode == MenuSubMode::Adjust);
+  constexpr int kMenuRowH = kTextHeight + 5;
+  int yStart = kTextHeight + 6;
 
   if (settings.menuMode == MenuMode::Basic) {
-    // Basic mode: single flat list, no tab bar. A simple "BASIC" header.
     std::string_view header = "BASIC";
     int headerW = static_cast<int>(header.size()) * kTextWidth;
     fillRect(rgb565, fbW, fbH, 0, 0, fbW, kTextHeight + 4, kColorAmber);
     drawText(rgb565, fbW, fbH,
              (static_cast<int>(fbW) - headerW) / 2, 2,
              std::string(header), kColorBlack, kColorAmber, false);
-
-    int itemCount = basicMenuItemCount();
-    constexpr int kMenuRowH = kTextHeight + 5;
-    int y = kTextHeight + 6;
-    int maxVisible = (static_cast<int>(fbH) - y - 4) / kMenuRowH;
-    int visible = std::max(0, std::min(itemCount, maxVisible));
-    int maxScroll = std::max(0, itemCount - visible);
-    int scrollOffset = std::clamp(selectedItem, 0, maxScroll);
-
-    for (int i = 0; i < visible; ++i) {
-      int idx = scrollOffset + i;
-      bool selected = (idx == selectedItem);
-      uint16_t fg = selected ? kColorBlack : kColorWhite;
-      uint16_t bg = selected ? kColorGreen : kColorBlack;
-
-      std::string label = std::string(basicMenuItemLabel(idx));
-      std::string value = basicMenuItemValue(idx, settings);
-
-      std::string line = label;
-      if (!value.empty()) {
-        int totalChars = (static_cast<int>(fbW) - 4) / kTextWidth;
-        int labelChars = static_cast<int>(label.size());
-        int valueChars = static_cast<int>(value.size());
-        int spaces = totalChars - labelChars - valueChars;
-        spaces = std::max(spaces, 1);
-        line += std::string(spaces, ' ');
-        line += value;
-      } else if (idx == selectedItem) {
-        line += " >";
-      }
-
-      int textY = y + (kMenuRowH - kTextHeight) / 2;
-      fillRect(rgb565, fbW, fbH, 0, y, fbW, kMenuRowH, bg);
-      drawText(rgb565, fbW, fbH, kMargin + 2, textY, line, fg, bg, false);
-      y += kMenuRowH;
+  } else {
+    // Advanced mode: tab bar.
+    static constexpr std::string_view kTabNames[] = {
+        "CAP", "EXP", "COL", "DISP", "VID", "SYS"};
+    constexpr int kTabCount = static_cast<int>(std::size(kTabNames));
+    int tabWidth = static_cast<int>(fbW) / kTabCount;
+    for (int i = 0; i < kTabCount; ++i) {
+      bool active = (i == static_cast<int>(tab));
+      uint16_t fg = active ? kColorBlack : kColorGray;
+      uint16_t bg = active ? kColorAmber : kColorBlack;
+      int tx = i * tabWidth +
+               (tabWidth - static_cast<int>(kTabNames[i].size()) * kTextWidth) /
+                   2;
+      fillRect(rgb565, fbW, fbH, i * tabWidth, 0, tabWidth, kTextHeight + 4,
+               bg);
+      drawText(rgb565, fbW, fbH, tx, 2, std::string(kTabNames[i]), fg, bg,
+               false);
     }
-    return;
   }
 
-  // Advanced mode: tabbed menu.
-  static constexpr std::string_view kTabNames[] = {
-      "CAP", "EXP", "COL", "DISP", "VID", "SYS"};
-  constexpr int kTabCount = static_cast<int>(std::size(kTabNames));
-  int tabWidth = static_cast<int>(fbW) / kTabCount;
-  for (int i = 0; i < kTabCount; ++i) {
-    bool active = (i == static_cast<int>(tab));
-    uint16_t fg = active ? kColorBlack : kColorGray;
-    uint16_t bg = active ? kColorAmber : kColorBlack;
-    int tx =
-        i * tabWidth +
-        (tabWidth - static_cast<int>(kTabNames[i].size()) * kTextWidth) / 2;
-    fillRect(rgb565, fbW, fbH, i * tabWidth, 0, tabWidth, kTextHeight + 4, bg);
-    drawText(rgb565, fbW, fbH, tx, 2, std::string(kTabNames[i]), fg, bg, false);
-  }
-
-  int itemCount = settingsTabItemCount(tab);
-  constexpr int kMenuRowH = kTextHeight + 5;
-  int y = kTextHeight + 6;
-  int maxVisible = (static_cast<int>(fbH) - y - 4) / kMenuRowH;
+  int itemCount = (settings.menuMode == MenuMode::Basic)
+                      ? basicMenuItemCount()
+                      : settingsTabItemCount(tab);
+  int maxVisible = (static_cast<int>(fbH) - yStart - 4) / kMenuRowH;
   int visible = std::max(0, std::min(itemCount, maxVisible));
   int maxScroll = std::max(0, itemCount - visible);
-  int scrollOffset = std::clamp(selectedItem, 0, maxScroll);
+
+  // Windowed scrolling: only scroll when selection reaches the edge.
+  scrollOffset = std::clamp(scrollOffset, 0, maxScroll);
+  if (selectedItem < scrollOffset)
+    scrollOffset = selectedItem;
+  else if (selectedItem >= scrollOffset + visible)
+    scrollOffset = selectedItem - visible + 1;
+  scrollOffset = std::clamp(scrollOffset, 0, maxScroll);
 
   for (int i = 0; i < visible; ++i) {
     int idx = scrollOffset + i;
     bool selected = (idx == selectedItem);
     uint16_t fg = selected ? kColorBlack : kColorWhite;
-    uint16_t bg = selected ? kColorGreen : kColorBlack;
+    uint16_t bg =
+        selected ? (adjusting ? kColorCyan : kColorGreen) : kColorBlack;
 
-    std::string label = std::string(settingsItemLabel(tab, idx));
-    std::string value = settingsItemValue(tab, idx, settings);
+    std::string label;
+    std::string value;
+    if (settings.menuMode == MenuMode::Basic) {
+      label = std::string(basicMenuItemLabel(idx));
+      value = basicMenuItemValue(idx, settings);
+    } else {
+      label = std::string(settingsItemLabel(tab, idx));
+      value = settingsItemValue(tab, idx, settings);
+    }
 
     std::string line = label;
     if (!value.empty()) {
       int totalChars = (static_cast<int>(fbW) - 4) / kTextWidth;
-      int labelChars = static_cast<int>(label.size());
-      int valueChars = static_cast<int>(value.size());
-      int spaces = totalChars - labelChars - valueChars;
-      spaces = std::max(spaces, 1);
-      line += std::string(spaces, ' ');
+      int spaces = totalChars - static_cast<int>(label.size()) -
+                   static_cast<int>(value.size());
+      line += std::string(std::max(spaces, 1), ' ');
       line += value;
+    } else if (idx == selectedItem) {
+      line += " >";
     }
 
+    int y = yStart + i * kMenuRowH;
     int textY = y + (kMenuRowH - kTextHeight) / 2;
     fillRect(rgb565, fbW, fbH, 0, y, fbW, kMenuRowH, bg);
     drawText(rgb565, fbW, fbH, kMargin + 2, textY, line, fg, bg, false);
-    y += kMenuRowH;
   }
+}
+
+void drawHelpOverlay(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,
+                     std::string_view label, std::string_view helpText) {
+  fillRect(rgb565, fbW, fbH, 0, 0, fbW, fbH, kColorBlack);
+
+  int lineCount = 1;
+  for (char c : helpText)
+    if (c == '\n')
+      ++lineCount;
+
+  int totalLines = 1 + 1 + lineCount + 1; // label + blank + help + hint
+  int boxH = totalLines * (kTextHeight + 2) + 8;
+  int boxY = std::max((static_cast<int>(fbH) - boxH) / 2, 2);
+
+  fillRect(rgb565, fbW, fbH, 2, boxY, static_cast<int>(fbW) - 4, boxH,
+           kColorBlack);
+  rectOutline(rgb565, fbW, fbH, 2, boxY, static_cast<int>(fbW) - 4, boxH,
+              kColorAmber);
+
+  int maxChars = (static_cast<int>(fbW) - 8) / kTextWidth;
+  int y = boxY + 4;
+
+  // Label (amber, centered).
+  std::string labelStr = std::string(label);
+  labelStr.resize(std::min(static_cast<int>(labelStr.size()), maxChars));
+  int labelW = static_cast<int>(labelStr.size()) * kTextWidth;
+  drawText(rgb565, fbW, fbH, (static_cast<int>(fbW) - labelW) / 2, y, labelStr,
+           kColorAmber, kColorBlack, false);
+  y += (kTextHeight + 2) * 2; // label + blank
+
+  // Help text lines.
+  size_t pos = 0;
+  while (pos < helpText.size()) {
+    auto nl = helpText.find('\n', pos);
+    std::string_view line =
+        (nl == std::string_view::npos) ? helpText.substr(pos)
+                                        : helpText.substr(pos, nl - pos);
+    std::string lineStr = std::string(line);
+    lineStr.resize(std::min(static_cast<int>(lineStr.size()), maxChars));
+    drawText(rgb565, fbW, fbH, 4, y, lineStr, kColorWhite, kColorBlack, false);
+    y += kTextHeight + 2;
+    if (nl == std::string_view::npos)
+      break;
+    pos = nl + 1;
+  }
+
+  // Hint.
+  y += kTextHeight + 2;
+  std::string hint = "K3: back";
+  int hintW = static_cast<int>(hint.size()) * kTextWidth;
+  drawText(rgb565, fbW, fbH, (static_cast<int>(fbW) - hintW) / 2, y, hint,
+           kColorGray, kColorBlack, false);
 }
 
 void drawPlaybackBrowser(uint8_t *rgb565, uint32_t fbW, uint32_t fbH,

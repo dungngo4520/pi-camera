@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unistd.h>
 
@@ -1087,11 +1088,12 @@ TEST(settings_save_load_new_fields_roundtrip) {
   std::remove(path.c_str());
 }
 
-// --- Picture style load re-applies B/C/S/Sharp ---
+// --- Picture style load preserves saved B/C/S/Sharp ---
 
-TEST(settings_load_picture_style_reapplies_bcsharp) {
+TEST(settings_load_picture_style_preserves_saved_bcsharp) {
   // Save with Vivid style but manually tweaked B/C/S/Sharp values.
-  // On load, the picture style defaults should override the tweaks.
+  // On load, the saved B/C/S/S values should be preserved (not overridden
+  // by the picture style defaults), since they were present in the file.
   CameraSettings s;
   s.pictureStyle = PictureStyle::Vivid;
   s.brightness = 0.5f; // tweaked away from Vivid default (0.0)
@@ -1105,30 +1107,30 @@ TEST(settings_load_picture_style_reapplies_bcsharp) {
   CameraSettings loaded;
   CHECK(loadSettings(loaded, path));
   CHECK(loaded.pictureStyle == PictureStyle::Vivid);
-  // Load re-applies the style preset, discarding the tweaks.
-  auto p = pictureStyleParams(PictureStyle::Vivid);
-  CHECK(loaded.brightness == p.brightness);
-  CHECK(loaded.contrast == p.contrast);
-  CHECK(loaded.saturation == p.saturation);
-  CHECK(loaded.sharpness == p.sharpness);
+  // Saved B/C/S/S values are preserved from the file.
+  CHECK(loaded.brightness == 0.5f);
+  CHECK(loaded.contrast == 0.5f);
+  CHECK(loaded.saturation == 0.5f);
+  CHECK(loaded.sharpness == 0.5f);
   std::remove(path.c_str());
 }
 
-TEST(settings_load_picture_style_standard_resets_bcsharp) {
-  // Even if saved values are non-default, Standard style resets to neutral.
+TEST(settings_load_picture_style_applies_defaults_when_no_bcsharp) {
+  // If B/C/S/S are not in the file (e.g. old config), the picture style
+  // defaults should be applied on load.
   CameraSettings s;
   s.pictureStyle = PictureStyle::Standard;
-  s.brightness = 0.3f;
-  s.contrast = 1.5f;
-  s.saturation = 1.8f;
-  s.sharpness = 3.0f;
+  // Don't set B/C/S/S — write a minimal file without those keys.
 
   std::string path = picamera::test::tmpPath(".conf");
-  CHECK(saveSettings(s, path));
+  std::ofstream out(path);
+  out << "pictureStyle=0\n"; // Standard
+  out.close();
 
   CameraSettings loaded;
   CHECK(loadSettings(loaded, path));
   CHECK(loaded.pictureStyle == PictureStyle::Standard);
+  // Defaults applied since B/C/S/S were not in the file.
   CHECK(loaded.brightness == 0.0f);
   CHECK(loaded.contrast == 1.0f);
   CHECK(loaded.saturation == 1.0f);

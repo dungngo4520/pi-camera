@@ -47,7 +47,9 @@ constexpr int kShutterHoldMs = 500;
 constexpr int kPlaybackVisible = 8;
 // Pi Zero CPU limit for continuous shooting.
 constexpr int kMaxBurstFrames = 3;
-constexpr int kSettingsTabCount = 6;
+// Joystick auto-repeat: initial delay before repeating, then interval.
+constexpr int kJoyRepeatDelayMs = 500;
+constexpr int kJoyRepeatIntervalMs = 150;
 
 // Forward declaration for DngJpeg+JPEG capture helper.
 std::jthread captureDngJpegAsync(DualStream &cam, const PreviewConfig &pcfg,
@@ -438,7 +440,11 @@ struct PreviewState {
 
   // Settings menu state
   int settingsIdx = 0;
+  int settingsScroll = 0;
   SettingsTab settingsTab = SettingsTab::Capture;
+  MenuSubMode menuSubMode = MenuSubMode::Normal;
+  std::string helpLabel;
+  std::string helpText;
 
   // Battery
   bool batteryOk = false;
@@ -467,10 +473,6 @@ struct PreviewState {
   std::vector<std::string> bracketCapturePaths;
   bool bracketMergePending = false;
 
-  // Dark frame capture state for long-exposure NR.
-  std::string darkFramePath;
-  bool darkFramePending = false;
-
   // Copyright text entry state (Settings mode).
   bool copyrightEditing = false;
   std::string copyrightBuffer;
@@ -490,6 +492,11 @@ struct PreviewState {
   uint32_t videoTargetW = 0;
   uint32_t videoTargetH = 0;
   int videoEffectiveFps = 30;
+
+  // Joystick auto-repeat: hold a direction to scroll.
+  ButtonId heldJoy = ButtonId::None;
+  std::chrono::steady_clock::time_point joyPressTime;
+  std::chrono::steady_clock::time_point joyLastRepeat;
 };
 
 struct BracketOverride {
@@ -1327,11 +1334,16 @@ void renderImageViewMode(PreviewState &s, St7735Display &display) {
 void renderSettingsMode(PreviewState &s, St7735Display &display) {
   if (s.screenDirty || s.mode != s.lastRenderedMode) {
     drawSettingsMenu(s.rgb565.data(), display.width(), display.height(),
-                     s.overlay.settings, s.settingsTab, s.settingsIdx);
+                     s.overlay.settings, s.settingsTab, s.settingsIdx,
+                     s.settingsScroll, s.menuSubMode);
     if (s.copyrightEditing) {
       drawCopyrightEditOverlay(s.rgb565.data(), display.width(),
                                display.height(), s.copyrightBuffer,
                                s.copyrightCursor);
+    }
+    if (s.menuSubMode == MenuSubMode::Help) {
+      drawHelpOverlay(s.rgb565.data(), display.width(), display.height(),
+                      s.helpLabel, s.helpText);
     }
     if (!display.blit(s.rgb565.data())) {
       std::cerr << "Preview: settings blit failed (SPI error)\n";
@@ -1653,33 +1665,30 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
                             const ButtonEvent &evt) {
   if (evt.id == ButtonId::Shutter && !evt.pressed) {
     handleShutterRelease(s, cam, pcfg, display, evt);
-  } else if (evt.pressed && evt.id == ButtonId::Key1) {
-    s.bulbActive = false; // cancel any pending bulb exposure
-    s.playbackFiles = listCaptures(pcfg.captureDir);
-    s.playbackIdx = 0;
-    s.playbackScroll = 0;
-    s.mode = CameraMode::Playback;
-    s.screenDirty = true;
-  } else if (evt.pressed && evt.id == ButtonId::Key2) {
-    s.bulbActive = false; // cancel any pending bulb exposure
-    s.mode = CameraMode::Settings;
-    s.settingsIdx = 0;
-    s.screenDirty = true;
-  } else if (evt.pressed && evt.id == ButtonId::Key3) {
-    // Power off = enter sleep mode (display off, low power).
-    // Any button press wakes the camera back up — like a real camera's
-    // power button toggling on/off, rather than shutting down the OS
-    // (which would require a reboot to power on again).
-    s.bulbActive = false; // cancel any pending bulb exposure
-    s.sleeping = true;
-    display.setBacklight(false);
-    std::cout << "Preview: power-off (sleep mode)\n";
-  } else if (!evt.pressed && evt.id == ButtonId::Key3 &&
+  } else if (!evt.pressed && evt.id == ButtonId::Key1 &&
              evt.pressDurationMs >= 1000) {
-    // Long Key3 press: toggle Quick/Fn overlay.
+    // Long Key1 press: toggle Quick/Fn overlay.
     s.quickFnActive = !s.quickFnActive;
     s.quickFnIdx = 0;
     s.screenDirty = true;
+  } else if (evt.pressed && evt.id == ButtonId::Key1) {
+    // Short Key1 press: enter Playback (position remembered, not reset).
+    s.bulbActive = false;
+    s.playbackFiles = listCaptures(pcfg.captureDir);
+    s.mode = CameraMode::Playback;
+    s.screenDirty = true;
+  } else if (evt.pressed && evt.id == ButtonId::Key2) {
+    // Key2: enter Settings (position remembered, not reset).
+    s.bulbActive = false;
+    s.mode = CameraMode::Settings;
+    s.menuSubMode = MenuSubMode::Normal;
+    s.screenDirty = true;
+  } else if (evt.pressed && evt.id == ButtonId::Key3) {
+    // Power off = enter sleep mode (display off, low power).
+    s.bulbActive = false;
+    s.sleeping = true;
+    display.setBacklight(false);
+    std::cout << "Preview: power-off (sleep mode)\n";
   } else if (evt.pressed && s.quickFnActive &&
              (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
               evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
@@ -1693,15 +1702,16 @@ void handleViewfinderButton(PreviewState &s, DualStream &cam,
         ++s.quickFnIdx;
     } else if (evt.id == ButtonId::JoyLeft) {
       adjustQuickFnItem(s, s.quickFnIdx, -1);
+      saveSettings(s.overlay.settings, defaultSettingsPath());
     } else if (evt.id == ButtonId::JoyRight) {
       adjustQuickFnItem(s, s.quickFnIdx, 1);
+      saveSettings(s.overlay.settings, defaultSettingsPath());
     }
     s.screenDirty = true;
   } else if (evt.pressed && s.overlay.settings.focusMagnify > 0 &&
              (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
               evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
-    // Focus magnifier pan: joystick moves the crop region. Pan step is 16
-    // source pixels; clamping is applied in renderViewfinder().
+    // Focus magnifier pan: joystick moves the crop region.
     constexpr int kFocusPanStep = 16;
     if (evt.id == ButtonId::JoyUp)
       s.focusMagPanY -= kFocusPanStep;
@@ -1913,29 +1923,273 @@ void handleImageViewButton(PreviewState &s, const PreviewConfig &pcfg,
   }
 }
 
-// Settings button dispatch (navigate + adjust). Exit reconfigures the still
-// stream if the capture format/sensor mode changed. Basic mode: flat list;
-// Advanced mode: Key1 cycles tabs. JoyUp/Down navigate, JoyLeft/Right adjust.
+// Save settings to disk and apply live to the still stream. Reconfigures
+// only if capture format or sensor mode changed.
+void saveAndApplySettings(PreviewState &s, DualStream &cam,
+                          const PreviewConfig &pcfg, StopFlag &stop) {
+  saveSettings(s.overlay.settings, defaultSettingsPath());
+  if (s.overlay.settings.customMode != CustomMode::Auto)
+    saveCustomMode(s.overlay.settings,
+                   static_cast<int>(s.overlay.settings.customMode));
+
+  uint32_t capW = pcfg.captureWidth;
+  uint32_t capH = pcfg.captureHeight;
+  auto smDims = sensorModeDims(s.overlay.settings.sensorMode);
+  if (smDims.width > 0 && smDims.height > 0) {
+    capW = smDims.width;
+    capH = smDims.height;
+  }
+  if (s.overlay.settings.captureFormat != s.capFmt ||
+      s.overlay.settings.sensorMode != s.prevSensorMode) {
+    if (s.captureThread.joinable()) {
+      cam.stop();
+      s.captureThread.join();
+    }
+    s.captureActive = false;
+    s.captureDone.store(false, std::memory_order_release);
+    if (!cam.reconfigureStill(pcfg.previewWidth, pcfg.previewHeight,
+                              capW, capH, s.overlay.settings.captureFormat)) {
+      std::cerr << "Preview: reconfigure failed — exiting\n";
+      stop.requestStop();
+      return;
+    }
+    s.capFmt = s.overlay.settings.captureFormat;
+    s.prevSensorMode = s.overlay.settings.sensorMode;
+  }
+  cam.updateStillConfig(settingsToCameraConfig(s.overlay.settings, capW, capH));
+}
+
+void exitSettingsToViewfinder(PreviewState &s, DualStream &cam,
+                              const PreviewConfig &pcfg, StopFlag &stop) {
+  saveAndApplySettings(s, cam, pcfg, stop);
+  s.menuSubMode = MenuSubMode::Normal;
+  s.mode = CameraMode::Viewfinder;
+  s.screenDirty = true;
+}
+
+// Double-press confirmation for destructive actions (format card, reset).
+// Returns true if the action was confirmed (second press within deadline).
+bool confirmDoublePress(PreviewState &s,
+                         std::chrono::steady_clock::time_point &deadline,
+                         std::string_view confirmMsg,
+                         std::string_view pendingMsg) {
+  auto now = std::chrono::steady_clock::now();
+  if (deadline != std::chrono::steady_clock::time_point{} &&
+      now < deadline) {
+    deadline = {};
+    s.persistentError = std::string(confirmMsg);
+    s.errorExpiry = now + std::chrono::seconds(3);
+    return true;
+  }
+  deadline = now + std::chrono::seconds(3);
+  s.persistentError = std::string(pendingMsg);
+  s.errorExpiry = deadline;
+  return false;
+}
+
+// Delete all non-protected captures. Returns count of files deleted.
+int formatCard(const std::string &captureDir) {
+  int deleted = 0;
+  try {
+    namespace fs = std::filesystem;
+    for (const auto &f : listCaptures(captureDir)) {
+      if (!isFileProtected(captureDir, f)) {
+        std::error_code ec;
+        fs::remove(f, ec);
+        if (!ec)
+          ++deleted;
+      }
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Preview: format error: " << e.what() << "\n";
+  }
+  return deleted;
+}
+
+// Switch menu mode (Basic<->Advanced), resetting position.
+void switchMenuMode(PreviewState &s, MenuMode mode, SettingsTab tab) {
+  s.overlay.settings.menuMode = mode;
+  s.settingsTab = tab;
+  s.settingsIdx = 0;
+  s.settingsScroll = 0;
+  saveSettings(s.overlay.settings, defaultSettingsPath());
+  s.screenDirty = true;
+}
+
+// Show help for the current selected item.
+void showCurrentItemHelp(PreviewState &s) {
+  if (s.overlay.settings.menuMode == MenuMode::Basic) {
+    s.helpLabel = std::string(basicMenuItemLabel(s.settingsIdx));
+    s.helpText = std::string(basicMenuItemHelp(s.settingsIdx));
+  } else {
+    s.helpLabel = std::string(settingsItemLabel(s.settingsTab, s.settingsIdx));
+    s.helpText = std::string(settingsItemHelp(s.settingsTab, s.settingsIdx));
+  }
+  s.menuSubMode = MenuSubMode::Help;
+  s.screenDirty = true;
+}
+
+// Adjust a value in the current menu by direction (-1 or +1).
+void adjustCurrentItem(PreviewState &s, int dir) {
+  if (s.overlay.settings.menuMode == MenuMode::Basic) {
+    if (dir < 0)
+      basicMenuItemAdjustLeft(s.settingsIdx, s.overlay.settings);
+    else
+      basicMenuItemAdjustRight(s.settingsIdx, s.overlay.settings);
+  } else {
+    if (dir < 0)
+      settingsItemAdjustLeft(s.settingsTab, s.settingsIdx, s.overlay.settings);
+    else
+      settingsItemAdjustRight(s.settingsTab, s.settingsIdx,
+                              s.overlay.settings);
+  }
+}
+
+// Side effects after adjusting: airplane mode servers, custom mode load.
+void handleAdjustSideEffects(PreviewState &s, const PreviewConfig &pcfg) {
+  if (s.overlay.settings.menuMode != MenuMode::Advanced)
+    return;
+  if (advancedMenuItemIsAirplane(s.settingsTab, s.settingsIdx)) {
+    if (s.overlay.settings.airplaneMode) {
+      s.wifiServer.stop();
+      s.btServer.stop();
+      std::cout << "Preview: airplane mode ON — servers stopped\n";
+    } else {
+      s.wifiServer.start(8080, pcfg.captureDir, s.overlay.settings,
+                         s.wifiSettingsMtx, s.wifiCaptureRequest,
+                         s.wifiBatteryPercent, s.wifiCaptureCount);
+      s.btServer.start(1, pcfg.captureDir, s.overlay.settings,
+                       s.wifiSettingsMtx, s.btCaptureRequest,
+                       s.wifiBatteryPercent, s.wifiCaptureCount);
+      std::cout << "Preview: airplane mode OFF — servers started\n";
+    }
+  }
+  if (advancedMenuItemIsCustomMode(s.settingsTab, s.settingsIdx) &&
+      s.overlay.settings.customMode != CustomMode::Auto) {
+    CameraSettings loaded;
+    if (loadCustomMode(
+            loaded, static_cast<int>(s.overlay.settings.customMode))) {
+      OutputFormat savedFmt = s.overlay.settings.captureFormat;
+      loaded.customMode = s.overlay.settings.customMode;
+      loaded.captureFormat = savedFmt;
+      s.overlay.settings = loaded;
+      std::cout << "Preview: loaded custom mode C"
+                << static_cast<int>(s.overlay.settings.customMode) << "\n";
+    }
+  }
+}
+
+// Trigger an action item (FORMAT, RESET, COPYRIGHT, VIDEO, BASIC, EXIT,
+// DATE). Called on Shutter press in normal mode.
+void triggerActionItem(PreviewState &s, DualStream &cam,
+                       const PreviewConfig &pcfg, StopFlag &stop) {
+  if (s.overlay.settings.menuMode == MenuMode::Basic) {
+    if (basicMenuItemIsAdvancedToggle(s.settingsIdx)) {
+      switchMenuMode(s, MenuMode::Advanced, SettingsTab::Capture);
+      return;
+    }
+    if (basicMenuItemIsFormatCard(s.settingsIdx)) {
+      if (confirmDoublePress(s, s.formatConfirmDeadline, "FORMATTED",
+                             "FORMAT? PRESS")) {
+        int deleted = formatCard(pcfg.captureDir);
+        std::cout << "Preview: formatted card, deleted " << deleted
+                  << " files\n";
+      }
+      s.screenDirty = true;
+      return;
+    }
+    return; // Basic mapped items (0-11) are all adjustable.
+  }
+
+  if (advancedMenuItemIsExit(s.settingsTab, s.settingsIdx)) {
+    exitSettingsToViewfinder(s, cam, pcfg, stop);
+    return;
+  }
+  if (advancedMenuItemIsBasicToggle(s.settingsTab, s.settingsIdx)) {
+    switchMenuMode(s, MenuMode::Basic, SettingsTab::Capture);
+    return;
+  }
+  if (advancedMenuItemIsFormatCard(s.settingsTab, s.settingsIdx)) {
+    if (confirmDoublePress(s, s.formatConfirmDeadline, "FORMATTED",
+                           "FORMAT? PRESS")) {
+      int deleted = formatCard(pcfg.captureDir);
+      std::cout << "Preview: formatted card, deleted " << deleted
+                << " files\n";
+    }
+    s.screenDirty = true;
+    return;
+  }
+  if (advancedMenuItemIsReset(s.settingsTab, s.settingsIdx)) {
+    if (confirmDoublePress(s, s.resetConfirmDeadline, "RESET DONE",
+                           "RESET? PRESS")) {
+      s.overlay.settings = CameraSettings();
+      s.overlay.settings.captureFormat = s.capFmt;
+      std::error_code ec;
+      std::filesystem::remove(defaultSettingsPath(), ec);
+      std::cout << "Preview: settings reset to defaults\n";
+    }
+    s.screenDirty = true;
+    return;
+  }
+  if (advancedMenuItemIsDate(s.settingsTab, s.settingsIdx)) {
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm = *std::localtime(&t);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                  tm.tm_min);
+    s.persistentError = buf;
+    s.errorExpiry =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    s.screenDirty = true;
+    return;
+  }
+  if (advancedMenuItemIsVideo(s.settingsTab, s.settingsIdx)) {
+    s.overlay.settings.driveMode =
+        (s.overlay.settings.driveMode == DriveMode::Video) ? DriveMode::Single
+                                                           : DriveMode::Video;
+    s.persistentError = (s.overlay.settings.driveMode == DriveMode::Video)
+                            ? "VIDEO ON"
+                            : "VIDEO OFF";
+    s.errorExpiry =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    saveAndApplySettings(s, cam, pcfg, stop);
+    s.screenDirty = true;
+    return;
+  }
+  if (advancedMenuItemIsCopyright(s.settingsTab, s.settingsIdx)) {
+    s.copyrightEditing = true;
+    s.copyrightBuffer = s.overlay.settings.copyright;
+    s.copyrightBuffer.resize(20, ' ');
+    s.copyrightCursor = 0;
+    s.screenDirty = true;
+    return;
+  }
+}
+
+// Settings button dispatch — reworked navigation:
+//   Normal: JoyUp/Down = navigate (wrap), JoyLeft/Right = tab switch (wrap),
+//           Shutter = enter adjust or trigger action, Key1 = help,
+//           Key3 = back
+//   Adjust: JoyLeft/Right = change value, Shutter = confirm,
+//           Key3 = cancel, Key1 = help
+//   Help:   any key = dismiss
 void handleSettingsButton(PreviewState &s, DualStream &cam,
                           const PreviewConfig &pcfg, StopFlag &stop,
                           const ButtonEvent &evt) {
-  // Copyright text entry mode: intercept all buttons while editing.
   if (s.copyrightEditing) {
     if (!evt.pressed)
       return;
-    if (evt.id == ButtonId::Key2 || evt.id == ButtonId::Shutter) {
-      // Confirm: save the buffer (trim trailing spaces) and exit edit mode.
+    if (evt.id == ButtonId::Key3 || evt.id == ButtonId::Key1) {
+      s.copyrightEditing = false;
+    } else if (evt.id == ButtonId::Shutter) {
       std::string trimmed = s.copyrightBuffer;
       while (!trimmed.empty() && trimmed.back() == ' ')
         trimmed.pop_back();
       s.overlay.settings.copyright = trimmed;
       s.copyrightEditing = false;
       saveSettings(s.overlay.settings, defaultSettingsPath());
-      std::cout << "Preview: copyright set to '" << trimmed << "'\n";
-    } else if (evt.id == ButtonId::Key1) {
-      // Cancel: discard changes and exit edit mode without saving.
-      s.copyrightEditing = false;
-      std::cout << "Preview: copyright edit cancelled\n";
     } else if (evt.id == ButtonId::JoyUp) {
       copyrightCycleChar(s.copyrightBuffer, s.copyrightCursor, 1);
     } else if (evt.id == ButtonId::JoyDown) {
@@ -1950,308 +2204,73 @@ void handleSettingsButton(PreviewState &s, DualStream &cam,
     s.screenDirty = true;
     return;
   }
-  if (evt.pressed && evt.id == ButtonId::Key2) {
-    // Exit settings — reconfigure camera if capture format or sensor mode
-    // changed.
-    uint32_t capW = pcfg.captureWidth;
-    uint32_t capH = pcfg.captureHeight;
-    auto smDims = sensorModeDims(s.overlay.settings.sensorMode);
-    if (smDims.width > 0 && smDims.height > 0) {
-      capW = smDims.width;
-      capH = smDims.height;
-    }
-    if (s.overlay.settings.captureFormat != s.capFmt ||
-        s.overlay.settings.sensorMode != s.prevSensorMode) {
-      std::cout << "Preview: reconfiguring for format "
-                << extensionFor(s.overlay.settings.captureFormat)
-                << " sensor "
-                << sensorModeLabel(s.overlay.settings.sensorMode) << "\n";
-      // Join any in-flight capture worker before reconfiguring: stop() wakes
-      // the worker via stillCv_, and it must finish before start() re-installs
-      // the requestCompleted callback on the same `this`.
-      if (s.captureThread.joinable()) {
-        cam.stop();
-        s.captureThread.join();
-      }
-      // Clear capture state so the completion handler doesn't fire with
-      // stale results after the reconfigure.
-      s.captureActive = false;
-      s.captureDone.store(false, std::memory_order_release);
-      if (!cam.reconfigureStill(pcfg.previewWidth, pcfg.previewHeight,
-                                capW, capH,
-                                s.overlay.settings.captureFormat)) {
-        std::cerr << "Preview: reconfigure failed — exiting\n";
-        stop.requestStop();
-        return;
-      }
-      s.capFmt = s.overlay.settings.captureFormat;
-      s.prevSensorMode = s.overlay.settings.sensorMode;
-    }
-    // Save settings on exit
-    saveSettings(s.overlay.settings, defaultSettingsPath());
-    // If a custom mode slot is selected (C1/C2/C3), also save to that slot.
-    if (s.overlay.settings.customMode != CustomMode::Auto)
-      saveCustomMode(s.overlay.settings,
-                     static_cast<int>(s.overlay.settings.customMode));
-    // Apply updated controls to the still stream
-    CameraConfig stillCfg = settingsToCameraConfig(
-        s.overlay.settings, capW, capH);
-    cam.updateStillConfig(stillCfg);
-    s.mode = CameraMode::Viewfinder;
-    s.screenDirty = true;
-  } else if (evt.pressed && evt.id == ButtonId::Key3) {
-    // Key3: toggle Basic ↔ Advanced mode.
-    s.overlay.settings.menuMode =
-        (s.overlay.settings.menuMode == MenuMode::Basic) ? MenuMode::Advanced
-                                                         : MenuMode::Basic;
-    s.settingsIdx = 0;
-    if (s.overlay.settings.menuMode == MenuMode::Advanced)
-      s.settingsTab = SettingsTab::Capture;
-    s.screenDirty = true;
-  } else if (evt.pressed && evt.id == ButtonId::Key1) {
-    // Key1: cycle tabs in Advanced mode (no-op in Basic mode).
-    if (s.overlay.settings.menuMode == MenuMode::Advanced) {
-      s.settingsTab = static_cast<SettingsTab>(
-          (static_cast<int>(s.settingsTab) + 1) % kSettingsTabCount);
-      s.settingsIdx = 0;
+
+  if (s.menuSubMode == MenuSubMode::Help) {
+    if (evt.pressed) {
+      s.menuSubMode = MenuSubMode::Normal;
       s.screenDirty = true;
     }
-  } else if (evt.pressed && evt.id == ButtonId::JoyUp) {
-    if (s.settingsIdx > 0) {
-      --s.settingsIdx;
-      s.screenDirty = true;
+    return;
+  }
+
+  if (s.menuSubMode == MenuSubMode::Adjust) {
+    if (!evt.pressed)
+      return;
+    if (evt.id == ButtonId::Key3) {
+      s.menuSubMode = MenuSubMode::Normal;
+    } else if (evt.id == ButtonId::Shutter) {
+      s.menuSubMode = MenuSubMode::Normal;
+      saveAndApplySettings(s, cam, pcfg, stop);
+    } else if (evt.id == ButtonId::Key1) {
+      showCurrentItemHelp(s);
+    } else if (evt.id == ButtonId::JoyLeft) {
+      adjustCurrentItem(s, -1);
+      handleAdjustSideEffects(s, pcfg);
+    } else if (evt.id == ButtonId::JoyRight) {
+      adjustCurrentItem(s, 1);
+      handleAdjustSideEffects(s, pcfg);
+    } else {
+      return;
     }
-  } else if (evt.pressed && evt.id == ButtonId::JoyDown) {
+    s.screenDirty = true;
+    return;
+  }
+
+  // Normal sub-mode.
+  if (!evt.pressed)
+    return;
+  if (evt.id == ButtonId::Key3) {
+    exitSettingsToViewfinder(s, cam, pcfg, stop);
+  } else if (evt.id == ButtonId::Key1) {
+    showCurrentItemHelp(s);
+  } else if (evt.id == ButtonId::Shutter) {
+    bool isAction = (s.overlay.settings.menuMode == MenuMode::Basic)
+                        ? basicMenuItemIsAction(s.settingsIdx)
+                        : settingsItemIsAction(s.settingsTab, s.settingsIdx);
+    if (isAction)
+      triggerActionItem(s, cam, pcfg, stop);
+    else
+      s.menuSubMode = MenuSubMode::Adjust;
+    s.screenDirty = true;
+  } else if (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown) {
     int count = (s.overlay.settings.menuMode == MenuMode::Basic)
                     ? basicMenuItemCount()
                     : settingsTabItemCount(s.settingsTab);
-    if (s.settingsIdx < count - 1) {
-      ++s.settingsIdx;
+    if (count > 0) {
+      int dir = (evt.id == ButtonId::JoyDown) ? 1 : -1;
+      s.settingsIdx = (s.settingsIdx + dir + count) % count;
       s.screenDirty = true;
     }
-  } else if (evt.pressed &&
-             (evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight)) {
-    // --- Basic mode item handling ---
-    if (s.overlay.settings.menuMode == MenuMode::Basic) {
-      // ADVANCED toggle (last item): JoyRight switches to Advanced.
-      if (basicMenuItemIsAdvancedToggle(s.settingsIdx)) {
-        if (evt.id == ButtonId::JoyRight) {
-          s.overlay.settings.menuMode = MenuMode::Advanced;
-          s.settingsTab = SettingsTab::Capture;
-          s.settingsIdx = 0;
-          s.screenDirty = true;
-        }
-        return;
-      }
-      // FORMAT CARD: double-press JoyRight to confirm.
-      if (basicMenuItemIsFormatCard(s.settingsIdx)) {
-        if (evt.id == ButtonId::JoyRight) {
-          auto now = std::chrono::steady_clock::now();
-          if (s.formatConfirmDeadline !=
-                  std::chrono::steady_clock::time_point{} &&
-              now < s.formatConfirmDeadline) {
-            s.formatConfirmDeadline = {};
-            int deleted = 0;
-            try {
-              namespace fs = std::filesystem;
-              for (const auto &f : listCaptures(pcfg.captureDir)) {
-                if (!isFileProtected(pcfg.captureDir, f)) {
-                  std::error_code ec;
-                  fs::remove(f, ec);
-                  if (!ec)
-                    ++deleted;
-                }
-              }
-            } catch (const std::exception &e) {
-              std::cerr << "Preview: format error: " << e.what() << "\n";
-            }
-            s.persistentError = "FORMATTED";
-            s.errorExpiry = now + std::chrono::seconds(3);
-            std::cout << "Preview: formatted card, deleted " << deleted
-                      << " files\n";
-          } else {
-            s.formatConfirmDeadline = now + std::chrono::seconds(3);
-            s.persistentError = "FORMAT? JOY-R";
-            s.errorExpiry = s.formatConfirmDeadline;
-          }
-          s.screenDirty = true;
-        }
-        return;
-      }
-      // Normal adjustable item.
-      if (evt.id == ButtonId::JoyLeft)
-        basicMenuItemAdjustLeft(s.settingsIdx, s.overlay.settings);
-      else
-        basicMenuItemAdjustRight(s.settingsIdx, s.overlay.settings);
+  } else if (evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight) {
+    if (s.overlay.settings.menuMode == MenuMode::Advanced) {
+      int dir = (evt.id == ButtonId::JoyRight) ? 1 : -1;
+      int tab = (static_cast<int>(s.settingsTab) + dir + kSettingsTabCount) %
+                kSettingsTabCount;
+      s.settingsTab = static_cast<SettingsTab>(tab);
+      s.settingsIdx = 0;
+      s.settingsScroll = 0;
       s.screenDirty = true;
-      return;
     }
-
-    // --- Advanced mode item handling ---
-    // EXIT item (System tab, last item) is not adjustable.
-    if (advancedMenuItemIsExit(s.settingsTab, s.settingsIdx))
-      return;
-    // BASIC toggle (System tab idx 10): JoyRight switches to Basic.
-    if (advancedMenuItemIsBasicToggle(s.settingsTab, s.settingsIdx)) {
-      if (evt.id == ButtonId::JoyRight) {
-        s.overlay.settings.menuMode = MenuMode::Basic;
-        s.settingsIdx = 0;
-        s.screenDirty = true;
-      }
-      return;
-    }
-    // FORMAT (System tab idx 2): double-press JoyRight to confirm.
-    if (advancedMenuItemIsFormatCard(s.settingsTab, s.settingsIdx)) {
-      if (evt.id == ButtonId::JoyRight) {
-        auto now = std::chrono::steady_clock::now();
-        if (s.formatConfirmDeadline != std::chrono::steady_clock::time_point{} &&
-            now < s.formatConfirmDeadline) {
-          s.formatConfirmDeadline = {};
-          // Format: delete all non-protected captures.
-          int deleted = 0;
-          try {
-            namespace fs = std::filesystem;
-            for (const auto &f : listCaptures(pcfg.captureDir)) {
-              if (!isFileProtected(pcfg.captureDir, f)) {
-                std::error_code ec;
-                fs::remove(f, ec);
-                if (!ec)
-                  ++deleted;
-              }
-            }
-          } catch (const std::exception &e) {
-            std::cerr << "Preview: format error: " << e.what() << "\n";
-          }
-          s.persistentError = "FORMATTED";
-          s.errorExpiry = now + std::chrono::seconds(3);
-          std::cout << "Preview: formatted card, deleted " << deleted
-                    << " files\n";
-        } else {
-          s.formatConfirmDeadline = now + std::chrono::seconds(3);
-          s.persistentError = "FORMAT? JOY-R";
-          s.errorExpiry = s.formatConfirmDeadline;
-        }
-        s.screenDirty = true;
-      }
-      return;
-    }
-    // RESET (System tab idx 3): double-press JoyRight to confirm.
-    if (advancedMenuItemIsReset(s.settingsTab, s.settingsIdx)) {
-      if (evt.id == ButtonId::JoyRight) {
-        auto now = std::chrono::steady_clock::now();
-        if (s.resetConfirmDeadline !=
-                std::chrono::steady_clock::time_point{} &&
-            now < s.resetConfirmDeadline) {
-          s.resetConfirmDeadline = {};
-          // Reset: restore defaults and delete settings file.
-          s.overlay.settings = CameraSettings();
-          s.overlay.settings.captureFormat = s.capFmt;
-          std::error_code ec;
-          std::filesystem::remove(defaultSettingsPath(), ec);
-          s.persistentError = "RESET DONE";
-          s.errorExpiry = now + std::chrono::seconds(3);
-          std::cout << "Preview: settings reset to defaults\n";
-        } else {
-          s.resetConfirmDeadline = now + std::chrono::seconds(3);
-          s.persistentError = "RESET? JOY-R";
-          s.errorExpiry = s.resetConfirmDeadline;
-        }
-        s.screenDirty = true;
-      }
-      return;
-    }
-    // DATE (System tab idx 5): show current date/time (read-only on Pi Zero
-    // without RTC — setting system time requires root privileges).
-    if (advancedMenuItemIsDate(s.settingsTab, s.settingsIdx)) {
-      auto now = std::chrono::system_clock::now();
-      std::time_t t = std::chrono::system_clock::to_time_t(now);
-      std::tm tm;
-      tm = *std::localtime(&t);
-      char buf[64];
-      std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
-                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-                    tm.tm_min);
-      s.persistentError = buf;
-      s.errorExpiry = std::chrono::steady_clock::now() +
-                      std::chrono::seconds(5);
-      s.screenDirty = true;
-      return;
-    }
-    // VIDEO (Video tab idx 0): toggle Video drive mode.
-    if (advancedMenuItemIsVideo(s.settingsTab, s.settingsIdx)) {
-      if (s.overlay.settings.driveMode == DriveMode::Video) {
-        s.overlay.settings.driveMode = DriveMode::Single;
-        s.persistentError = "VIDEO OFF";
-      } else {
-        s.overlay.settings.driveMode = DriveMode::Video;
-        s.persistentError = "VIDEO ON";
-      }
-      s.errorExpiry = std::chrono::steady_clock::now() +
-                      std::chrono::seconds(2);
-      s.screenDirty = true;
-      return;
-    }
-    // COPYRIGHT (System tab idx 8): enter text entry mode on JoyRight.
-    if (advancedMenuItemIsCopyright(s.settingsTab, s.settingsIdx)) {
-      if (evt.id == ButtonId::JoyRight) {
-        s.copyrightEditing = true;
-        s.copyrightBuffer = s.overlay.settings.copyright;
-        // Pad to 20 chars with spaces for editing.
-        while (s.copyrightBuffer.size() < 20)
-          s.copyrightBuffer += ' ';
-        if (s.copyrightBuffer.size() > 20)
-          s.copyrightBuffer.resize(20);
-        s.copyrightCursor = 0;
-        std::cout << "Preview: entering copyright edit mode\n";
-      }
-      s.screenDirty = true;
-      return;
-    }
-    // Normal adjustable item.
-    if (evt.id == ButtonId::JoyLeft)
-      settingsItemAdjustLeft(s.settingsTab, s.settingsIdx,
-                             s.overlay.settings);
-    else
-      settingsItemAdjustRight(s.settingsTab, s.settingsIdx,
-                              s.overlay.settings);
-    // Handle airplane mode toggle: start/stop servers at runtime.
-    if (advancedMenuItemIsAirplane(s.settingsTab, s.settingsIdx)) {
-      if (s.overlay.settings.airplaneMode) {
-        s.wifiServer.stop();
-        s.btServer.stop();
-        std::cout << "Preview: airplane mode ON — servers stopped\n";
-      } else {
-        constexpr int kWifiPort = 8080;
-        s.wifiServer.start(kWifiPort, pcfg.captureDir, s.overlay.settings,
-                           s.wifiSettingsMtx, s.wifiCaptureRequest,
-                           s.wifiBatteryPercent, s.wifiCaptureCount);
-        constexpr int kBtChannel = 1;
-        s.btServer.start(kBtChannel, pcfg.captureDir, s.overlay.settings,
-                         s.wifiSettingsMtx, s.btCaptureRequest,
-                         s.wifiBatteryPercent, s.wifiCaptureCount);
-        std::cout << "Preview: airplane mode OFF — servers started\n";
-      }
-    }
-    // Handle custom mode selection: load saved settings for C1/C2/C3.
-    if (advancedMenuItemIsCustomMode(s.settingsTab, s.settingsIdx) &&
-        s.overlay.settings.customMode != CustomMode::Auto) {
-      CameraSettings loaded;
-      if (loadCustomMode(loaded,
-                         static_cast<int>(s.overlay.settings.customMode))) {
-        // Preserve the customMode selection itself and capture format.
-        OutputFormat savedFmt = s.overlay.settings.captureFormat;
-        loaded.customMode = s.overlay.settings.customMode;
-        loaded.captureFormat = savedFmt;
-        s.overlay.settings = loaded;
-        std::cout << "Preview: loaded custom mode C"
-                  << static_cast<int>(s.overlay.settings.customMode) << "\n";
-      } else {
-        std::cout << "Preview: no saved settings for C"
-                  << static_cast<int>(s.overlay.settings.customMode)
-                  << " — using current\n";
-      }
-    }
-    s.screenDirty = true;
   }
 }
 
@@ -2302,6 +2321,31 @@ bool runPreviewLoop(PreviewState &s, DualStream &cam,
       // Handle button events based on mode
       ButtonEvent evt = buttons.poll(0);
       if (evt.id == ButtonId::None) {
+        // No real event — check for joystick auto-repeat.
+        if (s.heldJoy != ButtonId::None) {
+          auto now = std::chrono::steady_clock::now();
+          auto heldMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - s.joyPressTime)
+                            .count();
+          auto sinceRepeat =
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  now - s.joyLastRepeat)
+                  .count();
+          if (heldMs >= kJoyRepeatDelayMs &&
+              sinceRepeat >= kJoyRepeatIntervalMs) {
+            // Synthesize a repeat press event for the held joystick button.
+            // Only repeat in modes where it makes sense (Settings, Playback).
+            if (s.mode == CameraMode::Settings ||
+                s.mode == CameraMode::Playback) {
+              evt.id = s.heldJoy;
+              evt.pressed = true;
+              evt.pressDurationMs = 0;
+              s.joyLastRepeat = now;
+            }
+          }
+        }
+      }
+      if (evt.id == ButtonId::None) {
         // Power management: check for sleep timeout (only when awake —
         // sleeping is handled by the early-continue branch above).
         auto now = std::chrono::steady_clock::now();
@@ -2311,6 +2355,18 @@ bool runPreviewLoop(PreviewState &s, DualStream &cam,
           std::this_thread::sleep_for(s.frameDelay - elapsed);
         }
         continue;
+      }
+
+      // Track joystick hold state for auto-repeat.
+      if (evt.id == ButtonId::JoyUp || evt.id == ButtonId::JoyDown ||
+          evt.id == ButtonId::JoyLeft || evt.id == ButtonId::JoyRight) {
+        if (evt.pressed) {
+          s.heldJoy = evt.id;
+          s.joyPressTime = std::chrono::steady_clock::now();
+          s.joyLastRepeat = s.joyPressTime;
+        } else {
+          s.heldJoy = ButtonId::None;
+        }
       }
 
       s.lastActivity = std::chrono::steady_clock::now();
